@@ -1,5 +1,7 @@
 import { analyzeSession } from "./shared/analyzer";
+import { DEFAULT_SETTINGS } from "./shared/defaults";
 import { createTranslator, uiText } from "./shared/i18n";
+import { getUiTheme, normalizeUiTheme, UI_THEMES } from "./shared/themes";
 import type { AnalysisResult, DiagnosticSession, DiagnosticSettings, ExportFormat } from "./shared/types";
 import "./ui/popup.css";
 
@@ -9,6 +11,7 @@ type PopupState = {
   report: string;
   analysis: AnalysisResult | null;
   busy: boolean;
+  showSettings: boolean;
   toast: string;
 };
 
@@ -18,6 +21,7 @@ const state: PopupState = {
   report: "",
   analysis: null,
   busy: false,
+  showSettings: false,
   toast: ""
 };
 
@@ -43,8 +47,9 @@ function render(): void {
   if (!app) return;
   const active = !!state.session?.active;
   const analysis = state.analysis;
-  const settings = state.settings;
+  const settings = state.settings ?? DEFAULT_SETTINGS;
   const t = createTranslator(settings?.locale);
+  applyTheme(settings.uiTheme);
 
   app.innerHTML = `
     <main class="app">
@@ -82,6 +87,8 @@ function render(): void {
           </div>
         </div>
 
+        ${state.showSettings ? renderSettings(settings, t) : ""}
+
         <div class="section">
           <div class="section-header">
             <h2>${t("export")}</h2>
@@ -117,13 +124,75 @@ function render(): void {
 
       <footer class="footer">
         <button class="ghost" data-action="refresh">${t("refreshStatus")}</button>
-        <button class="ghost" data-action="options">${t("openSettings")}</button>
+        <button class="ghost" data-action="toggle-settings">${t("openSettings")}</button>
       </footer>
     </main>
     ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
   `;
 
   bindEvents();
+}
+
+function renderSettings(settings: DiagnosticSettings, t: ReturnType<typeof createTranslator>): string {
+  return `
+    <div class="section settings-section">
+      <div class="section-header">
+        <h2>${t("inlineSettings")}</h2>
+        <button class="text-button" data-action="reset-settings">${t("resetDefaults")}</button>
+      </div>
+      <div class="section-body settings-body">
+        <div class="settings-group">
+          <strong>${t("appearance")}</strong>
+          <div class="theme-grid" role="radiogroup" aria-label="${t("theme")}">
+            ${themeOption("claude", t("themeClaude"), settings.uiTheme)}
+            ${themeOption("saas", t("themeSaas"), settings.uiTheme)}
+            ${themeOption("dark", t("themeDark"), settings.uiTheme)}
+            ${themeOption("cartoon", t("themeCartoon"), settings.uiTheme)}
+          </div>
+        </div>
+        <div class="settings-group compact">
+          <strong>${t("diagnosticSettings")}</strong>
+          <label class="field">
+            <span>${t("language")}</span>
+            <select id="locale">
+              <option value="zh" ${settings.locale === "zh" ? "selected" : ""}>中文</option>
+              <option value="en" ${settings.locale === "en" ? "selected" : ""}>English</option>
+            </select>
+          </label>
+          <label class="inline">
+            <input id="collectResponseBody" type="checkbox" ${settings.collectResponseBody ? "checked" : ""} />
+            <span>${t("collectResponse")}</span>
+          </label>
+          <label class="field">
+            <span>${t("responseMaxLength")}</span>
+            <input id="maxResponseLength" type="number" min="256" max="10000" step="256" value="${settings.maxResponseLength}" />
+          </label>
+          <label class="field">
+            <span>${t("slowThreshold")}</span>
+            <input id="slowRequestThreshold" type="number" min="300" max="20000" step="100" value="${settings.slowRequestThreshold}" />
+          </label>
+          <label class="field">
+            <span>${t("extraRedaction")}</span>
+            <textarea id="extraRedactionKeys">${escapeHtml(settings.extraRedactionKeys.join("\n"))}</textarea>
+          </label>
+        </div>
+        <button class="primary" data-action="save-settings">${t("saveSettings")}</button>
+      </div>
+    </div>
+  `;
+}
+
+function themeOption(theme: DiagnosticSettings["uiTheme"], label: string, current: DiagnosticSettings["uiTheme"]): string {
+  const tokens = UI_THEMES[theme].tokens;
+  return `
+    <label class="theme-option ${theme === current ? "selected" : ""}">
+      <input type="radio" name="uiTheme" value="${theme}" ${theme === current ? "checked" : ""} />
+      <span class="theme-swatch" style="--swatch-bg:${tokens.bg};--swatch-surface:${tokens.surface};--swatch-primary:${tokens.primary};--swatch-border:${tokens.border};">
+        <i></i><b></b>
+      </span>
+      <span>${label}</span>
+    </label>
+  `;
 }
 
 function metric(value: number, label: string): string {
@@ -145,13 +214,24 @@ function renderStyleChanges(session: DiagnosticSession | null, emptyText: string
           <div class="item">
             <strong>${escapeHtml(change.elementLabel)}</strong>
             <code>${escapeHtml(change.selector)}</code>
-            <code>${escapeHtml(Object.entries(change.after).map(([key, value]) => `${key}: ${value}`).join("; "))}</code>
+            <code>${escapeHtml(summarizeChange(change))}</code>
           </div>
         `
         )
         .join("")}
     </div>
-  `;
+	  `;
+}
+
+function summarizeChange(change: DiagnosticSession["styleChanges"][number]): string {
+  const parts = Object.entries(change.after).map(([key, value]) => `${key}: ${value}`);
+  if (change.textAfter !== undefined && change.textAfter !== (change.textBefore ?? "")) {
+    parts.push("textContent");
+  }
+  if (change.domAfter !== undefined && change.domAfter !== (change.domBefore ?? "")) {
+    parts.push(change.domAction ?? "DOM");
+  }
+  return parts.join("; ");
 }
 
 function bindEvents(): void {
@@ -203,8 +283,27 @@ async function handleAction(action: string): Promise<void> {
       showToast(t("refreshed"));
     }
 
-    if (action === "options") {
-      chrome.runtime.openOptionsPage();
+    if (action === "toggle-settings") {
+      state.showSettings = !state.showSettings;
+    }
+
+    if (action === "save-settings") {
+      const next = collectSettingsForm();
+      const response = await sendMessage({ type: "save-settings", settings: next });
+      if (!response?.ok) throw new Error(response?.error || t("saveFailed"));
+      state.settings = response.settings;
+      state.analysis =
+        state.session && state.settings ? analyzeSession(state.session, state.settings.slowRequestThreshold, state.settings.locale) : null;
+      showToast(uiText(state.settings?.locale, "saved"));
+    }
+
+    if (action === "reset-settings") {
+      const response = await sendMessage({ type: "save-settings", settings: DEFAULT_SETTINGS });
+      if (!response?.ok) throw new Error(response?.error || t("saveFailed"));
+      state.settings = response.settings;
+      state.analysis =
+        state.session && state.settings ? analyzeSession(state.session, state.settings.slowRequestThreshold, state.settings.locale) : null;
+      showToast(uiText(state.settings?.locale, "resetDone"));
     }
 
     await refresh();
@@ -214,6 +313,37 @@ async function handleAction(action: string): Promise<void> {
     state.busy = false;
     render();
   }
+}
+
+function collectSettingsForm(): DiagnosticSettings {
+  const current = state.settings ?? DEFAULT_SETTINGS;
+  const locale = (document.querySelector<HTMLSelectElement>("#locale")?.value ?? current.locale) as DiagnosticSettings["locale"];
+  const uiTheme = normalizeUiTheme(document.querySelector<HTMLInputElement>('input[name="uiTheme"]:checked')?.value ?? current.uiTheme);
+  const collectResponseBody = document.querySelector<HTMLInputElement>("#collectResponseBody")?.checked ?? false;
+  const maxResponseLength = Number(document.querySelector<HTMLInputElement>("#maxResponseLength")?.value || current.maxResponseLength);
+  const slowRequestThreshold = Number(document.querySelector<HTMLInputElement>("#slowRequestThreshold")?.value || current.slowRequestThreshold);
+  const extraRedactionKeys = (document.querySelector<HTMLTextAreaElement>("#extraRedactionKeys")?.value ?? "")
+    .split(/\n+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return {
+    ...current,
+    locale,
+    uiTheme,
+    collectResponseBody,
+    maxResponseLength,
+    slowRequestThreshold,
+    extraRedactionKeys
+  };
+}
+
+function applyTheme(theme: DiagnosticSettings["uiTheme"]): void {
+  const definition = getUiTheme(theme);
+  document.documentElement.dataset.theme = definition.id;
+  Object.entries(definition.tokens).forEach(([key, value]) => {
+    document.documentElement.style.setProperty(`--dl-${key}`, value);
+  });
 }
 
 async function generateReport(): Promise<void> {

@@ -49,7 +49,8 @@ export function generateRepairPrompt(session: DiagnosticSession, locale: UiLocal
               before: change.before[property] ?? "",
               after
             })),
-          ...textModification(change)
+          ...textModification(change),
+          ...domModification(change)
         ]
       }))
     },
@@ -91,6 +92,21 @@ function textModification(change: DiagnosticSession["styleChanges"][number]): Ar
       after: change.textAfter,
       htmlBefore: truncate(change.htmlBefore ?? "", 1200),
       htmlAfter: truncate(change.htmlAfter ?? "", 1200)
+    }
+  ];
+}
+
+function domModification(change: DiagnosticSession["styleChanges"][number]): Array<Record<string, string>> {
+  if (change.domAfter === undefined || change.domAfter === (change.domBefore ?? "")) {
+    return [];
+  }
+
+  return [
+    {
+      type: "dom",
+      property: change.domAction ?? "outerHTML",
+      before: truncate(change.domBefore ?? "", 1200),
+      after: truncate(change.domAfter, 1200)
     }
   ];
 }

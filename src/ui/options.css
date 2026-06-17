@@ -3,8 +3,22 @@
 }
 
 :root {
-  color: #161815;
-  background: #f4f5ef;
+  --dl-bg: #faf9f5;
+  --dl-surface: #ffffff;
+  --dl-surface2: #f4f3ee;
+  --dl-sidebar: #f1efe7;
+  --dl-border: #e8e6dc;
+  --dl-borderStrong: #d4d0c4;
+  --dl-text: #141413;
+  --dl-textMuted: #6f6a60;
+  --dl-primary: #d97757;
+  --dl-primaryHover: #c15f3c;
+  --dl-primarySoft: #f3ded4;
+  --dl-onPrimary: #ffffff;
+  --dl-toastBg: #141413;
+  --dl-focus: rgba(217, 119, 87, 0.32);
+  color: var(--dl-text);
+  background: var(--dl-bg);
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei",
     sans-serif;
@@ -12,7 +26,8 @@
 
 body {
   margin: 0;
-  background: #f4f5ef;
+  background: var(--dl-bg);
+  color: var(--dl-text);
 }
 
 button,
@@ -58,7 +73,7 @@ select {
 
 .hero p {
   margin: 8px 0 0;
-  color: #62685e;
+  color: var(--dl-textMuted);
   line-height: 1.5;
 }
 
@@ -69,15 +84,15 @@ select {
 }
 
 .section {
-  border: 1px solid #dedfd8;
+  border: 1px solid var(--dl-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--dl-surface);
 }
 
 .section h2 {
   margin: 0;
   padding: 14px 16px;
-  border-bottom: 1px solid #ecede8;
+  border-bottom: 1px solid var(--dl-border);
   font-size: 16px;
 }
 
@@ -94,11 +109,11 @@ select {
 
 .field span {
   font-size: 13px;
-  color: #343a32;
+  color: var(--dl-text);
 }
 
 .field small {
-  color: #697066;
+  color: var(--dl-textMuted);
   line-height: 1.5;
 }
 
@@ -107,10 +122,10 @@ select,
 textarea {
   width: 100%;
   min-width: 0;
-  border: 1px solid #d5d8cf;
+  border: 1px solid var(--dl-borderStrong);
   border-radius: 7px;
-  background: #fbfbf8;
-  color: #161815;
+  background: var(--dl-surface2);
+  color: var(--dl-text);
   padding: 9px 10px;
 }
 
@@ -141,30 +156,36 @@ textarea {
 
 button {
   height: 38px;
-  border: 1px solid #cfd2c9;
+  border: 1px solid var(--dl-borderStrong);
   border-radius: 7px;
-  background: #fff;
-  color: #151713;
+  background: var(--dl-surface);
+  color: var(--dl-text);
   padding: 0 14px;
   cursor: pointer;
 }
 
 button:hover {
-  border-color: #1f7a5c;
+  border-color: var(--dl-primary);
 }
 
 .primary {
-  border-color: #1f7a5c;
-  background: #1f7a5c;
-  color: #fff;
+  border-color: var(--dl-primary);
+  background: var(--dl-primary);
+  color: var(--dl-onPrimary);
+}
+
+.primary:hover {
+  border-color: var(--dl-primaryHover);
+  background: var(--dl-primaryHover);
+  color: var(--dl-onPrimary);
 }
 
 .note {
   padding: 12px;
-  border: 1px solid #e4e6df;
+  border: 1px solid var(--dl-border);
   border-radius: 7px;
-  background: #fbfbf8;
-  color: #555b52;
+  background: var(--dl-surface2);
+  color: var(--dl-textMuted);
   line-height: 1.6;
 }
 
@@ -174,9 +195,79 @@ button:hover {
   bottom: 22px;
   transform: translateX(-50%);
   border-radius: 7px;
-  background: #151713;
-  color: #fff;
+  background: var(--dl-toastBg);
+  color: var(--dl-bg);
   padding: 10px 14px;
+}
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.theme-option {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--dl-border);
+  border-radius: 8px;
+  padding: 9px;
+  cursor: pointer;
+}
+
+.theme-option.selected,
+.theme-option:has(input:checked) {
+  border-color: var(--dl-primary);
+  background: var(--dl-primarySoft);
+}
+
+.theme-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.theme-option > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-swatch {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 4px;
+  width: 52px;
+  height: 34px;
+  border: 1px solid var(--swatch-border);
+  border-radius: 7px;
+  background: var(--swatch-bg);
+  padding: 5px;
+}
+
+.theme-swatch i,
+.theme-swatch b {
+  display: block;
+  border-radius: 4px;
+}
+
+.theme-swatch i {
+  background: var(--swatch-primary);
+}
+
+.theme-swatch b {
+  background: var(--swatch-surface);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--dl-focus);
+  outline-offset: 2px;
 }
 
 @media (max-width: 760px) {

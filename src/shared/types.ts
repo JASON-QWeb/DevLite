@@ -10,9 +10,11 @@ export type DiagnosticEventType =
 
 export type Severity = "info" | "warning" | "error";
 export type UiLocale = "zh" | "en";
+export type UiTheme = "claude" | "saas" | "dark" | "cartoon";
 
 export interface DiagnosticSettings {
   locale: UiLocale;
+  uiTheme: UiTheme;
   collectResponseBody: boolean;
   maxResponseLength: number;
   slowRequestThreshold: number;
@@ -68,6 +70,9 @@ export interface StyleChange {
   textAfter?: string;
   htmlBefore?: string;
   htmlAfter?: string;
+  domBefore?: string;
+  domAfter?: string;
+  domAction?: string;
   updatedAt: number;
   note?: string;
 }

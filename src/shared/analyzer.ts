@@ -87,7 +87,8 @@ function changeEvidence(change: DiagnosticSession["styleChanges"][number], local
   const styleKeys = Object.keys(change.after);
   const parts = [
     styleKeys.length > 0 ? `CSS ${styleKeys.join(", ")}` : "",
-    change.textAfter !== undefined && change.textAfter !== (change.textBefore ?? "") ? (locale === "en" ? "text content" : "文字内容") : ""
+    change.textAfter !== undefined && change.textAfter !== (change.textBefore ?? "") ? (locale === "en" ? "text content" : "文字内容") : "",
+    change.domAfter !== undefined && change.domAfter !== (change.domBefore ?? "") ? (change.domAction ?? (locale === "en" ? "element DOM" : "元素结构")) : ""
   ].filter(Boolean);
   return parts.join(" / ") || (locale === "en" ? "No specific fields recorded" : "未记录具体字段");
 }

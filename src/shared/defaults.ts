@@ -2,6 +2,7 @@ import type { DiagnosticSettings } from "./types";
 
 export const DEFAULT_SETTINGS: DiagnosticSettings = {
   locale: "zh",
+  uiTheme: "claude",
   collectResponseBody: false,
   maxResponseLength: 2048,
   slowRequestThreshold: 2000,

@@ -3,6 +3,7 @@ import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../shared/defaults";
 import { generateExport } from "../shared/exporters";
 import { generateMarkdownReport } from "../shared/report";
 import { sanitizeEvent, sanitizeSession } from "../shared/redaction";
+import { normalizeUiTheme } from "../shared/themes";
 import type {
   DiagnosticEvent,
   DiagnosticSession,
@@ -370,6 +371,7 @@ async function saveSettings(settings: DiagnosticSettings): Promise<void> {
 function mergeSettings(input?: Partial<DiagnosticSettings>): DiagnosticSettings {
   return {
     locale: input?.locale ?? DEFAULT_SETTINGS.locale,
+    uiTheme: normalizeUiTheme(input?.uiTheme),
     collectResponseBody: input?.collectResponseBody ?? DEFAULT_SETTINGS.collectResponseBody,
     maxResponseLength: input?.maxResponseLength ?? DEFAULT_SETTINGS.maxResponseLength,
     slowRequestThreshold: input?.slowRequestThreshold ?? DEFAULT_SETTINGS.slowRequestThreshold,

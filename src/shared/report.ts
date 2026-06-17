@@ -85,6 +85,7 @@ export function generateMarkdownReport(session: DiagnosticSession, settings: Dia
     session.styleChanges.forEach((change, index) => {
       const hasStyleChanges = Object.values(change.after).some(Boolean);
       const hasTextChange = change.textAfter !== undefined && change.textAfter !== (change.textBefore ?? "");
+      const hasDomChange = change.domAfter !== undefined && change.domAfter !== (change.domBefore ?? "");
       lines.push(`### ${index + 1}. ${change.elementLabel}`);
       lines.push(`- Selector: \`${change.selector}\``);
       lines.push(`- ${l("文本", "Text")}: ${change.textSnippet || l("无文本", "No text")}`);
@@ -112,6 +113,21 @@ export function generateMarkdownReport(session: DiagnosticSession, settings: Dia
         lines.push(l("样式修改后:", "Styles after:"));
         lines.push("```css");
         lines.push(cssBlock(change.after, locale));
+        lines.push("```");
+      }
+
+      if (hasDomChange) {
+        lines.push("");
+        lines.push(`${l("元素结构修改", "Element DOM change")}: ${change.domAction ?? "outerHTML"}`);
+        lines.push("");
+        lines.push(l("修改前:", "Before:"));
+        lines.push("```html");
+        lines.push(truncate(change.domBefore ?? "", 1200));
+        lines.push("```");
+        lines.push("");
+        lines.push(l("修改后:", "After:"));
+        lines.push("```html");
+        lines.push(truncate(change.domAfter ?? "", 1200));
         lines.push("```");
       }
       lines.push("");

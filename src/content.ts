@@ -21,6 +21,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     textAfter?: string;
     htmlBefore?: string;
     htmlAfter?: string;
+    domBefore?: string;
+    domAfter?: string;
+    domAction?: string;
     updatedAt: number;
     note?: string;
   };
@@ -61,10 +64,42 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     condition?: string;
   };
 
-  type OverlayTab = "element" | "diagnostics" | "network" | "performance";
+  type OverlayTab = "element" | "diagnostics" | "network" | "performance" | "settings";
   type NetworkDetailTab = "preview" | "response" | "request" | "headers";
   type DiagnosticFilter = "issues" | "logs";
   type UiLocale = ContentLocale;
+  type UiTheme = "claude" | "saas" | "dark" | "cartoon";
+  type PanelSettings = {
+    locale?: UiLocale;
+    uiTheme?: UiTheme;
+    collectResponseBody?: boolean;
+    maxResponseLength?: number;
+    slowRequestThreshold?: number;
+    retainHours?: number;
+    extraRedactionKeys?: string[];
+  };
+  type ThemeTokens = Record<
+    | "bg"
+    | "surface"
+    | "surface2"
+    | "sidebar"
+    | "border"
+    | "borderStrong"
+    | "text"
+    | "textMuted"
+    | "primary"
+    | "primaryHover"
+    | "primarySoft"
+    | "onPrimary"
+    | "danger"
+    | "warning"
+    | "success"
+    | "codeText"
+    | "toastBg"
+    | "shadow"
+    | "focus",
+    string
+  >;
   type FloatingPosition = {
     left: number;
     top: number;
@@ -135,13 +170,108 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     "align-items",
     "opacity"
   ];
+  const DEFAULT_PANEL_SETTINGS: Required<PanelSettings> = {
+    locale: "zh",
+    uiTheme: "claude",
+    collectResponseBody: false,
+    maxResponseLength: 2048,
+    slowRequestThreshold: 2000,
+    retainHours: 24,
+    extraRedactionKeys: []
+  };
+  const PANEL_THEMES: Record<UiTheme, ThemeTokens> = {
+    claude: {
+      bg: "#FAF9F5",
+      surface: "#FFFFFF",
+      surface2: "#F4F3EE",
+      sidebar: "#F1EFE7",
+      border: "#E8E6DC",
+      borderStrong: "#D4D0C4",
+      text: "#141413",
+      textMuted: "#6F6A60",
+      primary: "#D97757",
+      primaryHover: "#C15F3C",
+      primarySoft: "#F3DED4",
+      onPrimary: "#FFFFFF",
+      danger: "#B94A48",
+      warning: "#B8792F",
+      success: "#788C5D",
+      codeText: "#7B402F",
+      toastBg: "#141413",
+      shadow: "rgba(32, 28, 22, 0.18)",
+      focus: "rgba(217, 119, 87, 0.32)"
+    },
+    saas: {
+      bg: "#F6F8FB",
+      surface: "#FFFFFF",
+      surface2: "#F0F3F8",
+      sidebar: "#EEF2F7",
+      border: "#DCE3EC",
+      borderStrong: "#C6D0DE",
+      text: "#111827",
+      textMuted: "#64748B",
+      primary: "#315CFF",
+      primaryHover: "#2447C8",
+      primarySoft: "#E7EDFF",
+      onPrimary: "#FFFFFF",
+      danger: "#DC2626",
+      warning: "#D97706",
+      success: "#14B8A6",
+      codeText: "#2546B8",
+      toastBg: "#111827",
+      shadow: "rgba(17, 24, 39, 0.18)",
+      focus: "rgba(49, 92, 255, 0.3)"
+    },
+    dark: {
+      bg: "#0E1116",
+      surface: "#151A22",
+      surface2: "#1B222C",
+      sidebar: "#111720",
+      border: "#293241",
+      borderStrong: "#3A4556",
+      text: "#E8EBF0",
+      textMuted: "#9AA4B2",
+      primary: "#7AA2FF",
+      primaryHover: "#A8C1FF",
+      primarySoft: "#1E335F",
+      onPrimary: "#0E1116",
+      danger: "#F87171",
+      warning: "#FBBF24",
+      success: "#7DD3A8",
+      codeText: "#A8C1FF",
+      toastBg: "#EEF2FF",
+      shadow: "rgba(0, 0, 0, 0.42)",
+      focus: "rgba(122, 162, 255, 0.36)"
+    },
+    cartoon: {
+      bg: "#FFF7E8",
+      surface: "#FFFFFF",
+      surface2: "#FFEBC7",
+      sidebar: "#FFE5B4",
+      border: "#F3C98B",
+      borderStrong: "#E7A94F",
+      text: "#2D2433",
+      textMuted: "#7A6472",
+      primary: "#FF7A59",
+      primaryHover: "#F05D3B",
+      primarySoft: "#FFE0D7",
+      onPrimary: "#2D2433",
+      danger: "#FF5C8A",
+      warning: "#FFD166",
+      success: "#6BCB77",
+      codeText: "#B64D35",
+      toastBg: "#2D2433",
+      shadow: "rgba(92, 58, 31, 0.18)",
+      focus: "rgba(255, 122, 89, 0.34)"
+    }
+  };
 
   let captureActive = false;
   let inspectorActive = false;
   let selectedElement: HTMLElement | null = null;
   let hoveredElement: HTMLElement | null = null;
   let currentChange: StyleChange | null = null;
-  let sessionSettings: any = {};
+  let sessionSettings: PanelSettings = {};
   let overlayHost: HTMLDivElement | null = null;
   let shadow: ShadowRoot | null = null;
   let highlighter: HTMLDivElement | null = null;
@@ -168,6 +298,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   let performanceObserver: PerformanceObserver | null = null;
   let performanceSnapshotSent = false;
   let styleEditorPosition: FloatingPosition | null = null;
+  let imageReplaceInput: HTMLInputElement | null = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void handleRuntimeMessage(message).then(sendResponse);
@@ -214,7 +345,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     (event) => {
       if (isOverlayEvent(event)) return;
       if (captureActive) {
-        const target = event.target instanceof HTMLElement ? event.target : null;
+        const target = resolveInspectableTarget(event.target);
         if (target) {
           sendDiagnosticEvent({
             type: "user-click",
@@ -231,7 +362,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       if (inspectorActive) {
         event.preventDefault();
         event.stopPropagation();
-        const target = event.target instanceof HTMLElement ? event.target : null;
+        const target = resolveInspectableTarget(event.target);
         if (target && !isOverlayNode(target)) {
           selectElement(target);
         }
@@ -245,7 +376,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     (event) => {
       if (inlineTextEditState) return;
       if (isOverlayEvent(event)) return;
-      const target = event.target instanceof HTMLElement ? event.target : null;
+      const target = resolveInspectableTarget(event.target);
       if (!target || isOverlayNode(target)) return;
       if (!inspectorActive && (!selectedElement || (target !== selectedElement && !selectedElement.contains(target)))) return;
       event.preventDefault();
@@ -262,7 +393,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     "mousemove",
     (event) => {
       if (!inspectorActive || isOverlayEvent(event)) return;
-      const target = event.target instanceof HTMLElement ? event.target : null;
+      const target = resolveInspectableTarget(event.target);
       if (!target || isOverlayNode(target)) return;
       hoveredElement = target;
       updateHighlighter(target);
@@ -280,8 +411,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   async function handleRuntimeMessage(message: any): Promise<any> {
     if (message?.type === "devlite-start-capture") {
       captureActive = true;
-      sessionSettings = message.settings ?? {};
+      sessionSettings = mergePanelSettings(message.settings ?? {});
       uiLocale = normalizeLocale(sessionSettings.locale);
+      applyOverlayTheme();
       sendRuntime({ type: "page-context", page: getPageContext() });
       window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
       startPerformanceMonitor();
@@ -317,7 +449,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   async function loadUiLocale(): Promise<void> {
     const response = await sendRuntime({ type: "get-settings" });
     if (!response?.ok) return;
+    sessionSettings = mergePanelSettings(response.settings ?? {});
     uiLocale = normalizeContentLocale(response.settings?.locale);
+    applyOverlayTheme();
     syncLauncherLabels();
     if (panelOpen) renderPanel();
     if (styleEditor && !styleEditor.hidden) renderStyleEditor();
@@ -374,6 +508,10 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     styleEditor = document.createElement("div");
     styleEditor.className = "style-editor-popover";
     styleEditor.hidden = true;
+    imageReplaceInput = document.createElement("input");
+    imageReplaceInput.type = "file";
+    imageReplaceInput.accept = "image/*,.svg";
+    imageReplaceInput.hidden = true;
     launcherDock = document.createElement("div");
     launcherDock.className = "devlite-dock";
     launcherDock.innerHTML = `
@@ -390,8 +528,10 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     panel = document.createElement("div");
     panel.className = "devlite-panel";
     panel.hidden = true;
-    shadow.append(style, highlighter, launcherDock, styleEditor, panel);
+    shadow.append(style, highlighter, launcherDock, styleEditor, imageReplaceInput, panel);
+    bindImageReplaceInput();
     document.documentElement.appendChild(overlayHost);
+    applyOverlayTheme();
     applyLauncherPosition();
   }
 
@@ -501,10 +641,8 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     const diagnosticCount = getProblemEvents().length;
     const networkCount = getNetworkEvents().length;
     const performanceCount = getPerformanceInsights().issues.length;
-    const tabTitle =
-      activePanelTab === "element" ? t("editLog") : activePanelTab === "diagnostics" ? t("diagnostics") : activePanelTab === "network" ? t("data") : t("performance");
-    const tabBody =
-      activePanelTab === "element" ? renderElementTab() : activePanelTab === "diagnostics" ? renderDiagnosticsTab() : activePanelTab === "network" ? renderNetworkTab() : renderPerformanceTab();
+    const tabTitle = panelTabTitle();
+    const tabBody = renderActivePanelTab();
 
     panel.innerHTML = `
       <div class="panel-shell">
@@ -525,7 +663,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
           <div class="sidebar-spacer"></div>
           <div class="sidebar-tools">
             <button data-action="toggle-locale" class="locale-button" title="Language" aria-label="Language">${uiLocale === "en" ? "中" : "EN"}</button>
-            <button data-action="options" class="config-button icon-only" title="${t("settings")}" aria-label="${t("settings")}">${panelIcon("settings")}</button>
+            <button data-action="show-settings" class="config-button icon-only ${activePanelTab === "settings" ? "active" : ""}" title="${t("settings")}" aria-label="${t("settings")}">${panelIcon("settings")}</button>
           </div>
         </aside>
         <section class="panel-main">
@@ -544,6 +682,22 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     `;
     bindPanelEvents();
     applyPanelPosition();
+  }
+
+  function panelTabTitle(): string {
+    if (activePanelTab === "element") return t("editLog");
+    if (activePanelTab === "diagnostics") return t("diagnostics");
+    if (activePanelTab === "network") return t("data");
+    if (activePanelTab === "performance") return t("performance");
+    return t("settings");
+  }
+
+  function renderActivePanelTab(): string {
+    if (activePanelTab === "element") return renderElementTab();
+    if (activePanelTab === "diagnostics") return renderDiagnosticsTab();
+    if (activePanelTab === "network") return renderNetworkTab();
+    if (activePanelTab === "performance") return renderPerformanceTab();
+    return renderSettingsTab();
   }
 
   function navButton(tab: OverlayTab, label: string, count: number): string {
@@ -568,6 +722,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       const count = getPerformanceInsights().issues.length;
       return count > 0 ? (uiLocale === "en" ? `${count} performance risks` : `${count} 个性能风险`) : t("detectingPerformance");
     }
+    if (activePanelTab === "settings") {
+      return t("settingsPanelMeta");
+    }
     const count = getNetworkEvents().length;
     return count > 0 ? (uiLocale === "en" ? `Latest ${Math.min(count, 20)} requests` : `最近 ${Math.min(count, 20)} 条请求`) : t("summarizingNetwork");
   }
@@ -585,6 +742,68 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
           ? `<div class="empty">${t("noEditRecords")}</div>`
           : `<div class="style-record-list">${records.map((change, index) => renderStyleChangeRecord(change, index)).join("")}</div>`
       }
+    `;
+  }
+
+  function renderSettingsTab(): string {
+    const settings = mergedPanelSettings();
+    return `
+      <div class="settings-panel">
+        <section class="settings-card">
+          <h3>${t("appearance")}</h3>
+          <div class="theme-grid" role="radiogroup" aria-label="${t("theme")}">
+            ${panelThemeOption("claude", t("themeClaude"), settings.uiTheme)}
+            ${panelThemeOption("saas", t("themeSaas"), settings.uiTheme)}
+            ${panelThemeOption("dark", t("themeDark"), settings.uiTheme)}
+            ${panelThemeOption("cartoon", t("themeCartoon"), settings.uiTheme)}
+          </div>
+        </section>
+        <section class="settings-card">
+          <h3>${t("diagnosticSettings")}</h3>
+          <div class="settings-fields">
+            <label class="field">
+              <span>${t("language")}</span>
+              <select data-setting="locale">
+                <option value="zh" ${settings.locale === "zh" ? "selected" : ""}>中文</option>
+                <option value="en" ${settings.locale === "en" ? "selected" : ""}>English</option>
+              </select>
+            </label>
+            <label class="inline setting-inline">
+              <input data-setting="collectResponseBody" type="checkbox" ${settings.collectResponseBody ? "checked" : ""} />
+              <span>${t("collectResponseBody")}</span>
+            </label>
+            <label class="field">
+              <span>${t("responseMaxLength")}</span>
+              <input data-setting="maxResponseLength" type="number" min="256" max="10000" step="256" value="${settings.maxResponseLength}" />
+            </label>
+            <label class="field">
+              <span>${t("slowThreshold")}</span>
+              <input data-setting="slowRequestThreshold" type="number" min="300" max="20000" step="100" value="${settings.slowRequestThreshold}" />
+            </label>
+            <label class="field full">
+              <span>${t("extraRedaction")}</span>
+              <textarea data-setting="extraRedactionKeys">${escapeHtml(settings.extraRedactionKeys.join("\n"))}</textarea>
+            </label>
+          </div>
+        </section>
+        <div class="settings-actions">
+          <button data-action="save-panel-settings" class="primary">${t("saveSettings")}</button>
+          <button data-action="reset-panel-settings">${t("resetDefaults")}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function panelThemeOption(theme: UiTheme, label: string, current: UiTheme): string {
+    const tokens = PANEL_THEMES[theme];
+    return `
+      <label class="theme-option ${theme === current ? "selected" : ""}">
+        <input type="radio" name="uiTheme" value="${theme}" ${theme === current ? "checked" : ""} />
+        <span class="theme-swatch" style="--swatch-bg:${tokens.bg};--swatch-surface:${tokens.surface};--swatch-primary:${tokens.primary};--swatch-border:${tokens.border};">
+          <i></i><b></b>
+        </span>
+        <span>${label}</span>
+      </label>
     `;
   }
 
@@ -615,13 +834,16 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   }
 
   function hasRecordedChange(change: StyleChange): boolean {
-    return Object.keys(change.after).length > 0 || change.textAfter !== undefined || change.htmlAfter !== undefined;
+    return Object.keys(change.after).length > 0 || change.textAfter !== undefined || change.htmlAfter !== undefined || change.domAfter !== undefined;
   }
 
   function summarizeStyleChange(change: StyleChange): string {
     const parts = Object.keys(change.after).map((prop) => stylePropLabel(prop));
     if (change.textAfter !== undefined || change.htmlAfter !== undefined) {
       parts.unshift(t("textContent"));
+    }
+    if (change.domAfter !== undefined) {
+      parts.unshift(change.domAction || t("elementDom"));
     }
     return parts.length > 0 ? parts.join(uiLocale === "en" ? ", " : "、") : t("selectedNoEdits");
   }
@@ -706,6 +928,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         <div class="rows">${detailRows}</div>
       </details>
       <div class="style-editor-actions">
+        <button type="button" data-style-action="copy-element">${t("copyElement")}</button>
+        <button type="button" data-style-action="replace-image">${t("replaceImage")}</button>
+        <button type="button" data-style-action="replace-icon">${t("replaceIcon")}</button>
         ${canEditTextContent(selectedElement) ? `<button type="button" data-style-action="text">${t("editText")}</button>` : ""}
         <button type="button" data-style-action="select">${t("selectAnother")}</button>
         <button type="button" data-style-action="undo">${t("undo")}</button>
@@ -732,13 +957,25 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     });
 
     styleEditor.querySelectorAll<HTMLButtonElement>("[data-style-action]").forEach((button) => {
-      button.addEventListener("click", (event) => {
+      button.addEventListener("click", async (event) => {
         event.preventDefault();
         event.stopPropagation();
         const action = button.dataset.styleAction;
         if (action === "close") {
           hideStyleEditor();
           hideHighlighter();
+          return;
+        }
+        if (action === "copy-element") {
+          await copySelectedElement();
+          return;
+        }
+        if (action === "replace-image") {
+          startImageReplacement();
+          return;
+        }
+        if (action === "replace-icon") {
+          replaceSelectedIcon();
           return;
         }
         if (action === "text") {
@@ -754,6 +991,148 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         }
       });
     });
+  }
+
+  function bindImageReplaceInput(): void {
+    if (!imageReplaceInput) return;
+    imageReplaceInput.addEventListener("change", () => {
+      const file = imageReplaceInput?.files?.[0];
+      if (imageReplaceInput) imageReplaceInput.value = "";
+      if (!file) return;
+      const reader = new FileReader();
+      reader.addEventListener("load", () => {
+        const dataUrl = typeof reader.result === "string" ? reader.result : "";
+        if (!dataUrl) {
+          toast(t("replaceImageFailed"));
+          return;
+        }
+        replaceSelectedImage(dataUrl, `${file.name} / ${file.type || "image"} / ${formatBytes(file.size)}`);
+      });
+      reader.addEventListener("error", () => toast(t("replaceImageFailed")));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function copySelectedElement(): Promise<void> {
+    if (!selectedElement) return;
+    await copyText(selectedElement.outerHTML);
+    toast(t("elementCopied"));
+  }
+
+  function startImageReplacement(): void {
+    if (!selectedElement || !currentChange || !imageReplaceInput) return;
+    imageReplaceInput.click();
+  }
+
+  function replaceSelectedImage(src: string, label = ""): void {
+    if (!selectedElement || !currentChange) return;
+    const element = selectedElement;
+    ensureDomChangeBaseline(element, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"));
+
+    const imageTarget = imageReplacementTarget(element);
+    if (imageTarget instanceof HTMLImageElement) {
+      imageTarget.src = src;
+      imageTarget.removeAttribute("srcset");
+    } else if (imageTarget instanceof HTMLSourceElement) {
+      imageTarget.srcset = src;
+    } else if (imageTarget instanceof SVGImageElement) {
+      imageTarget.setAttribute("href", src);
+      imageTarget.setAttributeNS("http://www.w3.org/1999/xlink", "href", src);
+    } else {
+      const before = getComputedStyle(element).getPropertyValue("background-image");
+      if (currentChange.before["background-image"] === undefined) {
+        currentChange.before["background-image"] = before;
+      }
+      element.style.setProperty("background-image", `url("${cssStringEscape(src)}")`);
+      currentChange.after["background-image"] = src.startsWith("data:image/") ? 'url("[inline image data]")' : `url("${cssStringEscape(src)}")`;
+      currentChange.domAction = label ? `${t("replaceImage")}: ${label}` : t("replaceImage");
+    }
+
+    recordDomAfter(element);
+    updateHighlighter(element);
+    updateStyleEditorPosition();
+    if (panelOpen) schedulePanelRender();
+    toast(t("imageReplaced"));
+  }
+
+  function replaceSelectedIcon(): void {
+    if (!selectedElement || !currentChange) return;
+    const value = window.prompt(t("replaceIconPrompt"), "");
+    const next = value?.trim();
+    if (!next) {
+      toast(t("iconReplaceEmpty"));
+      return;
+    }
+
+    const element = selectedElement;
+    ensureDomChangeBaseline(element, t("replaceIcon"));
+    const svg = parseSvgMarkup(next);
+    if (svg) {
+      const existingSvg = element.querySelector("svg");
+      if (existingSvg) {
+        existingSvg.replaceWith(svg);
+      } else {
+        element.innerHTML = "";
+        element.appendChild(svg);
+      }
+    } else if (looksLikeImageUrl(next)) {
+      const img = element.querySelector("img") ?? document.createElement("img");
+      img.src = next;
+      img.alt = "";
+      img.style.cssText = "width:1em;height:1em;object-fit:contain;display:inline-block;vertical-align:-0.125em;";
+      if (!img.parentElement) {
+        element.innerHTML = "";
+        element.appendChild(img);
+      }
+    } else {
+      element.textContent = next;
+    }
+
+    recordDomAfter(element);
+    updateHighlighter(element);
+    updateStyleEditorPosition();
+    if (panelOpen) schedulePanelRender();
+    toast(t("iconReplaced"));
+  }
+
+  function imageReplacementTarget(element: HTMLElement): HTMLImageElement | HTMLSourceElement | SVGImageElement | null {
+    if (element instanceof HTMLImageElement || element instanceof HTMLSourceElement) return element;
+    return element.querySelector("img, source, image") as HTMLImageElement | HTMLSourceElement | SVGImageElement | null;
+  }
+
+  function parseSvgMarkup(value: string): SVGSVGElement | null {
+    if (!/^<svg[\s>]/i.test(value)) return null;
+    const parsed = new DOMParser().parseFromString(value, "image/svg+xml");
+    const svg = parsed.documentElement;
+    if (!(svg instanceof SVGSVGElement) || svg.tagName.toLowerCase() !== "svg") return null;
+    svg.querySelectorAll("script, foreignObject").forEach((node) => node.remove());
+    return document.importNode(svg, true);
+  }
+
+  function looksLikeImageUrl(value: string): boolean {
+    return /^(https?:|data:image\/|blob:|\/|\.\/|\.\.\/)/i.test(value) || /\.(svg|png|jpe?g|gif|webp|avif)(\?.*)?$/i.test(value);
+  }
+
+  function ensureDomChangeBaseline(element: HTMLElement, action: string): void {
+    if (!currentChange) return;
+    if (currentChange.domBefore === undefined) {
+      currentChange.domBefore = snapshotElementHtml(element, false);
+    }
+    currentChange.domAction = action;
+  }
+
+  function recordDomAfter(element: HTMLElement): void {
+    if (!currentChange) return;
+    currentChange.domAfter = snapshotElementHtml(element, true);
+    currentChange.textSnippet = textSnippet(element);
+    currentChange.updatedAt = Date.now();
+    syncCurrentChange();
+  }
+
+  function snapshotElementHtml(element: HTMLElement, redactInlineImages: boolean): string {
+    const html = element.outerHTML;
+    const normalized = redactInlineImages ? html.replace(/data:image\/[^"'\s)>]+/gi, "[inline image data]") : html;
+    return truncateText(normalized, 2400);
   }
 
   function updateStyleEditorPosition(): void {
@@ -1233,9 +1612,19 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       return;
     }
 
-    if (action === "options") {
-      const response = await sendRuntime({ type: "open-options" });
-      if (!response?.ok) toast(response?.error || t("openSettingsFailed"));
+    if (action === "show-settings") {
+      activePanelTab = "settings";
+      renderPanel();
+      return;
+    }
+
+    if (action === "save-panel-settings") {
+      await savePanelSettings(collectPanelSettingsForm());
+      return;
+    }
+
+    if (action === "reset-panel-settings") {
+      await savePanelSettings(DEFAULT_PANEL_SETTINGS, t("settingsReset"));
       return;
     }
 
@@ -1342,12 +1731,80 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       toast(saved?.error || t("saveFailed"));
       return;
     }
-    sessionSettings = saved.settings ?? { ...currentSettings, locale: nextLocale };
+    sessionSettings = mergePanelSettings(saved.settings ?? { ...currentSettings, locale: nextLocale });
     uiLocale = normalizeLocale(sessionSettings.locale);
+    applyOverlayTheme();
     window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
     if (panelOpen) renderPanel();
     if (styleEditor && !styleEditor.hidden) renderStyleEditor();
     toast(uiLocale === "en" ? t("switchedEn") : t("switchedZh"));
+  }
+
+  function collectPanelSettingsForm(): PanelSettings {
+    const current = mergedPanelSettings();
+    const locale = normalizeLocale(panel?.querySelector<HTMLSelectElement>('[data-setting="locale"]')?.value ?? current.locale);
+    const uiTheme = normalizeTheme(panel?.querySelector<HTMLInputElement>('input[name="uiTheme"]:checked')?.value ?? current.uiTheme);
+    const collectResponseBody = panel?.querySelector<HTMLInputElement>('[data-setting="collectResponseBody"]')?.checked ?? false;
+    const maxResponseLength = Number(panel?.querySelector<HTMLInputElement>('[data-setting="maxResponseLength"]')?.value || current.maxResponseLength);
+    const slowRequestThreshold = Number(panel?.querySelector<HTMLInputElement>('[data-setting="slowRequestThreshold"]')?.value || current.slowRequestThreshold);
+    const extraRedactionKeys = (panel?.querySelector<HTMLTextAreaElement>('[data-setting="extraRedactionKeys"]')?.value ?? "")
+      .split(/\n+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    return {
+      ...current,
+      locale,
+      uiTheme,
+      collectResponseBody,
+      maxResponseLength,
+      slowRequestThreshold,
+      extraRedactionKeys
+    };
+  }
+
+  async function savePanelSettings(next: PanelSettings, successMessage = t("settingsSaved")): Promise<void> {
+    const response = await sendRuntime({ type: "save-settings", settings: next });
+    if (!response?.ok) {
+      toast(response?.error || t("saveFailed"));
+      return;
+    }
+    sessionSettings = response.settings ?? mergePanelSettings(next);
+    uiLocale = normalizeLocale(sessionSettings.locale);
+    applyOverlayTheme();
+    window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
+    syncLauncherLabels();
+    if (panelOpen) renderPanel();
+    if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+    toast(successMessage);
+  }
+
+  function mergedPanelSettings(): Required<PanelSettings> {
+    return mergePanelSettings(sessionSettings);
+  }
+
+  function mergePanelSettings(input?: PanelSettings): Required<PanelSettings> {
+    return {
+      locale: normalizeLocale(input?.locale ?? DEFAULT_PANEL_SETTINGS.locale),
+      uiTheme: normalizeTheme(input?.uiTheme ?? DEFAULT_PANEL_SETTINGS.uiTheme),
+      collectResponseBody: input?.collectResponseBody ?? DEFAULT_PANEL_SETTINGS.collectResponseBody,
+      maxResponseLength: input?.maxResponseLength ?? DEFAULT_PANEL_SETTINGS.maxResponseLength,
+      slowRequestThreshold: input?.slowRequestThreshold ?? DEFAULT_PANEL_SETTINGS.slowRequestThreshold,
+      retainHours: input?.retainHours ?? DEFAULT_PANEL_SETTINGS.retainHours,
+      extraRedactionKeys: input?.extraRedactionKeys ?? DEFAULT_PANEL_SETTINGS.extraRedactionKeys
+    };
+  }
+
+  function normalizeTheme(value: unknown): UiTheme {
+    return value === "saas" || value === "dark" || value === "cartoon" ? value : "claude";
+  }
+
+  function applyOverlayTheme(): void {
+    if (!overlayHost) return;
+    const theme = PANEL_THEMES[normalizeTheme(sessionSettings.uiTheme)];
+    Object.entries(theme).forEach(([key, value]) => {
+      overlayHost?.style.setProperty(`--dl-${key}`, value);
+    });
   }
 
   function applyStyle(prop: string, value: string): void {
@@ -1476,6 +1933,16 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function undoCurrentChange(): void {
     if (!selectedElement || !currentChange) return;
+    if (currentChange.domBefore !== undefined) {
+      selectedElement.outerHTML = currentChange.domBefore;
+      sendRuntime({ type: "style-change-delete", id: currentChange.id });
+      currentChange = null;
+      selectedElement = null;
+      hideHighlighter();
+      hideStyleEditor();
+      renderPanel();
+      return;
+    }
     for (const prop of Object.keys(currentChange.after)) {
       selectedElement.style.setProperty(prop, currentChange.before[prop] ?? "");
     }
@@ -1524,7 +1991,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         toast(response?.error || t("startCaptureFailed"));
         return;
       }
-      sessionSettings = response.settings ?? {};
+      sessionSettings = mergePanelSettings(response.settings ?? {});
       uiLocale = normalizeLocale(sessionSettings.locale);
       sessionSnapshot = response.session ?? null;
       captureActive = true;
@@ -1544,7 +2011,8 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     if (sessionSettings.collectResponseBody) return;
     const response = await sendRuntime({ type: "enable-tab-response-body" });
     if (response?.ok) {
-      sessionSettings = response.settings ?? { ...sessionSettings, collectResponseBody: true };
+      sessionSettings = mergePanelSettings(response.settings ?? { ...sessionSettings, collectResponseBody: true });
+      applyOverlayTheme();
       window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
       if (panelOpen) schedulePanelRender();
       if (showToast) toast(t("responseBodyEnabled"));
@@ -1556,8 +2024,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   async function refreshSessionSnapshot(): Promise<void> {
     const response = await sendRuntime({ type: "get-tab-session" });
     if (!response?.ok) return;
-    sessionSettings = response.settings ?? sessionSettings;
+    sessionSettings = mergePanelSettings(response.settings ?? sessionSettings);
     uiLocale = normalizeLocale(sessionSettings.locale);
+    applyOverlayTheme();
     sessionSnapshot = response.session ?? null;
     mergeSessionEvents(sessionSnapshot?.events ?? []);
   }
@@ -2148,6 +2617,15 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     `;
   }
 
+  function resolveInspectableTarget(target: EventTarget | null): HTMLElement | null {
+    if (target instanceof HTMLElement) return target;
+    if (target instanceof SVGElement) {
+      const svg = target.closest("svg");
+      if (svg?.parentElement instanceof HTMLElement) return svg.parentElement;
+    }
+    return null;
+  }
+
   function buildSelector(element: HTMLElement): string {
     if (element.id && /^[A-Za-z][\w-]*$/.test(element.id)) {
       return `#${CSS.escape(element.id)}`;
@@ -2390,6 +2868,10 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
 
+  function cssStringEscape(value: string): string {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n|\r/g, "");
+  }
+
   function escapeHtml(value: string): string {
     return value.replace(/[&<>"']/g, (char) => {
       const map: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -2623,20 +3105,41 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function overlayStyles(): string {
     return `
-      :host { all: initial; }
+      :host {
+        all: initial;
+        --dl-bg: #FAF9F5;
+        --dl-surface: #FFFFFF;
+        --dl-surface2: #F4F3EE;
+        --dl-sidebar: #F1EFE7;
+        --dl-border: #E8E6DC;
+        --dl-borderStrong: #D4D0C4;
+        --dl-text: #141413;
+        --dl-textMuted: #6F6A60;
+        --dl-primary: #D97757;
+        --dl-primaryHover: #C15F3C;
+        --dl-primarySoft: #F3DED4;
+        --dl-onPrimary: #FFFFFF;
+        --dl-danger: #B94A48;
+        --dl-warning: #B8792F;
+        --dl-success: #788C5D;
+        --dl-codeText: #7B402F;
+        --dl-toastBg: #141413;
+        --dl-shadow: rgba(32, 28, 22, 0.18);
+        --dl-focus: rgba(217, 119, 87, 0.32);
+      }
       .devlite-highlighter {
         position: fixed;
         top: 0;
         left: 0;
         display: none;
         box-sizing: border-box;
-        border: 2px solid #1f7a5c;
-        background: rgba(31, 122, 92, 0.08);
-        color: #0f2f25;
+        border: 2px solid var(--dl-primary);
+        background: color-mix(in srgb, var(--dl-primary) 12%, transparent);
+        color: var(--dl-primary);
         font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
         padding: 0;
         pointer-events: none;
-        box-shadow: 0 0 0 1px rgba(255,255,255,.9), 0 10px 30px rgba(15,47,37,.18);
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--dl-surface) 88%, transparent), 0 10px 30px var(--dl-shadow);
       }
       .devlite-panel {
         position: fixed;
@@ -2652,11 +3155,11 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         resize: both;
         pointer-events: auto;
         box-sizing: border-box;
-        border: 1px solid #d6d8d2;
+        border: 1px solid var(--dl-borderStrong);
         border-radius: 8px;
-        background: #fbfbf8;
-        color: #161815;
-        box-shadow: 0 24px 80px rgba(22,24,21,.22);
+        background: var(--dl-bg);
+        color: var(--dl-text);
+        box-shadow: 0 24px 80px var(--dl-shadow);
         font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .devlite-panel[hidden] { display: none; }
@@ -2669,11 +3172,11 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         overflow: auto;
         pointer-events: auto;
         box-sizing: border-box;
-        border: 1px solid #d6d8d2;
+        border: 1px solid var(--dl-borderStrong);
         border-radius: 8px;
-        background: #fbfbf8;
-        color: #161815;
-        box-shadow: 0 18px 58px rgba(22,24,21,.22);
+        background: var(--dl-bg);
+        color: var(--dl-text);
+        box-shadow: 0 18px 58px var(--dl-shadow);
         font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .style-editor-popover[hidden] { display: none; }
@@ -2687,8 +3190,8 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         justify-content: space-between;
         gap: 10px;
         padding: 10px;
-        border-bottom: 1px solid #e4e5df;
-        background: #fbfbf8;
+        border-bottom: 1px solid var(--dl-border);
+        background: var(--dl-bg);
         cursor: move;
         touch-action: none;
         user-select: none;
@@ -2707,12 +3210,12 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         grid-template-columns: 58px minmax(0, 1fr);
       }
       .style-editor-details {
-        border-top: 1px solid #eceee7;
+        border-top: 1px solid var(--dl-border);
       }
       .style-editor-details summary {
         padding: 9px 10px;
         cursor: pointer;
-        color: #27483b;
+        color: var(--dl-codeText);
         font-weight: 600;
         user-select: none;
       }
@@ -2724,7 +3227,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
         gap: 8px;
         padding: 10px;
-        border-top: 1px solid #eceee7;
+        border-top: 1px solid var(--dl-border);
       }
       .devlite-dock {
         position: fixed;
@@ -2761,10 +3264,10 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         height: 38px;
         padding: 0;
         border-radius: 50%;
-        color: #163d31;
+        color: var(--dl-primary);
         opacity: 0;
         pointer-events: none;
-        box-shadow: 0 10px 28px rgba(22,24,21,.18);
+        box-shadow: 0 10px 28px var(--dl-shadow);
         transform: translate(18px, 0) scale(.86);
         transition: opacity 170ms ease, transform 170ms ease, background 160ms ease, border-color 160ms ease, color 160ms ease;
       }
@@ -2801,19 +3304,19 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         transform: translateY(-50%);
         pointer-events: auto;
         box-sizing: border-box;
-        border: 1px solid #cdd4ca;
+        border: 1px solid var(--dl-borderStrong);
         border-right: 0;
         border-radius: 8px 0 0 8px;
-        background: #fbfbf8;
-        color: #163d31;
-        box-shadow: 0 12px 40px rgba(22,24,21,.20);
+        background: var(--dl-bg);
+        color: var(--dl-primary);
+        box-shadow: 0 12px 40px var(--dl-shadow);
         cursor: pointer;
         touch-action: none;
         transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
       }
       .devlite-launcher:hover {
-        border-color: #1f7a5c;
-        background: #f4f8f3;
+        border-color: var(--dl-primary);
+        background: var(--dl-primarySoft);
       }
       .devlite-launcher:active { transform: translateY(-50%) scale(.98); }
       .devlite-launcher img {
@@ -2836,13 +3339,13 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         min-width: 0;
         padding: 12px;
         box-sizing: border-box;
-        background: #f0f2ec;
-        border-right: 1px solid #dfe2d9;
+        background: var(--dl-sidebar);
+        border-right: 1px solid var(--dl-border);
         cursor: move;
       }
       .panel-brand strong {
         display: block;
-        color: #151713;
+        color: var(--dl-text);
         font-size: 14px;
       }
       .panel-brand {
@@ -2859,7 +3362,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       .panel-brand span {
         display: block;
         margin-top: 2px;
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
       }
       .panel-nav {
@@ -2885,16 +3388,21 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         min-width: 20px;
         height: 18px;
         border-radius: 5px;
-        background: #d34836;
+        background: var(--dl-danger);
         color: #fff;
         font-size: 11px;
         line-height: 18px;
         text-align: center;
       }
       .nav-item.active {
-        background: #ffffff;
-        border-color: #cfd6ca;
-        color: #163d31;
+        background: var(--dl-surface);
+        border-color: var(--dl-borderStrong);
+        color: var(--dl-primary);
+      }
+      .config-button.active {
+        border-color: var(--dl-primary);
+        background: var(--dl-primarySoft);
+        color: var(--dl-primary);
       }
       .sidebar-spacer { flex: 1; }
       .sidebar-tools {
@@ -2938,13 +3446,13 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         justify-content: space-between;
         gap: 12px;
         padding: 12px;
-        border-bottom: 1px solid #e4e5df;
+        border-bottom: 1px solid var(--dl-border);
         cursor: move;
         user-select: none;
       }
       .devlite-panel.dragging { user-select: none; }
       .panel-header strong { display:block; font-size: 14px; letter-spacing: 0; }
-      .panel-header span { display:block; color:#676b62; font-size:12px; }
+      .panel-header span { display:block; color:var(--dl-textMuted); font-size:12px; }
       .panel-content {
         min-height: 0;
         overflow: auto;
@@ -2952,8 +3460,8 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       }
       .empty {
         padding: 16px 12px;
-        color:#4b5047;
-        background: #f6f7f3;
+        color:var(--dl-textMuted);
+        background: var(--dl-surface2);
         border-radius: 8px;
       }
       .empty.compact { padding: 12px; }
@@ -2970,9 +3478,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         gap:8px;
         padding:10px;
         margin-bottom: 8px;
-        border:1px solid #e8e9e3;
+        border:1px solid var(--dl-border);
         border-radius: 8px;
-        background: #fff;
+        background: var(--dl-surface);
       }
       .style-record-list {
         display: grid;
@@ -2980,9 +3488,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       }
       .style-record {
         padding: 10px;
-        border: 1px solid #e2e4dc;
+        border: 1px solid var(--dl-border);
         border-radius: 8px;
-        background: #fff;
+        background: var(--dl-surface);
       }
       .style-record-head {
         display: flex;
@@ -2996,11 +3504,11 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        color: #151713;
+        color: var(--dl-text);
       }
       .style-record-head span {
         flex: 0 0 auto;
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
       }
       .style-record code {
@@ -3009,14 +3517,14 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       }
       .style-record p {
         margin: 7px 0 0;
-        color: #333a31;
+        color: var(--dl-text);
       }
       code {
         overflow:hidden;
         text-overflow:ellipsis;
         white-space:nowrap;
         font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-        color:#27483b;
+        color:var(--dl-codeText);
       }
       pre {
         max-height: 132px;
@@ -3024,8 +3532,8 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         margin: 8px 0 0;
         padding: 8px;
         border-radius: 6px;
-        background: #f4f5f1;
-        color: #30352e;
+        background: var(--dl-surface2);
+        color: var(--dl-text);
         font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
         white-space: pre-wrap;
       }
@@ -3036,14 +3544,14 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         align-items:center;
         gap:10px;
       }
-      .row span { color:#4d524a; }
+      .row span { color:var(--dl-textMuted); }
       input, select, textarea {
         min-width:0;
         box-sizing:border-box;
-        border:1px solid #d7d9d1;
+        border:1px solid var(--dl-borderStrong);
         border-radius:6px;
-        background:#fff;
-        color:#151713;
+        background:var(--dl-surface);
+        color:var(--dl-text);
         padding:0 8px;
         font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
       }
@@ -3060,9 +3568,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         gap: 8px;
         padding: 10px;
         margin-bottom: 8px;
-        border: 1px solid #e8e9e3;
+        border: 1px solid var(--dl-border);
         border-radius: 8px;
-        background: #fff;
+        background: var(--dl-surface);
       }
       .text-row {
         display: grid;
@@ -3072,7 +3580,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       }
       .text-row span {
         padding-top: 7px;
-        color:#4d524a;
+        color:var(--dl-textMuted);
       }
       .text-actions {
         display: flex;
@@ -3082,27 +3590,27 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       }
       button {
         height:30px;
-        border:1px solid #cfd2c9;
+        border:1px solid var(--dl-borderStrong);
         border-radius:6px;
-        background:#fff;
-        color:#1f241d;
+        background:var(--dl-surface);
+        color:var(--dl-text);
         padding:0 10px;
         font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         cursor:pointer;
         transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
       }
-      button:hover { border-color:#1f7a5c; color:#124333; }
+      button:hover { border-color:var(--dl-primary); color:var(--dl-primary); }
       button:focus-visible {
-        outline: 2px solid rgba(31,122,92,.32);
+        outline: 2px solid var(--dl-focus);
         outline-offset: 2px;
       }
       button:active { transform: scale(.98); }
       .primary {
-        background:#1f7a5c;
-        border-color:#1f7a5c;
-        color:#fff;
+        background:var(--dl-primary);
+        border-color:var(--dl-primary);
+        color:var(--dl-onPrimary);
       }
-      .primary:hover { color:#fff; background:#185f49; }
+      .primary:hover { color:var(--dl-onPrimary); background:var(--dl-primaryHover); }
       .actions {
         display:grid;
         grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
@@ -3130,15 +3638,15 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         gap: 6px;
       }
       .filter-tabs button.active {
-        border-color: #1f7a5c;
-        background: #f4f8f3;
-        color: #163d31;
+        border-color: var(--dl-primary);
+        background: var(--dl-primarySoft);
+        color: var(--dl-primary);
       }
       .filter-tabs strong {
         min-width: 18px;
         height: 18px;
         border-radius: 5px;
-        background: #d34836;
+        background: var(--dl-danger);
         color: #fff;
         font-size: 11px;
         line-height: 18px;
@@ -3146,9 +3654,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       }
       .issue {
         padding: 10px;
-        border: 1px solid #e2e4dc;
+        border: 1px solid var(--dl-border);
         border-radius: 8px;
-        background: #fff;
+        background: var(--dl-surface);
       }
       details.issue {
         padding: 0;
@@ -3157,10 +3665,10 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         padding-bottom: 10px;
       }
       .issue.error {
-        border-color: rgba(211,72,54,.38);
+        border-color: color-mix(in srgb, var(--dl-danger) 42%, var(--dl-border));
       }
       .issue.warning {
-        border-color: rgba(169,112,34,.38);
+        border-color: color-mix(in srgb, var(--dl-warning) 42%, var(--dl-border));
       }
       .issue-head {
         display: flex;
@@ -3169,12 +3677,12 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         min-width: 0;
       }
       .issue-head strong {
-        color: #151713;
+        color: var(--dl-text);
       }
       .issue-head span {
         flex: 0 0 auto;
         margin-left: auto;
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
       }
       .issue-summary {
@@ -3187,7 +3695,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         user-select: none;
       }
       .issue-summary::marker {
-        color: #697064;
+        color: var(--dl-textMuted);
       }
       .issue-summary span {
         display: grid;
@@ -3201,11 +3709,11 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         white-space: nowrap;
       }
       .issue-summary strong {
-        color: #151713;
+        color: var(--dl-text);
       }
       .issue-summary small,
       .issue-summary em {
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
         font-style: normal;
       }
@@ -3213,15 +3721,15 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         min-width: 24px;
         height: 20px;
         border-radius: 5px;
-        background: #eef1ea;
-        color: #27483b;
+        background: var(--dl-primarySoft);
+        color: var(--dl-primary);
         font-size: 12px;
         line-height: 20px;
         text-align: center;
       }
       .issue p {
         margin: 7px 0 0;
-        color: #333a31;
+        color: var(--dl-text);
         line-height: 1.45;
         overflow-wrap: anywhere;
       }
@@ -3241,10 +3749,10 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         gap: 4px;
         padding: 8px;
         border-radius: 6px;
-        background: #f6f7f3;
+        background: var(--dl-surface2);
       }
       .issue-sample span {
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
       }
       .issue code {
@@ -3259,17 +3767,17 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       .network-summary div {
         padding: 10px;
         border-radius: 8px;
-        background: #f6f7f3;
+        background: var(--dl-surface2);
       }
       .network-summary strong {
         display: block;
-        color: #151713;
+        color: var(--dl-text);
         font-size: 18px;
         line-height: 1.1;
         font-variant-numeric: tabular-nums;
       }
       .network-summary span {
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
       }
       .network-workspace {
@@ -3291,47 +3799,47 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         height: auto;
         padding: 8px;
         text-align: left;
-        border-color: #e2e4dc;
-        background: #fff;
+        border-color: var(--dl-border);
+        background: var(--dl-surface);
       }
       .network-row.selected {
-        border-color: #1f7a5c;
-        background: #f4f8f3;
+        border-color: var(--dl-primary);
+        background: var(--dl-primarySoft);
       }
       .network-method {
-        color: #163d31;
+        color: var(--dl-primary);
         font-weight: 700;
       }
       .network-url {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        color: #151713;
+        color: var(--dl-text);
       }
       .network-status {
         font-variant-numeric: tabular-nums;
-        color: #697064;
+        color: var(--dl-textMuted);
       }
       .network-status.bad,
-      .network-detail-head b.bad { color: #b83426; }
+      .network-detail-head b.bad { color: var(--dl-danger); }
       .network-status.warn,
-      .network-detail-head b.warn { color: #9a691d; }
+      .network-detail-head b.warn { color: var(--dl-warning); }
       .network-status.ok,
-      .network-detail-head b.ok { color: #1f7a5c; }
+      .network-detail-head b.ok { color: var(--dl-success); }
       .network-hint {
         grid-column: 2 / 4;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
       }
       .network-detail {
         min-width: 0;
         padding: 10px;
-        border: 1px solid #e2e4dc;
+        border: 1px solid var(--dl-border);
         border-radius: 8px;
-        background: #fff;
+        background: var(--dl-surface);
       }
       .network-detail-head {
         display: grid;
@@ -3348,7 +3856,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       }
       .network-detail-head span {
         margin-top: 3px;
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
       }
       .detail-tabs {
@@ -3361,9 +3869,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         height: 28px;
       }
       .detail-tabs button.active {
-        border-color: #1f7a5c;
-        background: #f4f8f3;
-        color: #163d31;
+        border-color: var(--dl-primary);
+        background: var(--dl-primarySoft);
+        color: var(--dl-primary);
       }
       .detail-grid {
         display: grid;
@@ -3379,10 +3887,10 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         min-width: 0;
         padding: 8px;
         border-radius: 6px;
-        background: #f6f7f3;
+        background: var(--dl-surface2);
       }
       .detail-row span {
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 11px;
       }
       .detail-row code {
@@ -3399,7 +3907,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         gap: 4px;
         padding: 8px;
         border-radius: 6px;
-        background: #f6f7f3;
+        background: var(--dl-surface2);
       }
       .json-node {
         display: grid;
@@ -3413,7 +3921,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       }
       .json-row > span,
       .json-muted {
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
       }
       .perf-metrics {
@@ -3425,11 +3933,11 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       .perf-metrics div {
         padding: 10px;
         border-radius: 8px;
-        background: #f6f7f3;
+        background: var(--dl-surface2);
       }
       .perf-metrics strong {
         display: block;
-        color: #151713;
+        color: var(--dl-text);
         font-size: 18px;
         line-height: 1.1;
         font-variant-numeric: tabular-nums;
@@ -3437,7 +3945,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       .perf-metrics span,
       .perf-metrics small {
         display: block;
-        color: #697064;
+        color: var(--dl-textMuted);
         font-size: 12px;
       }
       .perf-issues {
@@ -3446,15 +3954,15 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       }
       .perf-issue {
         padding: 10px;
-        border: 1px solid #e2e4dc;
+        border: 1px solid var(--dl-border);
         border-radius: 8px;
-        background: #fff;
+        background: var(--dl-surface);
       }
-      .perf-issue.error { border-color: rgba(211,72,54,.42); }
-      .perf-issue.warning { border-color: rgba(169,112,34,.42); }
+      .perf-issue.error { border-color: color-mix(in srgb, var(--dl-danger) 42%, var(--dl-border)); }
+      .perf-issue.warning { border-color: color-mix(in srgb, var(--dl-warning) 42%, var(--dl-border)); }
       .perf-issue p {
         margin: 7px 0 0;
-        color: #333a31;
+        color: var(--dl-text);
         overflow-wrap: anywhere;
       }
       .perf-evidence {
@@ -3467,21 +3975,124 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         gap: 6px;
         padding: 10px;
         border-radius: 8px;
-        background: #f6f7f3;
+        background: var(--dl-surface2);
       }
       .perf-evidence strong {
-        color: #151713;
+        color: var(--dl-text);
       }
       .perf-evidence code {
         display: block;
         white-space: nowrap;
       }
+      .settings-panel {
+        display: grid;
+        gap: 10px;
+      }
+      .settings-card {
+        display: grid;
+        gap: 10px;
+        padding: 10px;
+        border: 1px solid var(--dl-border);
+        border-radius: 8px;
+        background: var(--dl-surface);
+      }
+      .settings-card h3 {
+        margin: 0;
+        color: var(--dl-text);
+        font-size: 13px;
+      }
+      .theme-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .theme-option {
+        display: grid;
+        grid-template-columns: 44px minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        border: 1px solid var(--dl-border);
+        border-radius: 7px;
+        padding: 7px;
+        cursor: pointer;
+      }
+      .theme-option.selected,
+      .theme-option:has(input:checked) {
+        border-color: var(--dl-primary);
+        background: var(--dl-primarySoft);
+      }
+      .theme-option input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .theme-option > span:last-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--dl-text);
+      }
+      .theme-swatch {
+        display: grid;
+        grid-template-columns: 14px 1fr;
+        gap: 3px;
+        width: 44px;
+        height: 30px;
+        border: 1px solid var(--swatch-border);
+        border-radius: 6px;
+        background: var(--swatch-bg);
+        padding: 4px;
+        box-sizing: border-box;
+      }
+      .theme-swatch i,
+      .theme-swatch b {
+        display: block;
+        border-radius: 3px;
+      }
+      .theme-swatch i {
+        background: var(--swatch-primary);
+      }
+      .theme-swatch b {
+        background: var(--swatch-surface);
+      }
+      .settings-fields {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .settings-fields .full {
+        grid-column: 1 / -1;
+      }
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+      .field span,
+      .setting-inline span {
+        color: var(--dl-textMuted);
+        font-size: 12px;
+      }
+      .setting-inline {
+        align-self: end;
+        min-height: 30px;
+      }
+      .setting-inline input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+      }
+      .settings-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+      }
       .toast {
         position:fixed;
         right:18px;
         bottom:18px;
-        background:#151713;
-        color:#fff;
+        background:var(--dl-toastBg);
+        color:var(--dl-bg);
         border-radius:6px;
         padding:8px 10px;
         pointer-events:none;
@@ -3500,7 +4111,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
           align-items: center;
           overflow: auto;
           border-right: 0;
-          border-bottom: 1px solid #dfe2d9;
+          border-bottom: 1px solid var(--dl-border);
         }
         .panel-brand,
         .sidebar-spacer {
@@ -3526,7 +4137,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
           grid-template-columns: 72px minmax(0, 1fr);
         }
         .actions,
-        .network-summary {
+        .network-summary,
+        .theme-grid,
+        .settings-fields {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
         .network-workspace {
