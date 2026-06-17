@@ -26,7 +26,7 @@ function render(): void {
     <main class="page">
       <header class="hero">
         <div class="hero-brand">
-          <img class="hero-logo" src="/icons/devlite-128.png" alt="" />
+          <img class="hero-logo" src="/icons/devlite-logo.png" alt="" />
           <div>
             <h1>${t("optionsTitle")}</h1>
             <p>${t("optionsSubtitle")}</p>

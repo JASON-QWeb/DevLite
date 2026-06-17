@@ -4,6 +4,7 @@ import { generateExport } from "../shared/exporters";
 import { generateMarkdownReport } from "../shared/report";
 import { sanitizeEvent, sanitizeSession } from "../shared/redaction";
 import { normalizeUiTheme } from "../shared/themes";
+import { sessionStore } from "./sessionStore";
 import type {
   DiagnosticEvent,
   DiagnosticSession,
@@ -13,8 +14,8 @@ import type {
   StyleChange
 } from "../shared/types";
 
-const sessions = new Map<number, DiagnosticSession>();
 const responseBodyCaptureTabs = new Set<number>();
+const MAIN_WORLD_SCRIPT_ID = "devlite-main-world-injected";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(SETTINGS_KEY, (result) => {
@@ -22,6 +23,11 @@ chrome.runtime.onInstalled.addListener(() => {
       chrome.storage.local.set({ [SETTINGS_KEY]: DEFAULT_SETTINGS });
     }
   });
+  void registerMainWorldScript();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void registerMainWorldScript();
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -54,7 +60,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "get-current-session") {
     const tab = await getActiveTab();
-    const session = typeof tab.id === "number" ? sessions.get(tab.id) : undefined;
+    const session = typeof tab.id === "number" ? await sessionStore.get(tab.id) : undefined;
     const settings = typeof tab.id === "number" ? await getTabSettings(tab.id) : await getSettings();
     return { ok: true, session: session ?? null, settings };
   }
@@ -62,7 +68,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "get-tab-session") {
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
-    return { ok: true, session: sessions.get(tabId) ?? null, settings: await getTabSettings(tabId) };
+    return { ok: true, session: (await sessionStore.get(tabId)) ?? null, settings: await getTabSettings(tabId) };
   }
 
   if (type === "ensure-session") {
@@ -70,16 +76,18 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
     const tab = sender.tab;
     if (!tab) return { ok: false, error: "缺少 tab 信息" };
-    const session = sessions.get(tabId) ?? createSession(tabId, message.page ?? createFallbackPageContext(tab));
-    if (message.page) {
-      session.page = {
-        ...session.page,
-        ...(message.page as PageContext),
-        startedAt: session.page.startedAt
-      };
-    }
-    session.updatedAt = Date.now();
-    sessions.set(tabId, session);
+    const session = await sessionStore.update(tabId, (current) => {
+      const next = current ?? createSession(tabId, message.page ?? createFallbackPageContext(tab));
+      if (message.page) {
+        next.page = {
+          ...next.page,
+          ...(message.page as PageContext),
+          startedAt: next.page.startedAt
+        };
+      }
+      next.updatedAt = Date.now();
+      return next;
+    });
     return { ok: true, session };
   }
 
@@ -90,15 +98,17 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     await ensureInjectedScript(tabId);
     const page = message.page ?? (tab ? createFallbackPageContext(tab) : undefined);
     if (!page) return { ok: false, error: "缺少页面信息" };
-    const session = sessions.get(tabId) ?? createSession(tabId, page as PageContext);
-    session.active = true;
-    session.page = {
-      ...session.page,
-      ...(page as PageContext),
-      startedAt: session.page.startedAt
-    };
-    session.updatedAt = Date.now();
-    sessions.set(tabId, session);
+    const session = await sessionStore.update(tabId, (current) => {
+      const next = current ?? createSession(tabId, page as PageContext);
+      next.active = true;
+      next.page = {
+        ...next.page,
+        ...(page as PageContext),
+        startedAt: next.page.startedAt
+      };
+      next.updatedAt = Date.now();
+      return next;
+    });
     return { ok: true, session, settings: await getTabSettings(tabId) };
   }
 
@@ -115,7 +125,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     await ensurePageScripts(tab.id);
     const settings = await getTabSettings(tab.id);
     const session = createSession(tab.id, message.page ?? createFallbackPageContext(tab));
-    sessions.set(tab.id, session);
+    await sessionStore.set(tab.id, session);
     await chrome.tabs.sendMessage(tab.id, { type: "devlite-start-capture", sessionId: session.id, settings });
     return { ok: true, session };
   }
@@ -123,12 +133,13 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "stop-diagnosis") {
     const tab = await getActiveTab();
     if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
-    const session = sessions.get(tab.id);
-    if (session) {
-      session.active = false;
-      session.page.endedAt = Date.now();
-      session.updatedAt = Date.now();
-    }
+    const session = await sessionStore.update(tab.id, (current) => {
+      if (!current) return undefined;
+      current.active = false;
+      current.page.endedAt = Date.now();
+      current.updatedAt = Date.now();
+      return current;
+    });
     await safeSendTabMessage(tab.id, { type: "devlite-stop-capture" });
     return { ok: true, session: session ?? null };
   }
@@ -136,12 +147,11 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "start-inspector") {
     const tab = await getActiveTab();
     if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
-    await ensurePageScripts(tab.id);
-    if (!sessions.has(tab.id)) {
-      sessions.set(tab.id, createSession(tab.id, createFallbackPageContext(tab)));
-    }
-    await chrome.tabs.sendMessage(tab.id, { type: "devlite-start-inspector" });
-    return { ok: true, session: sessions.get(tab.id) ?? null };
+    const tabId = tab.id;
+    await ensurePageScripts(tabId);
+    const session = await sessionStore.update(tabId, (current) => current ?? createSession(tabId, createFallbackPageContext(tab)));
+    await chrome.tabs.sendMessage(tabId, { type: "devlite-start-inspector" });
+    return { ok: true, session: session ?? null };
   }
 
   if (type === "stop-inspector") {
@@ -156,36 +166,49 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
     const settings = await getTabSettings(tabId);
     const event = sanitizeEvent(message.event as DiagnosticEvent, settings);
-    upsertEvent(tabId, event);
+    await upsertEvent(tabId, event);
+    return { ok: true };
+  }
+
+  if (type === "diagnostic-events") {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    const settings = await getTabSettings(tabId);
+    const events = Array.isArray(message.events) ? message.events : [];
+    await upsertEvents(
+      tabId,
+      events.map((event: unknown) => sanitizeEvent(event as DiagnosticEvent, settings))
+    );
     return { ok: true };
   }
 
   if (type === "page-context") {
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
-    const session = sessions.get(tabId);
-    if (session) {
+    await sessionStore.update(tabId, (session) => {
+      if (!session) return undefined;
       session.page = {
         ...session.page,
         ...(message.page as PageContext),
         startedAt: session.page.startedAt
       };
       session.updatedAt = Date.now();
-    }
+      return session;
+    });
     return { ok: true };
   }
 
   if (type === "style-change-upsert") {
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
-    upsertStyleChange(tabId, message.change as StyleChange);
+    await upsertStyleChange(tabId, message.change as StyleChange);
     return { ok: true };
   }
 
   if (type === "style-change-delete") {
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
-    deleteStyleChange(tabId, message.id);
+    await deleteStyleChange(tabId, message.id);
     return { ok: true };
   }
 
@@ -247,47 +270,60 @@ function createFallbackPageContext(tab: chrome.tabs.Tab): PageContext {
   };
 }
 
-function upsertEvent(tabId: number, event: DiagnosticEvent): void {
-  const session = sessions.get(tabId);
-  if (!session) return;
-  session.events.push(event);
-  if (session.events.length > 500) {
-    session.events.splice(0, session.events.length - 500);
-  }
-  session.updatedAt = Date.now();
+async function upsertEvent(tabId: number, event: DiagnosticEvent): Promise<void> {
+  await upsertEvents(tabId, [event]);
 }
 
-function upsertStyleChange(tabId: number, change: StyleChange): void {
-  const session = sessions.get(tabId) ?? createSession(tabId, {
-    url: "",
-    title: "",
-    userAgent: "unknown",
-    language: "unknown",
-    viewport: {
-      ...change.viewport,
-      devicePixelRatio: 1
-    },
-    startedAt: Date.now()
+async function upsertEvents(tabId: number, events: DiagnosticEvent[]): Promise<void> {
+  if (events.length === 0) return;
+  await sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    session.events.push(...events);
+    if (session.events.length > 500) {
+      session.events.splice(0, session.events.length - 500);
+    }
+    session.updatedAt = Date.now();
+    return session;
   });
-  const index = session.styleChanges.findIndex((item) => item.id === change.id);
-  if (index >= 0) {
-    session.styleChanges[index] = change;
-  } else {
-    session.styleChanges.push(change);
-  }
-  session.updatedAt = Date.now();
-  sessions.set(tabId, session);
 }
 
-function deleteStyleChange(tabId: number, id: string): void {
-  const session = sessions.get(tabId);
-  if (!session) return;
-  session.styleChanges = session.styleChanges.filter((change) => change.id !== id);
-  session.updatedAt = Date.now();
+async function upsertStyleChange(tabId: number, change: StyleChange): Promise<void> {
+  await sessionStore.update(tabId, (current) => {
+    const session =
+      current ??
+      createSession(tabId, {
+        url: "",
+        title: "",
+        userAgent: "unknown",
+        language: "unknown",
+        viewport: {
+          ...change.viewport,
+          devicePixelRatio: 1
+        },
+        startedAt: Date.now()
+      });
+    const index = session.styleChanges.findIndex((item) => item.id === change.id);
+    if (index >= 0) {
+      session.styleChanges[index] = change;
+    } else {
+      session.styleChanges.push(change);
+    }
+    session.updatedAt = Date.now();
+    return session;
+  });
+}
+
+async function deleteStyleChange(tabId: number, id: string): Promise<void> {
+  await sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    session.styleChanges = session.styleChanges.filter((change) => change.id !== id);
+    session.updatedAt = Date.now();
+    return session;
+  });
 }
 
 async function requireSession(tabId: number): Promise<DiagnosticSession> {
-  const session = sessions.get(tabId);
+  const session = await sessionStore.get(tabId);
   if (!session) {
     throw new Error("当前页面还没有诊断数据，请先开始诊断或使用元素选择器。");
   }
@@ -323,10 +359,29 @@ async function openPagePanel(tab: chrome.tabs.Tab): Promise<void> {
   if (typeof tab.id !== "number") return;
   if (!isInjectableUrl(tab.url)) return;
   await ensurePageScripts(tab.id);
-  if (!sessions.has(tab.id)) {
-    sessions.set(tab.id, createSession(tab.id, createFallbackPageContext(tab)));
+  if (!(await sessionStore.has(tab.id))) {
+    await sessionStore.set(tab.id, createSession(tab.id, createFallbackPageContext(tab)));
   }
   await chrome.tabs.sendMessage(tab.id, { type: "devlite-open-panel" });
+}
+
+async function registerMainWorldScript(): Promise<void> {
+  if (!chrome.scripting.registerContentScripts) return;
+  try {
+    const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [MAIN_WORLD_SCRIPT_ID] });
+    if (existing.length > 0) return;
+    await chrome.scripting.registerContentScripts([
+      {
+        id: MAIN_WORLD_SCRIPT_ID,
+        matches: ["http://*/*", "https://*/*"],
+        js: ["injected.js"],
+        runAt: "document_start",
+        world: "MAIN"
+      }
+    ]);
+  } catch (error) {
+    console.warn("[DevLite] register MAIN world script failed", error);
+  }
 }
 
 function isInjectableUrl(url = ""): boolean {

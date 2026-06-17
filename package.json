@@ -6,7 +6,7 @@
   "description": "A lightweight inspection-mode Chrome extension for live page edits, data lookup, diagnostics, and repair prompt export.",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/build-classic-scripts.mjs",
     "smoke": "npm run build && node scripts/smoke.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "zip": "npm run build && cd dist && zip -r ../devlite.zip ."
@@ -14,6 +14,7 @@
   "devDependencies": {
     "@types/chrome": "^0.0.306",
     "@types/node": "^22.15.29",
+    "esbuild": "^0.25.12",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"
   }

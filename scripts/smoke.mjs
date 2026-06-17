@@ -54,10 +54,10 @@ for (const permission of ["debugger", "webRequest", "tabs", "cookies"]) {
 const contentJs = await readFile(join(dist, "content.js"), "utf8");
 const injectedJs = await readFile(join(dist, "injected.js"), "utf8");
 
-assert(!/^\s*import\s/m.test(contentJs), "content.js must not contain top-level import");
-assert(!/^\s*export\s/m.test(contentJs), "content.js must not contain top-level export");
-assert(!/^\s*import\s/m.test(injectedJs), "injected.js must not contain top-level import");
-assert(!/^\s*export\s/m.test(injectedJs), "injected.js must not contain top-level export");
+assert(!/^\s*import\b/m.test(contentJs), "content.js must not contain top-level import");
+assert(!/^\s*export\b/m.test(contentJs), "content.js must not contain top-level export");
+assert(!/^\s*import\b/m.test(injectedJs), "injected.js must not contain top-level import");
+assert(!/^\s*export\b/m.test(injectedJs), "injected.js must not contain top-level export");
 
 execFileSync(process.execPath, ["--check", join(dist, "content.js")], { stdio: "inherit" });
 execFileSync(process.execPath, ["--check", join(dist, "injected.js")], { stdio: "inherit" });

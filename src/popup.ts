@@ -55,7 +55,7 @@ function render(): void {
     <main class="app">
       <header class="topbar">
         <div class="brand">
-          <img class="brand-logo" src="/icons/devlite-128.png" alt="" />
+          <img class="brand-logo" src="/icons/devlite-logo.png" alt="" />
           <div>
             <h1>DevLite</h1>
             <span>${t("subtitle")}</span>

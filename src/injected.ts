@@ -1,3 +1,5 @@
+import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
+
 (() => {
   const win = window as any;
   if (win.__DEVLITE_PAGE_INSTALLED__) {
@@ -5,9 +7,10 @@
   }
   win.__DEVLITE_PAGE_INSTALLED__ = true;
 
-  const PAGE_CHANNEL = "devlite:page";
-  const CONTROL_CHANNEL = "devlite:control";
   let active = false;
+  let bufferEarlyEvents = true;
+  const pendingEvents: any[] = [];
+  const MAX_PENDING_EVENTS = 200;
   let settings = {
     collectResponseBody: false,
     maxResponseLength: 2048,
@@ -27,7 +30,9 @@
     if (!data || data.channel !== CONTROL_CHANNEL) return;
     if (data.type === "start") {
       active = true;
+      bufferEarlyEvents = false;
       settings = { ...settings, ...(data.settings ?? {}) };
+      flushPendingEvents();
       emit({
         type: "performance",
         severity: "info",
@@ -37,11 +42,12 @@
     }
     if (data.type === "stop") {
       active = false;
+      bufferEarlyEvents = false;
+      pendingEvents.splice(0, pendingEvents.length);
     }
   });
 
   window.addEventListener("error", (event) => {
-    if (!active) return;
     if (event.target && event.target !== window) return;
     emit({
       type: "js-error",
@@ -57,7 +63,6 @@
   });
 
   window.addEventListener("unhandledrejection", (event) => {
-    if (!active) return;
     emit({
       type: "unhandled-rejection",
       severity: "error",
@@ -67,29 +72,25 @@
   });
 
   console.error = (...args: unknown[]) => {
-    if (active) {
-      emit({
-        type: "console-error",
-        severity: "error",
-        message: args.map(serialize).join(" "),
-        stack: new Error("console.error").stack
-      });
-    }
+    emit({
+      type: "console-error",
+      severity: "error",
+      message: args.map(serialize).join(" "),
+      stack: new Error("console.error").stack
+    });
     originalConsoleError(...args);
   };
 
   console.log = (...args: unknown[]) => {
-    if (active) {
-      emit({
-        type: "console-log",
-        severity: "info",
-        message: args.map(serialize).join(" "),
-        stack: new Error("console.log").stack,
-        metadata: {
-          consoleMethod: "log"
-        }
-      });
-    }
+    emit({
+      type: "console-log",
+      severity: "info",
+      message: args.map(serialize).join(" "),
+      stack: new Error("console.log").stack,
+      metadata: {
+        consoleMethod: "log"
+      }
+    });
     originalConsoleLog(...args);
   };
 
@@ -132,27 +133,25 @@
             });
           })
           .catch(() => emit(baseEvent));
-      } else if (active) {
+      } else {
         emit(baseEvent);
       }
 
       return response;
     } catch (error) {
-      if (active) {
-        emit({
-          type: "network",
-          severity: "error",
-          message: `${method} ${url} failed: ${error instanceof Error ? error.message : String(error)}`,
-          url,
-          method,
-          duration: Math.round(performance.now() - startedAt),
-          requestBody,
-          metadata: {
-            source: "fetch",
-            error: serialize(error)
-          }
-        });
-      }
+      emit({
+        type: "network",
+        severity: "error",
+        message: `${method} ${url} failed: ${error instanceof Error ? error.message : String(error)}`,
+        url,
+        method,
+        duration: Math.round(performance.now() - startedAt),
+        requestBody,
+        metadata: {
+          source: "fetch",
+          error: serialize(error)
+        }
+      });
       throw error;
     }
   };
@@ -183,7 +182,6 @@
     (xhr as any).__devlite = meta;
 
     const finalize = (kind: "loadend" | "error" | "timeout" | "abort") => {
-      if (!active) return;
       const duration = Math.round(performance.now() - meta.startedAt);
       const status = xhr.status || undefined;
       const responseText = settings.collectResponseBody && typeof xhr.responseText === "string" ? truncate(xhr.responseText, settings.maxResponseLength) : undefined;
@@ -216,14 +214,34 @@
   };
 
   function emit(event: any): void {
+    const diagnosticEvent = {
+      id: randomId(),
+      timestamp: Date.now(),
+      ...event
+    };
+    if (!active) {
+      if (!bufferEarlyEvents) return;
+      pendingEvents.push(diagnosticEvent);
+      if (pendingEvents.length > MAX_PENDING_EVENTS) {
+        pendingEvents.splice(0, pendingEvents.length - MAX_PENDING_EVENTS);
+      }
+      return;
+    }
+    postEvent(diagnosticEvent);
+  }
+
+  function flushPendingEvents(): void {
+    const events = pendingEvents.splice(0, pendingEvents.length);
+    for (const event of events) {
+      postEvent(event);
+    }
+  }
+
+  function postEvent(event: any): void {
     window.postMessage(
       {
         channel: PAGE_CHANNEL,
-        event: {
-          id: randomId(),
-          timestamp: Date.now(),
-          ...event
-        }
+        event
       },
       "*"
     );

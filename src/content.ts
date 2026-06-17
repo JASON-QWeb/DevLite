@@ -1,4 +1,69 @@
-import { contentText, normalizeContentLocale, type ContentLocale, type ContentTextKey } from "./content/i18n";
+import { copyText } from "./content/clipboard";
+import {
+  applyStyleChange,
+  createStyleChange,
+  ensureTextChangeBaseline as ensureTextChangeRecordBaseline,
+  getStyleChangeRecords as getRecordedStyleChanges,
+  recordTextAfter as recordTextChangeAfter,
+  undoStyleChange
+} from "./content/changeManager";
+import { contentText, type ContentTextKey } from "./content/i18n";
+import {
+  buildSelector,
+  labelElement,
+  resolveInspectableTarget,
+  textSnippet
+} from "./content/domLocator";
+import { DiagnosticEventBatcher, DiagnosticEventStore } from "./content/diagnosticEvents";
+import { canEditTextContent as canEditTextContentBase } from "./content/editableText";
+import { bindImageFileInput } from "./content/imageFileInput";
+import { applyIconReplacement, applyImageReplacement } from "./content/imageReplacement";
+import { InlineTextEditor } from "./content/inlineTextEditor";
+import { LauncherDockController } from "./content/launcherDock";
+import { overlayStyles } from "./content/overlayStyles";
+import { formatUrl, getPageContext } from "./content/pageContext";
+import { handlePanelAction } from "./content/panelActions";
+import { bindPanelEvents } from "./content/panelEvents";
+import { EDITABLE_PROPS, PANEL_THEMES } from "./content/panelConfig";
+import { PanelPositionController } from "./content/panelPosition";
+import { PanelRefreshController } from "./content/panelRefresh";
+import {
+  renderPayloadPanel as renderNetworkPayloadPanel,
+  summarizeNetworkData as summarizeNetworkEventData
+} from "./content/networkDetails";
+import {
+  buildPerformancePrompt as buildPerformancePromptText,
+  formatResourceTiming as formatPerformanceResourceTiming,
+  getPerformanceInsights as getPerformanceInsightsData
+} from "./content/performance";
+import { PerformanceMonitor } from "./content/performanceMonitor";
+import { mergePanelSettings, normalizeLocale, normalizeTheme } from "./content/settings";
+import { bindStyleEditorEvents } from "./content/styleEditorEvents";
+import { StyleEditorPositionController } from "./content/styleEditorPosition";
+import {
+  escapeHtml,
+  formatTime as formatLocalizedTime,
+  randomId
+} from "./content/utils";
+import { renderDiagnosticsTabView } from "./content/views/diagnosticsTab";
+import { renderElementTabView } from "./content/views/elementTab";
+import { pickSelectedNetworkEvent, renderNetworkTabView } from "./content/views/networkTab";
+import { renderPanelShell } from "./content/views/panelShell";
+import { renderPerformanceTabView } from "./content/views/performanceTab";
+import { renderSettingsTabView } from "./content/views/settingsTab";
+import { renderStyleEditorView } from "./content/views/styleEditorView";
+import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
+import type {
+  DiagnosticFilter,
+  DiagnosticGroup,
+  LiveDiagnosticEvent,
+  NetworkDetailTab,
+  OverlayTab,
+  PanelSettings,
+  PerformanceInsights,
+  StyleChange,
+  UiLocale
+} from "./content/types";
 
 (() => {
   const isolatedWindow = window as any;
@@ -6,265 +71,6 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     return;
   }
   isolatedWindow.__DEVLITE_CONTENT_INSTALLED__ = true;
-
-  type StyleChange = {
-    id: string;
-    selector: string;
-    elementLabel: string;
-    textSnippet: string;
-    domPath: string;
-    locator?: ElementLocator;
-    viewport: { width: number; height: number };
-    before: Record<string, string>;
-    after: Record<string, string>;
-    textBefore?: string;
-    textAfter?: string;
-    htmlBefore?: string;
-    htmlAfter?: string;
-    domBefore?: string;
-    domAfter?: string;
-    domAction?: string;
-    updatedAt: number;
-    note?: string;
-  };
-
-  type InlineTextEditState = {
-    element: HTMLElement;
-    previousContentEditable: string | null;
-    previousSpellcheck: string | null;
-    onInput: () => void;
-    onBlur: () => void;
-    onKeydown: (event: KeyboardEvent) => void;
-  };
-
-  type ElementLocator = {
-    tagName: string;
-    id: string;
-    classList: string[];
-    attributes: Record<string, string>;
-    openingTag: string;
-    outerHTMLSnippet: string;
-    selector: string;
-    domPath: string;
-    parentChain: ElementAncestor[];
-    matchedCssRules: MatchedCssRule[];
-  };
-
-  type ElementAncestor = {
-    tagName: string;
-    id: string;
-    classList: string[];
-    selector: string;
-  };
-
-  type MatchedCssRule = {
-    selectorText: string;
-    style: string;
-    source: string;
-    condition?: string;
-  };
-
-  type OverlayTab = "element" | "diagnostics" | "network" | "performance" | "settings";
-  type NetworkDetailTab = "preview" | "response" | "request" | "headers";
-  type DiagnosticFilter = "issues" | "logs";
-  type UiLocale = ContentLocale;
-  type UiTheme = "claude" | "saas" | "dark" | "cartoon";
-  type PanelSettings = {
-    locale?: UiLocale;
-    uiTheme?: UiTheme;
-    collectResponseBody?: boolean;
-    maxResponseLength?: number;
-    slowRequestThreshold?: number;
-    retainHours?: number;
-    extraRedactionKeys?: string[];
-  };
-  type ThemeTokens = Record<
-    | "bg"
-    | "surface"
-    | "surface2"
-    | "sidebar"
-    | "border"
-    | "borderStrong"
-    | "text"
-    | "textMuted"
-    | "primary"
-    | "primaryHover"
-    | "primarySoft"
-    | "onPrimary"
-    | "danger"
-    | "warning"
-    | "success"
-    | "codeText"
-    | "toastBg"
-    | "shadow"
-    | "focus",
-    string
-  >;
-  type FloatingPosition = {
-    left: number;
-    top: number;
-    manual: boolean;
-  };
-  type PerformanceIssue = {
-    title: string;
-    severity: "info" | "warning" | "error";
-    detail: string;
-    evidence: string[];
-    suggestion: string;
-  };
-
-  type PerformanceInsights = {
-    metrics: Array<{ label: string; value: string; note: string }>;
-    issues: PerformanceIssue[];
-    largeResources: PerformanceResourceTiming[];
-    slowResources: PerformanceResourceTiming[];
-    longTasks: LiveDiagnosticEvent[];
-  };
-
-  type LiveDiagnosticEvent = {
-    id: string;
-    type: string;
-    severity: "info" | "warning" | "error";
-    timestamp: number;
-    message: string;
-    source?: string;
-    stack?: string;
-    url?: string;
-    method?: string;
-    status?: number;
-    duration?: number;
-    requestBody?: string;
-    responseBody?: string;
-    metadata?: Record<string, unknown>;
-  };
-
-  type DiagnosticGroup = {
-    key: string;
-    severity: "info" | "warning" | "error";
-    message: string;
-    source: string;
-    count: number;
-    lastTimestamp: number;
-    events: LiveDiagnosticEvent[];
-  };
-
-  const PAGE_CHANNEL = "devlite:page";
-  const CONTROL_CHANNEL = "devlite:control";
-  const LOGO_URL = chrome.runtime.getURL("icons/devlite-128.png");
-  const EDITABLE_PROPS = [
-    "color",
-    "background-color",
-    "font-size",
-    "font-weight",
-    "line-height",
-    "letter-spacing",
-    "padding",
-    "margin",
-    "width",
-    "height",
-    "border-radius",
-    "box-shadow",
-    "display",
-    "gap",
-    "justify-content",
-    "align-items",
-    "opacity"
-  ];
-  const DEFAULT_PANEL_SETTINGS: Required<PanelSettings> = {
-    locale: "zh",
-    uiTheme: "claude",
-    collectResponseBody: false,
-    maxResponseLength: 2048,
-    slowRequestThreshold: 2000,
-    retainHours: 24,
-    extraRedactionKeys: []
-  };
-  const PANEL_THEMES: Record<UiTheme, ThemeTokens> = {
-    claude: {
-      bg: "#FAF9F5",
-      surface: "#FFFFFF",
-      surface2: "#F4F3EE",
-      sidebar: "#F1EFE7",
-      border: "#E8E6DC",
-      borderStrong: "#D4D0C4",
-      text: "#141413",
-      textMuted: "#6F6A60",
-      primary: "#D97757",
-      primaryHover: "#C15F3C",
-      primarySoft: "#F3DED4",
-      onPrimary: "#FFFFFF",
-      danger: "#B94A48",
-      warning: "#B8792F",
-      success: "#788C5D",
-      codeText: "#7B402F",
-      toastBg: "#141413",
-      shadow: "rgba(32, 28, 22, 0.18)",
-      focus: "rgba(217, 119, 87, 0.32)"
-    },
-    saas: {
-      bg: "#F6F8FB",
-      surface: "#FFFFFF",
-      surface2: "#F0F3F8",
-      sidebar: "#EEF2F7",
-      border: "#DCE3EC",
-      borderStrong: "#C6D0DE",
-      text: "#111827",
-      textMuted: "#64748B",
-      primary: "#315CFF",
-      primaryHover: "#2447C8",
-      primarySoft: "#E7EDFF",
-      onPrimary: "#FFFFFF",
-      danger: "#DC2626",
-      warning: "#D97706",
-      success: "#14B8A6",
-      codeText: "#2546B8",
-      toastBg: "#111827",
-      shadow: "rgba(17, 24, 39, 0.18)",
-      focus: "rgba(49, 92, 255, 0.3)"
-    },
-    dark: {
-      bg: "#0E1116",
-      surface: "#151A22",
-      surface2: "#1B222C",
-      sidebar: "#111720",
-      border: "#293241",
-      borderStrong: "#3A4556",
-      text: "#E8EBF0",
-      textMuted: "#9AA4B2",
-      primary: "#7AA2FF",
-      primaryHover: "#A8C1FF",
-      primarySoft: "#1E335F",
-      onPrimary: "#0E1116",
-      danger: "#F87171",
-      warning: "#FBBF24",
-      success: "#7DD3A8",
-      codeText: "#A8C1FF",
-      toastBg: "#EEF2FF",
-      shadow: "rgba(0, 0, 0, 0.42)",
-      focus: "rgba(122, 162, 255, 0.36)"
-    },
-    cartoon: {
-      bg: "#FFF7E8",
-      surface: "#FFFFFF",
-      surface2: "#FFEBC7",
-      sidebar: "#FFE5B4",
-      border: "#F3C98B",
-      borderStrong: "#E7A94F",
-      text: "#2D2433",
-      textMuted: "#7A6472",
-      primary: "#FF7A59",
-      primaryHover: "#F05D3B",
-      primarySoft: "#FFE0D7",
-      onPrimary: "#2D2433",
-      danger: "#FF5C8A",
-      warning: "#FFD166",
-      success: "#6BCB77",
-      codeText: "#B64D35",
-      toastBg: "#2D2433",
-      shadow: "rgba(92, 58, 31, 0.18)",
-      focus: "rgba(255, 122, 89, 0.34)"
-    }
-  };
 
   let captureActive = false;
   let inspectorActive = false;
@@ -276,12 +82,8 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   let shadow: ShadowRoot | null = null;
   let highlighter: HTMLDivElement | null = null;
   let styleEditor: HTMLDivElement | null = null;
-  let launcherDock: HTMLDivElement | null = null;
-  let launcherTop = Math.round(window.innerHeight / 2);
-  let launcherCollapseTimer: number | null = null;
-  let suppressLauncherClick = false;
+  let launcherDockController: LauncherDockController | null = null;
   let panel: HTMLDivElement | null = null;
-  let panelPosition = { right: 16, top: 16 };
   let panelOpen = false;
   let activePanelTab: OverlayTab = "element";
   let networkDetailTab: NetworkDetailTab = "preview";
@@ -289,16 +91,46 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   let selectedNetworkEventId: string | null = null;
   let uiLocale: UiLocale = "zh";
   let captureStartPromise: Promise<void> | null = null;
-  let panelRefreshTimer: number | null = null;
-  let panelRenderQueued = false;
-  let liveEvents: LiveDiagnosticEvent[] = [];
+  const diagnosticEvents = new DiagnosticEventStore();
   let sessionSnapshot: { events?: LiveDiagnosticEvent[]; styleChanges?: StyleChange[] } | null = null;
   let styleChangeSyncPromise: Promise<any> | null = null;
-  let inlineTextEditState: InlineTextEditState | null = null;
-  let performanceObserver: PerformanceObserver | null = null;
-  let performanceSnapshotSent = false;
-  let styleEditorPosition: FloatingPosition | null = null;
   let imageReplaceInput: HTMLInputElement | null = null;
+  const panelPositionController = new PanelPositionController();
+  const styleEditorPositionController = new StyleEditorPositionController();
+  const diagnosticEventBatcher = new DiagnosticEventBatcher((events) => {
+    void sendRuntime({ type: "diagnostic-events", events });
+  });
+  const panelRefreshController = new PanelRefreshController({
+    isEditingField: isEditingPanelField,
+    isPanelOpen: () => panelOpen,
+    refresh: refreshSessionSnapshot,
+    render: renderPanel,
+    shouldSkipIntervalRender: () => activePanelTab === "element" || isEditingPanelField()
+  });
+  const inlineTextEditor = new InlineTextEditor({
+    canEdit: canEditTextContent,
+    ensureBaseline: ensureTextChangeBaseline,
+    isCurrentElement: (element) => selectedElement === element,
+    onChange: (element) => {
+      updateHighlighter(element);
+      updateStyleEditorPosition();
+      if (panelOpen && activePanelTab === "element") {
+        schedulePanelRender();
+      }
+    },
+    onEscape: () => {
+      if (panelOpen) renderPanel();
+    },
+    recordAfter: recordTextAfter,
+    t,
+    toast
+  });
+  const performanceMonitor = new PerformanceMonitor({
+    isCaptureActive: () => captureActive,
+    getInsights: () => getPerformanceInsights(),
+    getLocale: () => uiLocale,
+    sendDiagnosticEvent
+  });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void handleRuntimeMessage(message).then(sendResponse);
@@ -313,7 +145,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     if (!data || data.channel !== PAGE_CHANNEL || !data.event) return;
     if (!captureActive) return;
     rememberDiagnosticEvent(data.event);
-    sendRuntime({ type: "diagnostic-event", event: data.event });
+    diagnosticEventBatcher.enqueue(data.event);
     schedulePanelRender();
   });
 
@@ -343,7 +175,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   document.addEventListener(
     "click",
     (event) => {
-      if (isOverlayEvent(event)) return;
+      if (event.target instanceof Node && overlayHost?.contains(event.target)) return;
       if (captureActive) {
         const target = resolveInspectableTarget(event.target);
         if (target) {
@@ -363,7 +195,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         event.preventDefault();
         event.stopPropagation();
         const target = resolveInspectableTarget(event.target);
-        if (target && !isOverlayNode(target)) {
+        if (target && !overlayHost?.contains(target)) {
           selectElement(target);
         }
       }
@@ -374,10 +206,10 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   document.addEventListener(
     "dblclick",
     (event) => {
-      if (inlineTextEditState) return;
-      if (isOverlayEvent(event)) return;
+      if (inlineTextEditor.isActive()) return;
+      if (event.target instanceof Node && overlayHost?.contains(event.target)) return;
       const target = resolveInspectableTarget(event.target);
-      if (!target || isOverlayNode(target)) return;
+      if (!target || overlayHost?.contains(target)) return;
       if (!inspectorActive && (!selectedElement || (target !== selectedElement && !selectedElement.contains(target)))) return;
       event.preventDefault();
       event.stopPropagation();
@@ -392,9 +224,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   document.addEventListener(
     "mousemove",
     (event) => {
-      if (!inspectorActive || isOverlayEvent(event)) return;
+      if (!inspectorActive || (event.target instanceof Node && overlayHost?.contains(event.target))) return;
       const target = resolveInspectableTarget(event.target);
-      if (!target || isOverlayNode(target)) return;
+      if (!target || overlayHost?.contains(target)) return;
       hoveredElement = target;
       updateHighlighter(target);
     },
@@ -402,10 +234,11 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   );
 
   window.addEventListener("resize", () => {
-    applyLauncherPosition();
-    applyPanelPosition();
+    launcherDockController?.applyPosition();
+    panelPositionController.apply(panel);
     syncElementOverlays();
   });
+  window.addEventListener("pagehide", flushDiagnosticEvents);
   document.addEventListener("scroll", syncElementOverlays, true);
 
   async function handleRuntimeMessage(message: any): Promise<any> {
@@ -416,14 +249,15 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       applyOverlayTheme();
       sendRuntime({ type: "page-context", page: getPageContext() });
       window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
-      startPerformanceMonitor();
+      performanceMonitor.start();
       return { ok: true };
     }
 
     if (message?.type === "devlite-stop-capture") {
       captureActive = false;
+      flushDiagnosticEvents();
       window.postMessage({ channel: CONTROL_CHANNEL, type: "stop" }, "*");
-      stopPerformanceMonitor();
+      performanceMonitor.stop();
       schedulePanelRender();
       return { ok: true };
     }
@@ -450,15 +284,11 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     const response = await sendRuntime({ type: "get-settings" });
     if (!response?.ok) return;
     sessionSettings = mergePanelSettings(response.settings ?? {});
-    uiLocale = normalizeContentLocale(response.settings?.locale);
+    uiLocale = normalizeLocale(response.settings?.locale);
     applyOverlayTheme();
     syncLauncherLabels();
     if (panelOpen) renderPanel();
     if (styleEditor && !styleEditor.hidden) renderStyleEditor();
-  }
-
-  function normalizeLocale(value: unknown): UiLocale {
-    return normalizeContentLocale(value);
   }
 
   function t(key: ContentTextKey): string {
@@ -512,47 +342,31 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     imageReplaceInput.type = "file";
     imageReplaceInput.accept = "image/*,.svg";
     imageReplaceInput.hidden = true;
-    launcherDock = document.createElement("div");
-    launcherDock.className = "devlite-dock";
-    launcherDock.innerHTML = `
-      <div class="launcher-hit-area" aria-hidden="true"></div>
-      <div class="launcher-actions" aria-label="${t("launcherActions")}">
-        <button class="launcher-action" type="button" data-launcher-action="select" title="${t("quickSelect")}" aria-label="${t("quickSelect")}">${launcherIcon("select")}</button>
-        <button class="launcher-action" type="button" data-launcher-action="panel" title="${t("openPanel")}" aria-label="${t("openPanel")}">${launcherIcon("panel")}</button>
-      </div>
-      <button class="devlite-launcher" type="button" title="${t("launcherTitle")}" aria-label="${t("launcherTitle")}">
-        <img src="${LOGO_URL}" alt="" />
-      </button>
-    `;
-    bindLauncherEvents();
+    launcherDockController = new LauncherDockController({
+      t,
+      onOpenPanel: () => openPanel(),
+      onStartInspector: () => startInspector(),
+      onToast: toast,
+      initialTop: Math.round(window.innerHeight / 2)
+    });
     panel = document.createElement("div");
     panel.className = "devlite-panel";
     panel.hidden = true;
-    shadow.append(style, highlighter, launcherDock, styleEditor, imageReplaceInput, panel);
-    bindImageReplaceInput();
+    shadow.append(style, highlighter, launcherDockController.element, styleEditor, imageReplaceInput, panel);
+    bindImageFileInput({
+      input: imageReplaceInput,
+      onError: () => toast(t("replaceImageFailed")),
+      onLoad: replaceSelectedImage
+    });
     document.documentElement.appendChild(overlayHost);
     applyOverlayTheme();
-    applyLauncherPosition();
+    launcherDockController.applyPosition();
   }
 
   ensureOverlay();
 
   function syncLauncherLabels(): void {
-    if (!launcherDock) return;
-    const actions = launcherDock.querySelector<HTMLElement>(".launcher-actions");
-    const select = launcherDock.querySelector<HTMLButtonElement>('[data-launcher-action="select"]');
-    const panelButton = launcherDock.querySelector<HTMLButtonElement>('[data-launcher-action="panel"]');
-    const launcher = launcherDock.querySelector<HTMLButtonElement>(".devlite-launcher");
-    actions?.setAttribute("aria-label", t("launcherActions"));
-    setButtonLabel(select, t("quickSelect"));
-    setButtonLabel(panelButton, t("openPanel"));
-    setButtonLabel(launcher, t("launcherTitle"));
-  }
-
-  function setButtonLabel(button: HTMLButtonElement | null | undefined, label: string): void {
-    if (!button) return;
-    button.title = label;
-    button.setAttribute("aria-label", label);
+    launcherDockController?.syncLabels(t);
   }
 
   function hideHighlighter(): void {
@@ -563,7 +377,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function hideStyleEditor(): void {
     if (!styleEditor) return;
-    styleEditorPosition = null;
+    styleEditorPositionController.reset();
     styleEditor.hidden = true;
     styleEditor.innerHTML = "";
   }
@@ -589,28 +403,10 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function selectElement(element: HTMLElement): void {
     stopInlineTextEdit();
-    styleEditorPosition = null;
+    styleEditorPositionController.reset();
     selectedElement = element;
     updateHighlighter(element);
-    const computed = getComputedStyle(element);
-    const before: Record<string, string> = {};
-    EDITABLE_PROPS.forEach((prop) => {
-      before[prop] = computed.getPropertyValue(prop);
-    });
-    const selector = buildSelector(element);
-    const domPath = buildDomPath(element);
-    currentChange = {
-      id: `style-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      selector,
-      elementLabel: labelElement(element),
-      textSnippet: textSnippet(element),
-      domPath,
-      locator: buildElementLocator(element, selector, domPath),
-      viewport: { width: window.innerWidth, height: window.innerHeight },
-      before,
-      after: {},
-      updatedAt: Date.now()
-    };
+    currentChange = createStyleChange(element, EDITABLE_PROPS);
     inspectorActive = false;
     document.documentElement.style.cursor = "";
     activePanelTab = "element";
@@ -635,61 +431,78 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     if (!panel) return;
     panelOpen = true;
     panel.hidden = false;
-    applyPanelPosition();
+    panelPositionController.apply(panel);
 
-    const changeCount = getStyleChangeRecords().length;
-    const diagnosticCount = getProblemEvents().length;
-    const networkCount = getNetworkEvents().length;
-    const performanceCount = getPerformanceInsights().issues.length;
-    const tabTitle = panelTabTitle();
     const tabBody = renderActivePanelTab();
 
-    panel.innerHTML = `
-      <div class="panel-shell">
-        <aside class="panel-sidebar">
-          <div class="panel-brand">
-            <img src="${LOGO_URL}" alt="" />
-            <div>
-              <strong>DevLite</strong>
-              <span>${captureActive ? t("capturing") : t("idle")}</span>
-            </div>
-          </div>
-          <nav class="panel-nav" aria-label="${t("features")}">
-            ${navButton("element", t("edits"), changeCount)}
-            ${navButton("diagnostics", t("diagnostics"), diagnosticCount)}
-            ${navButton("network", t("data"), networkCount)}
-            ${navButton("performance", t("performance"), performanceCount)}
-          </nav>
-          <div class="sidebar-spacer"></div>
-          <div class="sidebar-tools">
-            <button data-action="toggle-locale" class="locale-button" title="Language" aria-label="Language">${uiLocale === "en" ? "中" : "EN"}</button>
-            <button data-action="show-settings" class="config-button icon-only ${activePanelTab === "settings" ? "active" : ""}" title="${t("settings")}" aria-label="${t("settings")}">${panelIcon("settings")}</button>
-          </div>
-        </aside>
-        <section class="panel-main">
-          <div class="panel-header">
-            <div>
-              <strong>${tabTitle}</strong>
-              <span>${panelHeaderMeta()}</span>
-            </div>
-            <button data-action="close" class="icon-button">${t("close")}</button>
-          </div>
-          <div class="panel-content">
-            ${tabBody}
-          </div>
-        </section>
-      </div>
-    `;
-    bindPanelEvents();
-    applyPanelPosition();
-  }
-
-  function panelTabTitle(): string {
-    if (activePanelTab === "element") return t("editLog");
-    if (activePanelTab === "diagnostics") return t("diagnostics");
-    if (activePanelTab === "network") return t("data");
-    if (activePanelTab === "performance") return t("performance");
-    return t("settings");
+    panel.innerHTML = renderPanelShell({
+      activeTab: activePanelTab,
+      captureActive,
+      counts: {
+        changes: getStyleChangeRecords().length,
+        diagnostics: getProblemEvents().length,
+        network: getNetworkEvents().length,
+        performance: getPerformanceInsights().issues.length
+      },
+      inspectorActive,
+      tabBody,
+      uiLocale,
+      t
+    });
+    bindPanelEvents({
+      panel,
+      onAction: (action) =>
+        handlePanelAction(action, {
+          applyStyle,
+          buildPerformancePrompt,
+          closePanel,
+          ensureCapture,
+          ensureResponseBodyCapture,
+          eventTypeLabel,
+          getCurrentChange: () => currentChange,
+          getNetworkEvents,
+          getPanel: () => panel,
+          getPendingStyleSync: () => styleChangeSyncPromise,
+          getProblemEvents,
+          getSelectedElement: () => selectedElement,
+          getSettings: mergedPanelSettings,
+          renderPanel,
+          savePanelSettings,
+          sendRuntime,
+          showSettings: () => {
+            activePanelTab = "settings";
+            renderPanel();
+          },
+          startInlineTextEdit,
+          startInspector,
+          stopInlineTextEdit,
+          stopInspector,
+          t,
+          toast,
+          toggleLocale,
+          undoCurrentChange
+        }),
+      onDiagnosticFilter: (filter) => {
+        diagnosticFilter = filter;
+        renderPanel();
+      },
+      onNetworkDetail: (tab) => {
+        networkDetailTab = tab;
+        renderPanel();
+      },
+      onNetworkEvent: (id) => {
+        selectedNetworkEventId = id;
+        renderPanel();
+      },
+      onStartDrag: (event) => panelPositionController.startDrag(panel, event),
+      onStyleInput: applyStyle,
+      onTab: (tab) => {
+        activePanelTab = tab;
+        renderPanel();
+      },
+      onTextInput: applyTextContent
+    });
+    panelPositionController.apply(panel);
   }
 
   function renderActivePanelTab(): string {
@@ -700,317 +513,73 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     return renderSettingsTab();
   }
 
-  function navButton(tab: OverlayTab, label: string, count: number): string {
-    return `
-      <button type="button" data-tab="${tab}" class="nav-item ${activePanelTab === tab ? "active" : ""}">
-        <span>${label}</span>
-        ${count > 0 ? `<strong>${count > 99 ? "99+" : count}</strong>` : ""}
-      </button>
-    `;
-  }
-
-  function panelHeaderMeta(): string {
-    if (activePanelTab === "element") {
-      const count = getStyleChangeRecords().length;
-      return count > 0 ? (uiLocale === "en" ? `${count} elements` : `${count} 个元素`) : inspectorActive ? t("clickToSelect") : t("pagePopoverEditing");
-    }
-    if (activePanelTab === "diagnostics") {
-      const count = getProblemEvents().length;
-      return count > 0 ? (uiLocale === "en" ? `${count} issues` : `${count} 条问题`) : t("listeningErrors");
-    }
-    if (activePanelTab === "performance") {
-      const count = getPerformanceInsights().issues.length;
-      return count > 0 ? (uiLocale === "en" ? `${count} performance risks` : `${count} 个性能风险`) : t("detectingPerformance");
-    }
-    if (activePanelTab === "settings") {
-      return t("settingsPanelMeta");
-    }
-    const count = getNetworkEvents().length;
-    return count > 0 ? (uiLocale === "en" ? `Latest ${Math.min(count, 20)} requests` : `最近 ${Math.min(count, 20)} 条请求`) : t("summarizingNetwork");
-  }
 
   function renderElementTab(): string {
-    const records = getStyleChangeRecords();
-    return `
-      <div class="toolbar">
-        <button data-action="quick-select" class="primary">${inspectorActive ? t("selecting") : t("selectElement")}</button>
-        ${inspectorActive ? `<button data-action="stop-select">${t("stopSelecting")}</button>` : ""}
-        <button data-action="copy-prompt" class="primary">${t("copyFullPrompt")}</button>
-      </div>
-      ${
-        records.length === 0
-          ? `<div class="empty">${t("noEditRecords")}</div>`
-          : `<div class="style-record-list">${records.map((change, index) => renderStyleChangeRecord(change, index)).join("")}</div>`
-      }
-    `;
+    return renderElementTabView({
+      records: getStyleChangeRecords(),
+      inspectorActive,
+      locale: uiLocale,
+      t,
+      formatTime
+    });
   }
 
   function renderSettingsTab(): string {
-    const settings = mergedPanelSettings();
-    return `
-      <div class="settings-panel">
-        <section class="settings-card">
-          <h3>${t("appearance")}</h3>
-          <div class="theme-grid" role="radiogroup" aria-label="${t("theme")}">
-            ${panelThemeOption("claude", t("themeClaude"), settings.uiTheme)}
-            ${panelThemeOption("saas", t("themeSaas"), settings.uiTheme)}
-            ${panelThemeOption("dark", t("themeDark"), settings.uiTheme)}
-            ${panelThemeOption("cartoon", t("themeCartoon"), settings.uiTheme)}
-          </div>
-        </section>
-        <section class="settings-card">
-          <h3>${t("diagnosticSettings")}</h3>
-          <div class="settings-fields">
-            <label class="field">
-              <span>${t("language")}</span>
-              <select data-setting="locale">
-                <option value="zh" ${settings.locale === "zh" ? "selected" : ""}>中文</option>
-                <option value="en" ${settings.locale === "en" ? "selected" : ""}>English</option>
-              </select>
-            </label>
-            <label class="inline setting-inline">
-              <input data-setting="collectResponseBody" type="checkbox" ${settings.collectResponseBody ? "checked" : ""} />
-              <span>${t("collectResponseBody")}</span>
-            </label>
-            <label class="field">
-              <span>${t("responseMaxLength")}</span>
-              <input data-setting="maxResponseLength" type="number" min="256" max="10000" step="256" value="${settings.maxResponseLength}" />
-            </label>
-            <label class="field">
-              <span>${t("slowThreshold")}</span>
-              <input data-setting="slowRequestThreshold" type="number" min="300" max="20000" step="100" value="${settings.slowRequestThreshold}" />
-            </label>
-            <label class="field full">
-              <span>${t("extraRedaction")}</span>
-              <textarea data-setting="extraRedactionKeys">${escapeHtml(settings.extraRedactionKeys.join("\n"))}</textarea>
-            </label>
-          </div>
-        </section>
-        <div class="settings-actions">
-          <button data-action="save-panel-settings" class="primary">${t("saveSettings")}</button>
-          <button data-action="reset-panel-settings">${t("resetDefaults")}</button>
-        </div>
-      </div>
-    `;
-  }
-
-  function panelThemeOption(theme: UiTheme, label: string, current: UiTheme): string {
-    const tokens = PANEL_THEMES[theme];
-    return `
-      <label class="theme-option ${theme === current ? "selected" : ""}">
-        <input type="radio" name="uiTheme" value="${theme}" ${theme === current ? "checked" : ""} />
-        <span class="theme-swatch" style="--swatch-bg:${tokens.bg};--swatch-surface:${tokens.surface};--swatch-primary:${tokens.primary};--swatch-border:${tokens.border};">
-          <i></i><b></b>
-        </span>
-        <span>${label}</span>
-      </label>
-    `;
-  }
-
-  function renderStyleChangeRecord(change: StyleChange, index: number): string {
-    return `
-      <article class="style-record">
-        <div class="style-record-head">
-          <strong>${index + 1}. ${escapeHtml(change.elementLabel)}</strong>
-          <span>${formatTime(change.updatedAt)}</span>
-        </div>
-        <code>${escapeHtml(change.selector)}</code>
-        <p>${escapeHtml(summarizeStyleChange(change))}</p>
-      </article>
-    `;
+    return renderSettingsTabView({ settings: mergedPanelSettings(), t });
   }
 
   function getStyleChangeRecords(): StyleChange[] {
-    const records = new Map<string, StyleChange>();
-    for (const change of sessionSnapshot?.styleChanges ?? []) {
-      if (hasRecordedChange(change)) {
-        records.set(change.id, change);
-      }
-    }
-    if (currentChange && hasRecordedChange(currentChange)) {
-      records.set(currentChange.id, currentChange);
-    }
-    return Array.from(records.values()).sort((a, b) => b.updatedAt - a.updatedAt);
-  }
-
-  function hasRecordedChange(change: StyleChange): boolean {
-    return Object.keys(change.after).length > 0 || change.textAfter !== undefined || change.htmlAfter !== undefined || change.domAfter !== undefined;
-  }
-
-  function summarizeStyleChange(change: StyleChange): string {
-    const parts = Object.keys(change.after).map((prop) => stylePropLabel(prop));
-    if (change.textAfter !== undefined || change.htmlAfter !== undefined) {
-      parts.unshift(t("textContent"));
-    }
-    if (change.domAfter !== undefined) {
-      parts.unshift(change.domAction || t("elementDom"));
-    }
-    return parts.length > 0 ? parts.join(uiLocale === "en" ? ", " : "、") : t("selectedNoEdits");
-  }
-
-  function stylePropLabel(prop: string): string {
-    const labels: Record<string, string> = {
-      color: t("textColor"),
-      "background-color": t("backgroundColor"),
-      "font-size": t("fontSize"),
-      "font-weight": t("fontWeight"),
-      "line-height": t("lineHeight"),
-      "letter-spacing": t("letterSpacing"),
-      padding: t("padding"),
-      margin: t("margin"),
-      width: t("width"),
-      height: t("height"),
-      "border-radius": t("radius"),
-      "box-shadow": t("shadow"),
-      display: t("display"),
-      gap: t("gap"),
-      "justify-content": t("mainAxis"),
-      "align-items": t("crossAxis"),
-      opacity: t("opacity")
-    };
-    return labels[prop] ?? prop;
-  }
-
-  function renderTextEditor(element: HTMLElement): string {
-    if (!currentChange || !canEditTextContent(element)) {
-      return "";
-    }
-    const value = currentChange.textAfter ?? editableTextValue(element);
-    return `
-      <div class="text-editor">
-        <label class="text-row">
-          <span>${t("textContent")}</span>
-          <textarea data-text-content rows="3">${escapeHtml(value)}</textarea>
-        </label>
-        <div class="text-actions">
-          <button data-action="inline-text-edit" class="primary">${t("directEditText")}</button>
-          <button data-action="copy-text">${t("copyText")}</button>
-        </div>
-      </div>
-    `;
+    return getRecordedStyleChanges(sessionSnapshot?.styleChanges, currentChange);
   }
 
   function renderStyleEditor(): void {
     ensureOverlay();
     if (!styleEditor || !selectedElement || !currentChange) return;
-    const computed = getComputedStyle(selectedElement);
-    const basicRows = [
-      inputRow("color", t("text"), toHexColor(computed.color), "color"),
-      inputRow("background-color", t("background"), toHexColor(computed.backgroundColor), "color"),
-      inputRow("font-size", t("fontSize"), computed.fontSize),
-      selectRow("font-weight", t("fontWeight"), normalizeFontWeight(computed.fontWeight), ["300", "400", "500", "600", "700", "800"])
-    ].join("");
-    const detailRows = [
-      inputRow("line-height", t("lineHeight"), computed.lineHeight),
-      inputRow("letter-spacing", t("letterSpacing"), computed.letterSpacing),
-      inputRow("padding", t("padding"), computed.padding),
-      inputRow("margin", t("margin"), computed.margin),
-      inputRow("width", t("width"), computed.width),
-      inputRow("height", t("height"), computed.height),
-      inputRow("border-radius", t("radius"), computed.borderRadius),
-      inputRow("box-shadow", t("shadow"), computed.boxShadow),
-      selectRow("display", t("display"), computed.display, ["block", "inline-block", "flex", "inline-flex", "grid", "none"]),
-      inputRow("gap", t("gap"), computed.gap),
-      selectRow("justify-content", t("mainAxis"), computed.justifyContent, ["normal", "flex-start", "center", "space-between", "space-around", "flex-end"]),
-      selectRow("align-items", t("crossAxis"), computed.alignItems, ["normal", "stretch", "flex-start", "center", "flex-end", "baseline"]),
-      inputRow("opacity", t("opacity"), computed.opacity)
-    ].join("");
-
     styleEditor.hidden = false;
-    styleEditor.innerHTML = `
-      <div class="style-editor-head">
-        <strong>${escapeHtml(currentChange.elementLabel)}</strong>
-        <button type="button" data-style-action="close" class="icon-button">${t("close")}</button>
-      </div>
-      <div class="rows">${basicRows}</div>
-      <details class="style-editor-details">
-        <summary>${t("more")}</summary>
-        <div class="rows">${detailRows}</div>
-      </details>
-      <div class="style-editor-actions">
-        <button type="button" data-style-action="copy-element">${t("copyElement")}</button>
-        <button type="button" data-style-action="replace-image">${t("replaceImage")}</button>
-        <button type="button" data-style-action="replace-icon">${t("replaceIcon")}</button>
-        ${canEditTextContent(selectedElement) ? `<button type="button" data-style-action="text">${t("editText")}</button>` : ""}
-        <button type="button" data-style-action="select">${t("selectAnother")}</button>
-        <button type="button" data-style-action="undo">${t("undo")}</button>
-      </div>
-    `;
-    bindStyleEditorEvents();
+    styleEditor.innerHTML = renderStyleEditorView({
+      element: selectedElement,
+      change: currentChange,
+      canEditText: canEditTextContent(selectedElement),
+      t
+    });
+    bindStyleEditorEvents({
+      editor: styleEditor,
+      onAction: handleStyleEditorAction,
+      onStartDrag: startStyleEditorDrag,
+      onStyleInput: applyStyle
+    });
     updateStyleEditorPosition();
   }
 
-  function bindStyleEditorEvents(): void {
-    if (!styleEditor) return;
-    styleEditor.querySelector<HTMLElement>(".style-editor-head")?.addEventListener("pointerdown", startStyleEditorDrag);
-    styleEditor.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-prop]").forEach((input) => {
-      input.addEventListener("input", () => {
-        const prop = input.dataset.prop;
-        if (!prop || !selectedElement || !currentChange) return;
-        applyStyle(prop, input.value);
-      });
-      input.addEventListener("change", () => {
-        const prop = input.dataset.prop;
-        if (!prop || !selectedElement || !currentChange) return;
-        applyStyle(prop, input.value);
-      });
-    });
-
-    styleEditor.querySelectorAll<HTMLButtonElement>("[data-style-action]").forEach((button) => {
-      button.addEventListener("click", async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const action = button.dataset.styleAction;
-        if (action === "close") {
-          hideStyleEditor();
-          hideHighlighter();
-          return;
-        }
-        if (action === "copy-element") {
-          await copySelectedElement();
-          return;
-        }
-        if (action === "replace-image") {
-          startImageReplacement();
-          return;
-        }
-        if (action === "replace-icon") {
-          replaceSelectedIcon();
-          return;
-        }
-        if (action === "text") {
-          startInlineTextEdit();
-          return;
-        }
-        if (action === "select") {
-          startInspector();
-          return;
-        }
-        if (action === "undo") {
-          undoCurrentChange();
-        }
-      });
-    });
-  }
-
-  function bindImageReplaceInput(): void {
-    if (!imageReplaceInput) return;
-    imageReplaceInput.addEventListener("change", () => {
-      const file = imageReplaceInput?.files?.[0];
-      if (imageReplaceInput) imageReplaceInput.value = "";
-      if (!file) return;
-      const reader = new FileReader();
-      reader.addEventListener("load", () => {
-        const dataUrl = typeof reader.result === "string" ? reader.result : "";
-        if (!dataUrl) {
-          toast(t("replaceImageFailed"));
-          return;
-        }
-        replaceSelectedImage(dataUrl, `${file.name} / ${file.type || "image"} / ${formatBytes(file.size)}`);
-      });
-      reader.addEventListener("error", () => toast(t("replaceImageFailed")));
-      reader.readAsDataURL(file);
-    });
+  async function handleStyleEditorAction(action: string): Promise<void> {
+    if (action === "close") {
+      hideStyleEditor();
+      hideHighlighter();
+      return;
+    }
+    if (action === "copy-element") {
+      await copySelectedElement();
+      return;
+    }
+    if (action === "replace-image") {
+      startImageReplacement();
+      return;
+    }
+    if (action === "replace-icon") {
+      replaceSelectedIcon();
+      return;
+    }
+    if (action === "text") {
+      startInlineTextEdit();
+      return;
+    }
+    if (action === "select") {
+      startInspector();
+      return;
+    }
+    if (action === "undo") {
+      undoCurrentChange();
+    }
   }
 
   async function copySelectedElement(): Promise<void> {
@@ -1027,28 +596,8 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   function replaceSelectedImage(src: string, label = ""): void {
     if (!selectedElement || !currentChange) return;
     const element = selectedElement;
-    ensureDomChangeBaseline(element, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"));
-
-    const imageTarget = imageReplacementTarget(element);
-    if (imageTarget instanceof HTMLImageElement) {
-      imageTarget.src = src;
-      imageTarget.removeAttribute("srcset");
-    } else if (imageTarget instanceof HTMLSourceElement) {
-      imageTarget.srcset = src;
-    } else if (imageTarget instanceof SVGImageElement) {
-      imageTarget.setAttribute("href", src);
-      imageTarget.setAttributeNS("http://www.w3.org/1999/xlink", "href", src);
-    } else {
-      const before = getComputedStyle(element).getPropertyValue("background-image");
-      if (currentChange.before["background-image"] === undefined) {
-        currentChange.before["background-image"] = before;
-      }
-      element.style.setProperty("background-image", `url("${cssStringEscape(src)}")`);
-      currentChange.after["background-image"] = src.startsWith("data:image/") ? 'url("[inline image data]")' : `url("${cssStringEscape(src)}")`;
-      currentChange.domAction = label ? `${t("replaceImage")}: ${label}` : t("replaceImage");
-    }
-
-    recordDomAfter(element);
+    applyImageReplacement(currentChange, element, src, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"));
+    syncCurrentChange();
     updateHighlighter(element);
     updateStyleEditorPosition();
     if (panelOpen) schedulePanelRender();
@@ -1065,655 +614,62 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     }
 
     const element = selectedElement;
-    ensureDomChangeBaseline(element, t("replaceIcon"));
-    const svg = parseSvgMarkup(next);
-    if (svg) {
-      const existingSvg = element.querySelector("svg");
-      if (existingSvg) {
-        existingSvg.replaceWith(svg);
-      } else {
-        element.innerHTML = "";
-        element.appendChild(svg);
-      }
-    } else if (looksLikeImageUrl(next)) {
-      const img = element.querySelector("img") ?? document.createElement("img");
-      img.src = next;
-      img.alt = "";
-      img.style.cssText = "width:1em;height:1em;object-fit:contain;display:inline-block;vertical-align:-0.125em;";
-      if (!img.parentElement) {
-        element.innerHTML = "";
-        element.appendChild(img);
-      }
-    } else {
-      element.textContent = next;
-    }
-
-    recordDomAfter(element);
+    applyIconReplacement(currentChange, element, next, t("replaceIcon"));
+    syncCurrentChange();
     updateHighlighter(element);
     updateStyleEditorPosition();
     if (panelOpen) schedulePanelRender();
     toast(t("iconReplaced"));
   }
 
-  function imageReplacementTarget(element: HTMLElement): HTMLImageElement | HTMLSourceElement | SVGImageElement | null {
-    if (element instanceof HTMLImageElement || element instanceof HTMLSourceElement) return element;
-    return element.querySelector("img, source, image") as HTMLImageElement | HTMLSourceElement | SVGImageElement | null;
-  }
-
-  function parseSvgMarkup(value: string): SVGSVGElement | null {
-    if (!/^<svg[\s>]/i.test(value)) return null;
-    const parsed = new DOMParser().parseFromString(value, "image/svg+xml");
-    const svg = parsed.documentElement;
-    if (!(svg instanceof SVGSVGElement) || svg.tagName.toLowerCase() !== "svg") return null;
-    svg.querySelectorAll("script, foreignObject").forEach((node) => node.remove());
-    return document.importNode(svg, true);
-  }
-
-  function looksLikeImageUrl(value: string): boolean {
-    return /^(https?:|data:image\/|blob:|\/|\.\/|\.\.\/)/i.test(value) || /\.(svg|png|jpe?g|gif|webp|avif)(\?.*)?$/i.test(value);
-  }
-
-  function ensureDomChangeBaseline(element: HTMLElement, action: string): void {
-    if (!currentChange) return;
-    if (currentChange.domBefore === undefined) {
-      currentChange.domBefore = snapshotElementHtml(element, false);
-    }
-    currentChange.domAction = action;
-  }
-
-  function recordDomAfter(element: HTMLElement): void {
-    if (!currentChange) return;
-    currentChange.domAfter = snapshotElementHtml(element, true);
-    currentChange.textSnippet = textSnippet(element);
-    currentChange.updatedAt = Date.now();
-    syncCurrentChange();
-  }
-
-  function snapshotElementHtml(element: HTMLElement, redactInlineImages: boolean): string {
-    const html = element.outerHTML;
-    const normalized = redactInlineImages ? html.replace(/data:image\/[^"'\s)>]+/gi, "[inline image data]") : html;
-    return truncateText(normalized, 2400);
-  }
-
   function updateStyleEditorPosition(): void {
-    if (!styleEditor || styleEditor.hidden || !selectedElement) return;
-    const rect = selectedElement.getBoundingClientRect();
-    const editorRect = styleEditor.getBoundingClientRect();
-    const width = editorRect.width || 300;
-    const height = editorRect.height || 240;
-    const position = styleEditorPosition?.manual
-      ? clampFloatingPosition(styleEditorPosition.left, styleEditorPosition.top, width, height)
-      : pickStyleEditorPosition(rect, width, height);
-    styleEditorPosition = {
-      ...position,
-      manual: styleEditorPosition?.manual ?? false
-    };
-    applyStyleEditorPosition(position);
+    styleEditorPositionController.update(styleEditor, selectedElement);
   }
 
   function startStyleEditorDrag(event: PointerEvent): void {
-    if (!styleEditor) return;
-    const target = event.target as HTMLElement | null;
-    if (target?.closest("button,input,select,textarea,summary")) return;
-    event.preventDefault();
-    event.stopPropagation();
-
-    const rect = styleEditor.getBoundingClientRect();
-    const pointerId = event.pointerId;
-    const offsetX = event.clientX - rect.left;
-    const offsetY = event.clientY - rect.top;
-    styleEditor.setPointerCapture(pointerId);
-    styleEditor.classList.add("dragging");
-
-    const onMove = (moveEvent: PointerEvent) => {
-      const editorRect = styleEditor?.getBoundingClientRect();
-      if (!editorRect) return;
-      const next = clampFloatingPosition(moveEvent.clientX - offsetX, moveEvent.clientY - offsetY, editorRect.width, editorRect.height);
-      styleEditorPosition = { ...next, manual: true };
-      applyStyleEditorPosition(next);
-    };
-
-    const onUp = () => {
-      if (styleEditor?.hasPointerCapture(pointerId)) {
-        styleEditor.releasePointerCapture(pointerId);
-      }
-      styleEditor?.classList.remove("dragging");
-      styleEditor?.removeEventListener("pointermove", onMove);
-      styleEditor?.removeEventListener("pointerup", onUp);
-      styleEditor?.removeEventListener("pointercancel", onUp);
-    };
-
-    styleEditor.addEventListener("pointermove", onMove);
-    styleEditor.addEventListener("pointerup", onUp);
-    styleEditor.addEventListener("pointercancel", onUp);
-  }
-
-  function pickStyleEditorPosition(target: DOMRect, width: number, height: number): FloatingPosition {
-    const gap = 10;
-    const topAligned = clampValue(target.top, 8, maxFloatingTop(height));
-    const leftAligned = clampValue(target.left, 8, maxFloatingLeft(width));
-    const candidates = [
-      { left: target.right + gap, top: topAligned, priority: 0 },
-      { left: target.left - width - gap, top: topAligned, priority: 1 },
-      { left: leftAligned, top: target.bottom + gap, priority: 2 },
-      { left: leftAligned, top: target.top - height - gap, priority: 3 },
-      { left: window.innerWidth - width - 8, top: 8, priority: 4 },
-      { left: 8, top: 8, priority: 5 }
-    ].map((candidate) => {
-      const clamped = clampFloatingPosition(candidate.left, candidate.top, width, height);
-      return {
-        ...clamped,
-        priority: candidate.priority,
-        overlap: overlapArea(target, { left: clamped.left, top: clamped.top, right: clamped.left + width, bottom: clamped.top + height })
-      };
-    });
-
-    candidates.sort((a, b) => a.overlap - b.overlap || a.priority - b.priority);
-    return { left: candidates[0].left, top: candidates[0].top, manual: false };
-  }
-
-  function applyStyleEditorPosition(position: Pick<FloatingPosition, "left" | "top">): void {
-    if (!styleEditor) return;
-    styleEditor.style.left = `${Math.round(position.left)}px`;
-    styleEditor.style.top = `${Math.round(position.top)}px`;
-  }
-
-  function clampFloatingPosition(left: number, top: number, width: number, height: number): Pick<FloatingPosition, "left" | "top"> {
-    return {
-      left: clampValue(left, 8, maxFloatingLeft(width)),
-      top: clampValue(top, 8, maxFloatingTop(height))
-    };
-  }
-
-  function maxFloatingLeft(width: number): number {
-    return Math.max(8, window.innerWidth - Math.min(width, window.innerWidth - 16) - 8);
-  }
-
-  function maxFloatingTop(height: number): number {
-    return Math.max(8, window.innerHeight - Math.min(height, window.innerHeight - 16) - 8);
-  }
-
-  function clampValue(value: number, min: number, max: number): number {
-    return Math.min(Math.max(value, min), max);
-  }
-
-  function overlapArea(a: DOMRect, b: { left: number; top: number; right: number; bottom: number }): number {
-    const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
-    const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
-    return width * height;
+    styleEditorPositionController.startDrag(styleEditor, event);
   }
 
   function renderDiagnosticsTab(): string {
-    const issueEvents = getProblemEvents();
-    const logEvents = getConsoleLogEvents();
-    const activeEvents = diagnosticFilter === "logs" ? logEvents : issueEvents;
-
-    return `
-      <div class="toolbar diagnostic-toolbar">
-        <div class="filter-tabs" role="tablist" aria-label="${t("diagnostics")}">
-          ${diagnosticFilterButton("issues", t("issueArchive"), issueEvents.length)}
-          ${diagnosticFilterButton("logs", "console.log", logEvents.length)}
-        </div>
-        <button data-action="copy-all-errors" ${issueEvents.length === 0 ? "disabled" : ""}>${t("copyAllErrors")}</button>
-      </div>
-      ${
-        activeEvents.length === 0
-          ? `<div class="empty compact">${diagnosticFilter === "logs" ? t("noConsoleLogs") : t("noPageErrors")}</div>`
-          : diagnosticFilter === "logs"
-            ? renderConsoleLogList(logEvents)
-            : renderDiagnosticArchive(issueEvents)
-      }
-    `;
-  }
-
-  function diagnosticFilterButton(filter: DiagnosticFilter, label: string, count: number): string {
-    return `
-      <button type="button" data-diagnostic-filter="${filter}" class="${diagnosticFilter === filter ? "active" : ""}" role="tab" aria-selected="${diagnosticFilter === filter}">
-        <span>${escapeHtml(label)}</span>
-        ${count > 0 ? `<strong>${count > 99 ? "99+" : count}</strong>` : ""}
-      </button>
-    `;
-  }
-
-  function renderDiagnosticArchive(events: LiveDiagnosticEvent[]): string {
-    const groups = groupDiagnosticEvents(events).slice(0, 24);
-    return `
-      <div class="diagnostic-list">
-        ${groups.map((group, index) => renderDiagnosticGroup(group, index)).join("")}
-      </div>
-    `;
-  }
-
-  function renderDiagnosticGroup(group: DiagnosticGroup, index: number): string {
-    const source = group.source || group.events.find((event) => event.source || event.url)?.source || group.events.find((event) => event.source || event.url)?.url || "";
-    return `
-      <details class="issue diagnostic-group ${group.severity}" ${index < 4 ? "open" : ""}>
-        <summary class="issue-summary">
-          <span>
-            <strong>${escapeHtml(eventTypeLabel(group.events[0]))}</strong>
-            <small>${escapeHtml(truncate(group.message, 120))}</small>
-          </span>
-          <b>${group.count}</b>
-          <em>${formatTime(group.lastTimestamp)}</em>
-        </summary>
-        <p>${escapeHtml(group.message)}</p>
-        ${source ? `<code>${escapeHtml(source)}</code>` : ""}
-        <div class="issue-samples">
-          ${group.events
-            .slice(0, 4)
-            .map(
-              (event) => `
-                <div class="issue-sample">
-                  <span>${formatTime(event.timestamp)}</span>
-                  ${event.source || event.url ? `<code>${escapeHtml(event.source || event.url || "")}</code>` : ""}
-                  ${event.stack ? `<pre>${escapeHtml(truncate(event.stack, 360))}</pre>` : ""}
-                </div>
-              `
-            )
-            .join("")}
-        </div>
-      </details>
-    `;
-  }
-
-  function renderConsoleLogList(events: LiveDiagnosticEvent[]): string {
-    return `
-      <div class="diagnostic-list">
-        ${events
-          .slice(0, 60)
-          .map(
-            (event) => `
-              <article class="issue console-log">
-                <div class="issue-head">
-                  <strong>console.log</strong>
-                  <span>${formatTime(event.timestamp)}</span>
-                </div>
-                <p>${escapeHtml(event.message)}</p>
-                ${event.stack ? `<pre>${escapeHtml(truncate(event.stack, 360))}</pre>` : ""}
-              </article>
-            `
-          )
-          .join("")}
-      </div>
-    `;
+    return renderDiagnosticsTabView({
+      filter: diagnosticFilter,
+      issueEvents: getProblemEvents(),
+      logEvents: getConsoleLogEvents(),
+      t,
+      eventTypeLabel,
+      formatTime,
+      groupEvents: groupDiagnosticEvents
+    });
   }
 
   function renderNetworkTab(): string {
     const events = getNetworkEvents().slice(0, 20);
-    if (events.length === 0) {
-      return `<div class="empty compact">${t("noNetworkData")}</div>`;
-    }
-
-    const failed = events.filter((event) => event.severity === "error" || (typeof event.status === "number" && event.status >= 400)).length;
-    const slow = events.filter((event) => typeof event.duration === "number" && event.duration >= Number(sessionSettings.slowRequestThreshold ?? 2000)).length;
-    const responseCount = events.filter(hasResponseBody).length;
     const selected = getSelectedNetworkEvent(events);
-
-    return `
-      <div class="toolbar network-toolbar">
-        <button data-action="copy-all-responses" ${responseCount === 0 ? "disabled" : ""}>${t("copyAllResponses")}</button>
-      </div>
-      <div class="network-summary">
-        <div><strong>${events.length}</strong><span>${t("latestRequests")}</span></div>
-        <div><strong>${failed}</strong><span>${t("failed")}</span></div>
-        <div><strong>${slow}</strong><span>${t("slow")}</span></div>
-      </div>
-      <div class="network-workspace">
-        <div class="network-list" role="list">
-          ${events.map((event) => renderNetworkListItem(event, selected?.id === event.id)).join("")}
-        </div>
-        <section class="network-detail">
-          ${selected ? renderNetworkDetail(selected) : `<div class="empty compact">${t("selectRequest")}</div>`}
-        </section>
-      </div>
-    `;
+    return renderNetworkTabView({
+      events,
+      selected,
+      detailTab: networkDetailTab,
+      slowThreshold: Number(sessionSettings.slowRequestThreshold ?? 2000),
+      t,
+      formatUrl,
+      summarizeNetworkData,
+      renderPayloadPanel
+    });
   }
 
   function getSelectedNetworkEvent(events: LiveDiagnosticEvent[]): LiveDiagnosticEvent | null {
-    const selected = selectedNetworkEventId ? events.find((event) => event.id === selectedNetworkEventId) : null;
-    const next = selected ?? events[0] ?? null;
+    const next = pickSelectedNetworkEvent(events, selectedNetworkEventId);
     selectedNetworkEventId = next?.id ?? null;
     return next;
   }
 
-  function renderNetworkListItem(event: LiveDiagnosticEvent, selected: boolean): string {
-    const statusClass = networkStatusClass(event);
-    return `
-      <button type="button" class="network-row ${selected ? "selected" : ""}" data-network-id="${escapeHtml(event.id)}" role="listitem">
-        <span class="network-method">${escapeHtml(event.method || "GET")}</span>
-        <span class="network-url">${escapeHtml(formatUrl(event.url || ""))}</span>
-        <span class="network-status ${statusClass}">${escapeHtml(formatNetworkStatus(event))}</span>
-        <span class="network-hint">${escapeHtml(summarizeNetworkData(event))}</span>
-      </button>
-    `;
-  }
-
-  function renderNetworkDetail(event: LiveDiagnosticEvent): string {
-    return `
-      <div class="network-detail-head">
-        <div>
-          <strong>${escapeHtml(event.method || "GET")} ${escapeHtml(formatUrl(event.url || ""))}</strong>
-          <span>${escapeHtml(event.url || "")}</span>
-        </div>
-        <b class="${networkStatusClass(event)}">${escapeHtml(formatNetworkStatus(event))}</b>
-      </div>
-      <div class="detail-tabs">
-        ${networkDetailButton("preview", "Preview")}
-        ${networkDetailButton("response", "Response")}
-        ${networkDetailButton("request", "Request")}
-        ${networkDetailButton("headers", "Headers")}
-      </div>
-      ${renderNetworkDetailBody(event)}
-    `;
-  }
-
-  function networkDetailButton(tab: NetworkDetailTab, label: string): string {
-    return `<button type="button" data-network-detail="${tab}" class="${networkDetailTab === tab ? "active" : ""}">${label}</button>`;
-  }
-
-  function renderNetworkDetailBody(event: LiveDiagnosticEvent): string {
-    if (networkDetailTab === "response") {
-      return renderPayloadPanel(event.responseBody, t("responseAutoCollecting"));
-    }
-    if (networkDetailTab === "request") {
-      return `
-        <div class="detail-grid">
-          ${detailRow("Method", event.method || "GET")}
-          ${detailRow("URL", event.url || "")}
-          ${detailRow("Request body", event.requestBody || t("none"))}
-        </div>
-      `;
-    }
-    if (networkDetailTab === "headers") {
-      return renderNetworkHeaders(event);
-    }
-    return renderNetworkPreview(event);
-  }
-
-  function renderNetworkPreview(event: LiveDiagnosticEvent): string {
-    const contentType = typeof event.metadata?.contentType === "string" ? event.metadata.contentType : "";
-    const source = typeof event.metadata?.source === "string" ? event.metadata.source : "network";
-    const body = event.responseBody || "";
-    return `
-      <div class="detail-grid compact">
-        ${detailRow("Source", source)}
-        ${detailRow("Content-Type", contentType || "unknown")}
-        ${detailRow("Duration", typeof event.duration === "number" ? `${event.duration}ms` : "-")}
-        ${detailRow("Status", typeof event.status === "number" ? String(event.status) : event.severity)}
-      </div>
-      ${
-        body
-          ? renderPayloadPanel(body, t("noResponseBody"))
-          : `<div class="empty compact">${t("responseAutoCollecting")}</div>`
-      }
-    `;
-  }
-
-  function renderNetworkHeaders(event: LiveDiagnosticEvent): string {
-    const requestHeaders = event.metadata?.requestHeaders;
-    const responseHeaders = event.metadata?.responseHeaders;
-    return `
-      <div class="detail-grid">
-        ${detailRow("Request headers", formatMetadataValue(requestHeaders) || t("none"))}
-        ${detailRow("Response headers", formatMetadataValue(responseHeaders) || t("none"))}
-        ${detailRow("Meta", formatMetadataValue(event.metadata))}
-      </div>
-    `;
-  }
-
   function renderPerformanceTab(): string {
-    const insights = getPerformanceInsights();
-    return `
-      <div class="toolbar">
-        <button data-action="copy-performance-prompt" class="primary">${t("copyPerformancePrompt")}</button>
-      </div>
-      <div class="perf-metrics">
-        ${insights.metrics.map((metric) => `<div><strong>${escapeHtml(metric.value)}</strong><span>${escapeHtml(metric.label)}</span><small>${escapeHtml(metric.note)}</small></div>`).join("")}
-      </div>
-      ${
-        insights.issues.length === 0
-          ? `<div class="empty compact">${t("noPerformanceRisk")}</div>`
-          : `<div class="perf-issues">${insights.issues.map(renderPerformanceIssue).join("")}</div>`
-      }
-      ${renderPerformanceEvidence(insights)}
-    `;
-  }
-
-  function renderPerformanceIssue(issue: PerformanceIssue): string {
-    return `
-      <article class="perf-issue ${issue.severity}">
-        <div class="issue-head">
-          <strong>${escapeHtml(issue.title)}</strong>
-          <span>${escapeHtml(issue.severity)}</span>
-        </div>
-        <p>${escapeHtml(issue.detail)}</p>
-        <pre>${escapeHtml(issue.evidence.slice(0, 6).join("\n"))}</pre>
-        <p>${escapeHtml(issue.suggestion)}</p>
-      </article>
-    `;
-  }
-
-  function renderPerformanceEvidence(insights: PerformanceInsights): string {
-    const resources = insights.largeResources.slice(0, 6);
-    const slowResources = insights.slowResources.slice(0, 6);
-    const longTasks = insights.longTasks.slice(0, 6);
-    if (resources.length === 0 && slowResources.length === 0 && longTasks.length === 0) return "";
-    return `
-      <div class="perf-evidence">
-        ${resources.length > 0 ? `<section><strong>${t("largeResources")}</strong>${resources.map((resource) => `<code>${escapeHtml(formatResourceTiming(resource))}</code>`).join("")}</section>` : ""}
-        ${slowResources.length > 0 ? `<section><strong>${t("slowResources")}</strong>${slowResources.map((resource) => `<code>${escapeHtml(formatResourceTiming(resource))}</code>`).join("")}</section>` : ""}
-        ${longTasks.length > 0 ? `<section><strong>${t("longTasks")}</strong>${longTasks.map((event) => `<code>${escapeHtml(`${event.duration ?? 0}ms @ ${formatTime(event.timestamp)}`)}</code>`).join("")}</section>` : ""}
-      </div>
-    `;
-  }
-
-  function bindPanelEvents(): void {
-    if (!panel) return;
-    panel.querySelectorAll<HTMLElement>(".panel-header, .panel-sidebar").forEach((dragArea) => {
-      dragArea.addEventListener("pointerdown", startPanelDrag);
+    return renderPerformanceTabView({
+      insights: getPerformanceInsights(),
+      t,
+      formatResourceTiming,
+      formatTime
     });
-
-    panel.querySelectorAll<HTMLButtonElement>("button[data-tab]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const tab = button.dataset.tab as OverlayTab | undefined;
-        if (!tab) return;
-        activePanelTab = tab;
-        renderPanel();
-      });
-    });
-
-    panel.querySelectorAll<HTMLButtonElement>("button[data-network-id]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        selectedNetworkEventId = button.dataset.networkId ?? null;
-        renderPanel();
-      });
-    });
-
-    panel.querySelectorAll<HTMLButtonElement>("button[data-network-detail]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const tab = button.dataset.networkDetail as NetworkDetailTab | undefined;
-        if (!tab) return;
-        networkDetailTab = tab;
-        renderPanel();
-      });
-    });
-
-    panel.querySelectorAll<HTMLButtonElement>("button[data-diagnostic-filter]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const filter = button.dataset.diagnosticFilter as DiagnosticFilter | undefined;
-        if (!filter) return;
-        diagnosticFilter = filter;
-        renderPanel();
-      });
-    });
-
-    panel.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-prop]").forEach((input) => {
-      input.addEventListener("input", () => {
-        const prop = input.dataset.prop;
-        if (!prop || !selectedElement || !currentChange) return;
-        applyStyle(prop, input.value);
-      });
-      input.addEventListener("change", () => {
-        const prop = input.dataset.prop;
-        if (!prop || !selectedElement || !currentChange) return;
-        applyStyle(prop, input.value);
-      });
-    });
-
-    panel.querySelectorAll<HTMLTextAreaElement>("textarea[data-text-content]").forEach((textarea) => {
-      textarea.addEventListener("input", () => {
-        applyTextContent(textarea.value);
-      });
-      textarea.addEventListener("change", () => {
-        applyTextContent(textarea.value);
-      });
-    });
-
-    panel.querySelectorAll<HTMLButtonElement>("button[data-action]").forEach((button) => {
-      button.addEventListener("click", async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        await handlePanelAction(button.dataset.action ?? "");
-      });
-    });
-  }
-
-  async function handlePanelAction(action: string): Promise<void> {
-    if (action === "close") {
-      closePanel();
-      return;
-    }
-
-    if (action === "quick-select") {
-      await ensureCapture();
-      startInspector();
-      toast(t("clickToSelect"));
-      return;
-    }
-
-    if (action === "continue-select") {
-      await ensureCapture();
-      startInspector();
-      toast(t("continueSelect"));
-      return;
-    }
-
-    if (action === "stop-select") {
-      stopInspector();
-      toast(t("selectionStopped"));
-      return;
-    }
-
-    if (action === "show-settings") {
-      activePanelTab = "settings";
-      renderPanel();
-      return;
-    }
-
-    if (action === "save-panel-settings") {
-      await savePanelSettings(collectPanelSettingsForm());
-      return;
-    }
-
-    if (action === "reset-panel-settings") {
-      await savePanelSettings(DEFAULT_PANEL_SETTINGS, t("settingsReset"));
-      return;
-    }
-
-    if (action === "toggle-locale") {
-      await toggleLocale();
-      return;
-    }
-
-    if (action === "copy-selector" && currentChange) {
-      await copyText(currentChange.selector);
-      toast(t("selectorCopied"));
-      return;
-    }
-
-    if (action === "copy-text" && selectedElement) {
-      await copyText(editableTextValue(selectedElement));
-      toast(t("textCopied"));
-      return;
-    }
-
-    if (action === "inline-text-edit") {
-      startInlineTextEdit();
-      return;
-    }
-
-    if (action === "copy-css" && currentChange) {
-      await copyText(cssBlock(currentChange.after));
-      toast(t("cssCopied"));
-      return;
-    }
-
-    if (action === "copy-prompt") {
-      if (styleChangeSyncPromise) {
-        await styleChangeSyncPromise.catch(() => null);
-      }
-      const response = await sendRuntime({ type: "generate-export", format: "prompt" });
-      if (response?.ok && response.text) {
-        await copyText(response.text);
-        toast(t("fullPromptCopied"));
-      } else {
-        toast(response?.error || t("exportFailed"));
-      }
-      return;
-    }
-
-    if (action === "copy-performance-prompt") {
-      await copyText(buildPerformancePrompt());
-      toast(t("performancePromptCopied"));
-      return;
-    }
-
-    if (action === "copy-all-responses") {
-      const text = buildAllResponsesText();
-      if (!text) {
-        toast(t("noResponsesToCopy"));
-        return;
-      }
-      await copyText(text);
-      toast(t("responsesCopied"));
-      return;
-    }
-
-    if (action === "copy-all-errors") {
-      const text = buildAllErrorsText();
-      if (!text) {
-        toast(t("noErrorsToCopy"));
-        return;
-      }
-      await copyText(text);
-      toast(t("errorsCopied"));
-      return;
-    }
-
-    if (action === "enable-response-body") {
-      await ensureResponseBodyCapture(true);
-      return;
-    }
-
-    if (action === "hide") {
-      stopInlineTextEdit();
-      applyStyle("display", "none");
-      renderPanel();
-      return;
-    }
-
-    if (action === "undo") {
-      stopInlineTextEdit();
-      undoCurrentChange();
-    }
   }
 
   async function toggleLocale(): Promise<void> {
@@ -1740,29 +696,6 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     toast(uiLocale === "en" ? t("switchedEn") : t("switchedZh"));
   }
 
-  function collectPanelSettingsForm(): PanelSettings {
-    const current = mergedPanelSettings();
-    const locale = normalizeLocale(panel?.querySelector<HTMLSelectElement>('[data-setting="locale"]')?.value ?? current.locale);
-    const uiTheme = normalizeTheme(panel?.querySelector<HTMLInputElement>('input[name="uiTheme"]:checked')?.value ?? current.uiTheme);
-    const collectResponseBody = panel?.querySelector<HTMLInputElement>('[data-setting="collectResponseBody"]')?.checked ?? false;
-    const maxResponseLength = Number(panel?.querySelector<HTMLInputElement>('[data-setting="maxResponseLength"]')?.value || current.maxResponseLength);
-    const slowRequestThreshold = Number(panel?.querySelector<HTMLInputElement>('[data-setting="slowRequestThreshold"]')?.value || current.slowRequestThreshold);
-    const extraRedactionKeys = (panel?.querySelector<HTMLTextAreaElement>('[data-setting="extraRedactionKeys"]')?.value ?? "")
-      .split(/\n+/)
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    return {
-      ...current,
-      locale,
-      uiTheme,
-      collectResponseBody,
-      maxResponseLength,
-      slowRequestThreshold,
-      extraRedactionKeys
-    };
-  }
-
   async function savePanelSettings(next: PanelSettings, successMessage = t("settingsSaved")): Promise<void> {
     const response = await sendRuntime({ type: "save-settings", settings: next });
     if (!response?.ok) {
@@ -1783,22 +716,6 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     return mergePanelSettings(sessionSettings);
   }
 
-  function mergePanelSettings(input?: PanelSettings): Required<PanelSettings> {
-    return {
-      locale: normalizeLocale(input?.locale ?? DEFAULT_PANEL_SETTINGS.locale),
-      uiTheme: normalizeTheme(input?.uiTheme ?? DEFAULT_PANEL_SETTINGS.uiTheme),
-      collectResponseBody: input?.collectResponseBody ?? DEFAULT_PANEL_SETTINGS.collectResponseBody,
-      maxResponseLength: input?.maxResponseLength ?? DEFAULT_PANEL_SETTINGS.maxResponseLength,
-      slowRequestThreshold: input?.slowRequestThreshold ?? DEFAULT_PANEL_SETTINGS.slowRequestThreshold,
-      retainHours: input?.retainHours ?? DEFAULT_PANEL_SETTINGS.retainHours,
-      extraRedactionKeys: input?.extraRedactionKeys ?? DEFAULT_PANEL_SETTINGS.extraRedactionKeys
-    };
-  }
-
-  function normalizeTheme(value: unknown): UiTheme {
-    return value === "saas" || value === "dark" || value === "cartoon" ? value : "claude";
-  }
-
   function applyOverlayTheme(): void {
     if (!overlayHost) return;
     const theme = PANEL_THEMES[normalizeTheme(sessionSettings.uiTheme)];
@@ -1809,9 +726,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function applyStyle(prop: string, value: string): void {
     if (!selectedElement || !currentChange) return;
-    selectedElement.style.setProperty(prop, value);
-    currentChange.after[prop] = value;
-    currentChange.updatedAt = Date.now();
+    applyStyleChange(currentChange, selectedElement, prop, value);
     syncCurrentChange();
     updateHighlighter(selectedElement);
     updateStyleEditorPosition();
@@ -1833,90 +748,25 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   }
 
   function startInlineTextEdit(): void {
-    if (!selectedElement || !currentChange || !canEditTextContent(selectedElement)) {
+    if (!selectedElement || !currentChange) {
       toast(t("noEditableText"));
       return;
     }
-
-    if (inlineTextEditState?.element === selectedElement) {
-      focusEditableElement(selectedElement);
-      return;
-    }
-
-    stopInlineTextEdit();
-    const element = selectedElement;
-    ensureTextChangeBaseline(element);
-
-    const state: InlineTextEditState = {
-      element,
-      previousContentEditable: element.getAttribute("contenteditable"),
-      previousSpellcheck: element.getAttribute("spellcheck"),
-      onInput: () => {
-        if (selectedElement !== element) return;
-        recordTextAfter(element);
-        updateHighlighter(element);
-        updateStyleEditorPosition();
-        if (panelOpen && activePanelTab === "element") {
-          schedulePanelRender();
-        }
-      },
-      onBlur: () => {
-        stopInlineTextEdit();
-      },
-      onKeydown: (event: KeyboardEvent) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          stopInlineTextEdit();
-          if (panelOpen) renderPanel();
-        }
-      }
-    };
-
-    inlineTextEditState = state;
-    element.setAttribute("contenteditable", "plaintext-only");
-    element.setAttribute("spellcheck", "false");
-    element.addEventListener("input", state.onInput);
-    element.addEventListener("blur", state.onBlur);
-    element.addEventListener("keydown", state.onKeydown);
-    focusEditableElement(element);
-    toast(t("inlineEditHint"));
+    inlineTextEditor.start(selectedElement);
   }
 
   function stopInlineTextEdit(): void {
-    const state = inlineTextEditState;
-    if (!state) return;
-    state.element.removeEventListener("input", state.onInput);
-    state.element.removeEventListener("blur", state.onBlur);
-    state.element.removeEventListener("keydown", state.onKeydown);
-    if (state.previousContentEditable === null) {
-      state.element.removeAttribute("contenteditable");
-    } else {
-      state.element.setAttribute("contenteditable", state.previousContentEditable);
-    }
-    if (state.previousSpellcheck === null) {
-      state.element.removeAttribute("spellcheck");
-    } else {
-      state.element.setAttribute("spellcheck", state.previousSpellcheck);
-    }
-    inlineTextEditState = null;
+    inlineTextEditor.stop();
   }
 
   function ensureTextChangeBaseline(element: HTMLElement): void {
     if (!currentChange) return;
-    if (currentChange.textBefore === undefined) {
-      currentChange.textBefore = editableTextValue(element);
-    }
-    if (currentChange.htmlBefore === undefined) {
-      currentChange.htmlBefore = element.innerHTML;
-    }
+    ensureTextChangeRecordBaseline(currentChange, element);
   }
 
   function recordTextAfter(element: HTMLElement): void {
     if (!currentChange) return;
-    currentChange.textAfter = editableTextValue(element);
-    currentChange.htmlAfter = element.innerHTML;
-    currentChange.textSnippet = truncateText(currentChange.textAfter.replace(/\s+/g, " ").trim(), 140);
-    currentChange.updatedAt = Date.now();
+    recordTextChangeAfter(currentChange, element);
     syncCurrentChange();
   }
 
@@ -1933,24 +783,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function undoCurrentChange(): void {
     if (!selectedElement || !currentChange) return;
-    if (currentChange.domBefore !== undefined) {
-      selectedElement.outerHTML = currentChange.domBefore;
-      sendRuntime({ type: "style-change-delete", id: currentChange.id });
-      currentChange = null;
-      selectedElement = null;
-      hideHighlighter();
-      hideStyleEditor();
-      renderPanel();
-      return;
-    }
-    for (const prop of Object.keys(currentChange.after)) {
-      selectedElement.style.setProperty(prop, currentChange.before[prop] ?? "");
-    }
-    if (currentChange.htmlBefore !== undefined) {
-      selectedElement.innerHTML = currentChange.htmlBefore;
-    } else if (currentChange.textBefore !== undefined) {
-      selectedElement.textContent = currentChange.textBefore;
-    }
+    undoStyleChange(currentChange, selectedElement);
     sendRuntime({ type: "style-change-delete", id: currentChange.id });
     currentChange = null;
     selectedElement = null;
@@ -1966,11 +799,12 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       ...event
     } as LiveDiagnosticEvent;
     rememberDiagnosticEvent(diagnosticEvent);
-    sendRuntime({
-      type: "diagnostic-event",
-      event: diagnosticEvent
-    });
+    diagnosticEventBatcher.enqueue(diagnosticEvent);
     schedulePanelRender();
+  }
+
+  function flushDiagnosticEvents(): void {
+    diagnosticEventBatcher.flush();
   }
 
   function sendRuntime(message: any): Promise<any> {
@@ -1998,7 +832,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       mergeSessionEvents(sessionSnapshot?.events ?? []);
       sendRuntime({ type: "page-context", page: getPageContext() });
       window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
-      startPerformanceMonitor();
+      performanceMonitor.start();
       schedulePanelRender();
     })().finally(() => {
       captureStartPromise = null;
@@ -2042,31 +876,15 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   }
 
   function startPanelRefresh(): void {
-    if (panelRefreshTimer !== null) return;
-    void refreshSessionSnapshot().then(() => {
-      if (panelOpen) renderPanel();
-    });
-    panelRefreshTimer = window.setInterval(() => {
-      void refreshSessionSnapshot().then(() => {
-        if (!panelOpen || activePanelTab === "element" || isEditingPanelField()) return;
-        renderPanel();
-      });
-    }, 1400);
+    panelRefreshController.start();
   }
 
   function stopPanelRefresh(): void {
-    if (panelRefreshTimer === null) return;
-    window.clearInterval(panelRefreshTimer);
-    panelRefreshTimer = null;
+    panelRefreshController.stop();
   }
 
   function schedulePanelRender(): void {
-    if (!panelOpen || panelRenderQueued || isEditingPanelField()) return;
-    panelRenderQueued = true;
-    window.setTimeout(() => {
-      panelRenderQueued = false;
-      if (panelOpen) renderPanel();
-    }, 120);
+    panelRefreshController.scheduleRender();
   }
 
   function isEditingPanelField(): boolean {
@@ -2075,371 +893,58 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   }
 
   function rememberDiagnosticEvent(event: LiveDiagnosticEvent): void {
-    if (!event?.id) return;
-    const index = liveEvents.findIndex((item) => item.id === event.id);
-    if (index >= 0) {
-      liveEvents[index] = event;
-    } else {
-      liveEvents.push(event);
-    }
-    liveEvents = liveEvents.sort((a, b) => a.timestamp - b.timestamp).slice(-220);
+    diagnosticEvents.remember(event);
   }
 
   function mergeSessionEvents(events: LiveDiagnosticEvent[]): void {
-    events.forEach((event) => rememberDiagnosticEvent(event));
+    diagnosticEvents.merge(events);
   }
 
   function getProblemEvents(): LiveDiagnosticEvent[] {
-    return liveEvents
-      .filter((event) => {
-        if (event.type === "performance" || event.type === "user-click") return false;
-        if (event.type === "network") return event.severity === "error" || (typeof event.status === "number" && event.status >= 400);
-        return event.severity === "error" || event.severity === "warning";
-      })
-      .sort((a, b) => b.timestamp - a.timestamp);
+    return diagnosticEvents.getProblemEvents();
   }
 
   function getNetworkEvents(): LiveDiagnosticEvent[] {
-    return liveEvents.filter((event) => event.type === "network").sort((a, b) => b.timestamp - a.timestamp);
+    return diagnosticEvents.getNetworkEvents();
   }
 
   function getConsoleLogEvents(): LiveDiagnosticEvent[] {
-    return liveEvents.filter((event) => event.type === "console-log").sort((a, b) => b.timestamp - a.timestamp);
+    return diagnosticEvents.getConsoleLogEvents();
   }
 
   function groupDiagnosticEvents(events: LiveDiagnosticEvent[]): DiagnosticGroup[] {
-    const groups = new Map<string, DiagnosticGroup>();
-    for (const event of events) {
-      const key = diagnosticGroupKey(event);
-      const group = groups.get(key);
-      if (group) {
-        group.events.push(event);
-        group.count += 1;
-        group.lastTimestamp = Math.max(group.lastTimestamp, event.timestamp);
-        group.severity = maxSeverity(group.severity, event.severity);
-        continue;
-      }
-      groups.set(key, {
-        key,
-        severity: event.severity,
-        message: event.message || eventTypeLabel(event),
-        source: event.url || event.source || "",
-        count: 1,
-        lastTimestamp: event.timestamp,
-        events: [event]
-      });
-    }
-    return Array.from(groups.values()).sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.count - a.count || b.lastTimestamp - a.lastTimestamp);
-  }
-
-  function diagnosticGroupKey(event: LiveDiagnosticEvent): string {
-    const status = typeof event.status === "number" ? String(event.status) : "";
-    const source = event.url ? formatUrl(event.url) : event.source || "";
-    const message = normalizeDiagnosticMessage(event.message);
-    return [event.type, status, source, message].join("|");
-  }
-
-  function normalizeDiagnosticMessage(value: string): string {
-    return value
-      .replace(/https?:\/\/\S+/g, "{url}")
-      .replace(/\b\d{10,}\b/g, "{number}")
-      .replace(/\b[0-9a-f]{8,}\b/gi, "{hash}")
-      .slice(0, 180);
-  }
-
-  function maxSeverity(a: LiveDiagnosticEvent["severity"], b: LiveDiagnosticEvent["severity"]): LiveDiagnosticEvent["severity"] {
-    return severityRank(b) > severityRank(a) ? b : a;
-  }
-
-  function severityRank(severity: LiveDiagnosticEvent["severity"]): number {
-    if (severity === "error") return 3;
-    if (severity === "warning") return 2;
-    return 1;
+    return diagnosticEvents.group(events, { eventTypeLabel, formatUrl });
   }
 
   function getPerformanceInsights(): PerformanceInsights {
-    const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
-    const resources = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
-    const slowThreshold = Number(sessionSettings.slowRequestThreshold ?? 2000);
-    const largeResources = resources
-      .filter((resource) => resource.transferSize >= 512 * 1024 || resource.encodedBodySize >= 512 * 1024)
-      .sort((a, b) => Math.max(b.transferSize, b.encodedBodySize) - Math.max(a.transferSize, a.encodedBodySize));
-    const slowResources = resources.filter((resource) => resource.duration >= Math.max(1200, slowThreshold)).sort((a, b) => b.duration - a.duration);
-    const longTasks = liveEvents
-      .filter((event) => event.type === "performance" && event.metadata?.kind === "longtask")
-      .sort((a, b) => (b.duration ?? 0) - (a.duration ?? 0));
-    const slowNetwork = getNetworkEvents().filter((event) => typeof event.duration === "number" && event.duration >= slowThreshold);
-    const resourceErrors = liveEvents.filter((event) => event.type === "resource-error");
-    const metrics = buildPerformanceMetrics(nav, resources, longTasks);
-    const issues: PerformanceIssue[] = [];
-
-    if (nav) {
-      const ttfb = Math.round(nav.responseStart - nav.requestStart);
-      const domReady = Math.round(nav.domContentLoadedEventEnd);
-      const load = Math.round(nav.loadEventEnd || nav.duration);
-      if (ttfb >= 600) {
-        issues.push({
-          title: uiLocale === "en" ? "High TTFB" : "首包时间偏高",
-          severity: ttfb >= 1200 ? "error" : "warning",
-          detail: uiLocale === "en" ? `TTFB is about ${ttfb}ms. The page may be slowed by server response or network latency.` : `TTFB 约 ${ttfb}ms，页面启动可能被服务端响应或网络链路拖慢。`,
-          evidence: [`TTFB: ${ttfb}ms`, `${uiLocale === "en" ? "Page" : "页面"}: ${location.href}`],
-          suggestion:
-            uiLocale === "en"
-              ? "Check the HTML document request, server rendering time, CDN cache hit rate, and gateway latency."
-              : "检查 HTML 文档请求、服务端渲染耗时、CDN 缓存命中和接口网关延迟。"
-        });
-      }
-      if (domReady >= 2500 || load >= 4500) {
-        issues.push({
-          title: uiLocale === "en" ? "Slow page load phase" : "页面加载阶段偏慢",
-          severity: load >= 8000 ? "error" : "warning",
-          detail: uiLocale === "en" ? `DOMContentLoaded ${domReady}ms, Load ${load}ms.` : `DOMContentLoaded ${domReady}ms，Load ${load}ms。`,
-          evidence: [`DOMContentLoaded: ${domReady}ms`, `Load: ${load}ms`],
-          suggestion:
-            uiLocale === "en"
-              ? "Check first-screen scripts, render-blocking styles, font loading, and key API calls that may block rendering serially."
-              : "检查首屏脚本、阻塞样式、字体加载和关键接口是否串行阻塞渲染。"
-        });
-      }
-    }
-
-    if (longTasks.length > 0) {
-      const total = longTasks.reduce((sum, event) => sum + Number(event.duration ?? 0), 0);
-      issues.push({
-        title: uiLocale === "en" ? "Main thread long tasks" : "主线程存在长任务",
-        severity: longTasks.some((event) => Number(event.duration ?? 0) >= 200) ? "error" : "warning",
-        detail: uiLocale === "en" ? `${longTasks.length} long tasks, about ${Math.round(total)}ms total blocking.` : `${longTasks.length} 个长任务，总阻塞约 ${Math.round(total)}ms。`,
-        evidence: longTasks.slice(0, 6).map((event) => `${event.duration ?? 0}ms @ ${formatTime(event.timestamp)}`),
-        suggestion:
-          uiLocale === "en"
-            ? "Split synchronous work, defer non-critical work, reduce large one-pass renders, and check list rendering or third-party scripts."
-            : "拆分同步计算、推迟非首屏工作、减少大组件一次性渲染，并检查列表渲染和第三方脚本。"
-      });
-    }
-
-    if (largeResources.length > 0) {
-      issues.push({
-        title: uiLocale === "en" ? "Large resource loading" : "存在大资源加载",
-        severity: largeResources.some((resource) => Math.max(resource.transferSize, resource.encodedBodySize) >= 2 * 1024 * 1024) ? "error" : "warning",
-        detail: uiLocale === "en" ? `${largeResources.length} resources exceed 512KB.` : `${largeResources.length} 个资源超过 512KB。`,
-        evidence: largeResources.slice(0, 6).map(formatResourceTiming),
-        suggestion:
-          uiLocale === "en"
-            ? "Compress images and fonts, split JS/CSS, enable gzip/brotli, and keep non-critical large resources off the critical path."
-            : "压缩图片和字体、拆分 JS/CSS、启用 gzip/brotli，并避免非首屏大资源抢占带宽。"
-      });
-    }
-
-    if (slowResources.length > 0 || slowNetwork.length > 0) {
-      issues.push({
-        title: uiLocale === "en" ? "Slow resources or requests" : "存在慢资源或慢请求",
-        severity: "warning",
-        detail: uiLocale === "en" ? `${slowResources.length} slow resources and ${slowNetwork.length} slow API requests.` : `资源慢加载 ${slowResources.length} 个，接口慢请求 ${slowNetwork.length} 个。`,
-        evidence: [...slowResources.slice(0, 4).map(formatResourceTiming), ...slowNetwork.slice(0, 4).map((event) => `${event.duration}ms ${event.method ?? "GET"} ${event.url ?? ""}`)],
-        suggestion:
-          uiLocale === "en"
-            ? "Check CDN behavior, cache policy, API response time, and whether the page serially waits for async work."
-            : "检查 CDN、缓存策略、接口响应时间，以及页面是否串行等待多个异步任务。"
-      });
-    }
-
-    if (resourceErrors.length > 0) {
-      issues.push({
-        title: uiLocale === "en" ? "Resource load failures" : "资源加载失败",
-        severity: "warning",
-        detail: uiLocale === "en" ? `${resourceErrors.length} images, scripts, styles, or fonts failed to load.` : `${resourceErrors.length} 个图片、脚本、样式或字体资源加载失败。`,
-        evidence: resourceErrors.slice(0, 6).map((event) => event.url || event.message),
-        suggestion:
-          uiLocale === "en"
-            ? "Check resource paths, release versions, CORS policy, and CDN origin status."
-            : "检查资源路径、发布版本、跨域策略和 CDN 回源状态。"
-      });
-    }
-
-    return { metrics, issues, largeResources, slowResources, longTasks };
+    return getPerformanceInsightsData(performanceContext());
   }
 
-  function buildPerformanceMetrics(nav: PerformanceNavigationTiming | undefined, resources: PerformanceResourceTiming[], longTasks: LiveDiagnosticEvent[]): PerformanceInsights["metrics"] {
-    const totalTransfer = resources.reduce((sum, resource) => sum + Math.max(0, resource.transferSize || resource.encodedBodySize || 0), 0);
-    return [
-      {
-        label: "DOMContentLoaded",
-        value: nav ? `${Math.round(nav.domContentLoadedEventEnd)}ms` : "-",
-        note: t("domReadyTime")
-      },
-      {
-        label: "Load",
-        value: nav ? `${Math.round(nav.loadEventEnd || nav.duration)}ms` : "-",
-        note: t("pageLoadComplete")
-      },
-      {
-        label: t("resourceSize"),
-        value: formatBytes(totalTransfer),
-        note: uiLocale === "en" ? `${resources.length} resources` : `${resources.length} 个资源`
-      },
-      {
-        label: t("longTasks"),
-        value: String(longTasks.length),
-        note: t("over50ms")
-      }
-    ];
-  }
-
-  function startPerformanceMonitor(): void {
-    if (performanceObserver || typeof PerformanceObserver === "undefined") {
-      sendPerformanceSnapshotOnce();
-      return;
-    }
-    try {
-      performanceObserver = new PerformanceObserver((list) => {
-        if (!captureActive) return;
-        for (const entry of list.getEntries()) {
-          if (entry.duration < 50) continue;
-      sendDiagnosticEvent({
-        type: "performance",
-        severity: entry.duration >= 200 ? "error" : "warning",
-            message: uiLocale === "en" ? `Main thread long task ${Math.round(entry.duration)}ms` : `主线程长任务 ${Math.round(entry.duration)}ms`,
-            duration: Math.round(entry.duration),
-            metadata: {
-              kind: "longtask",
-              name: entry.name,
-              startTime: Math.round(entry.startTime)
-            }
-          });
-        }
-      });
-      performanceObserver.observe({ entryTypes: ["longtask"] });
-    } catch {
-      performanceObserver = null;
-    }
-    sendPerformanceSnapshotOnce();
-  }
-
-  function stopPerformanceMonitor(): void {
-    performanceObserver?.disconnect();
-    performanceObserver = null;
-    performanceSnapshotSent = false;
-  }
-
-  function sendPerformanceSnapshotOnce(): void {
-    if (performanceSnapshotSent || !captureActive) return;
-    performanceSnapshotSent = true;
-    const insights = getPerformanceInsights();
-    sendDiagnosticEvent({
-      type: "performance",
-      severity: insights.issues.length > 0 ? "warning" : "info",
-      message:
-        insights.issues.length > 0
-          ? uiLocale === "en"
-            ? `Performance snapshot found ${insights.issues.length} risks`
-            : `性能快照发现 ${insights.issues.length} 个风险`
-          : uiLocale === "en"
-            ? "Performance snapshot found no obvious risks"
-            : "性能快照未发现明显风险",
-      metadata: {
-        kind: "snapshot",
-        metrics: insights.metrics,
-        issueTitles: insights.issues.map((issue) => issue.title)
-      }
-    });
-  }
-
-  function buildPerformancePrompt(): string {
-    const insights = getPerformanceInsights();
-    return JSON.stringify(
-      {
-        task:
-          uiLocale === "en"
-            ? "Use this DevLite performance diagnosis to locate and fix lag, slow loading, or large resource issues on the current page."
-            : "请根据 DevLite 性能诊断结果定位并修复当前页面的卡顿、慢加载或大资源问题。",
-        page: getPageContext(),
-        metrics: insights.metrics,
-        issues: insights.issues,
-        largeResources: insights.largeResources.slice(0, 10).map(resourceToPromptItem),
-        slowResources: insights.slowResources.slice(0, 10).map(resourceToPromptItem),
-        longTasks: insights.longTasks.slice(0, 10).map((event) => ({
-          duration: event.duration,
-          timestamp: event.timestamp,
-          metadata: event.metadata
-        })),
-        slowRequests: getNetworkEvents()
-          .filter((event) => typeof event.duration === "number" && event.duration >= Number(sessionSettings.slowRequestThreshold ?? 2000))
-          .slice(0, 10)
-          .map((event) => ({
-            method: event.method,
-            url: event.url,
-            status: event.status,
-            duration: event.duration,
-            contentType: event.metadata?.contentType
-          }))
-      },
-      null,
-      2
-    );
-  }
-
-  function buildAllResponsesText(): string {
-    const events = getNetworkEvents().filter(hasResponseBody);
-    if (events.length === 0) return "";
-    return events
-      .map((event, index) => {
-        return [
-          `#${index + 1} ${event.method ?? "GET"} ${event.url ?? ""}`,
-          `Status: ${typeof event.status === "number" ? event.status : event.severity}`,
-          `Duration: ${typeof event.duration === "number" ? `${event.duration}ms` : "-"}`,
-          `Time: ${new Date(event.timestamp).toISOString()}`,
-          "",
-          event.responseBody ?? ""
-        ].join("\n");
-      })
-      .join("\n\n---\n\n");
-  }
-
-  function buildAllErrorsText(): string {
-    const events = getProblemEvents();
-    if (events.length === 0) return "";
-    return events
-      .map((event, index) => {
-        return [
-          `#${index + 1} [${event.severity}] ${eventTypeLabel(event)}`,
-          `Time: ${new Date(event.timestamp).toISOString()}`,
-          event.url ? `URL: ${event.url}` : "",
-          event.source ? `Source: ${event.source}` : "",
-          typeof event.status === "number" ? `Status: ${event.status}` : "",
-          event.method ? `Method: ${event.method}` : "",
-          event.message ? `Message: ${event.message}` : "",
-          event.stack ? `Stack:\n${event.stack}` : ""
-        ]
-          .filter(Boolean)
-          .join("\n");
-      })
-      .join("\n\n---\n\n");
-  }
-
-  function hasResponseBody(event: LiveDiagnosticEvent): boolean {
-    return typeof event.responseBody === "string" && event.responseBody.length > 0;
-  }
-
-  function resourceToPromptItem(resource: PerformanceResourceTiming): Record<string, unknown> {
+  function performanceContext() {
     return {
-      url: resource.name,
-      type: resource.initiatorType,
-      duration: Math.round(resource.duration),
-      transferSize: resource.transferSize,
-      encodedBodySize: resource.encodedBodySize
+      locale: uiLocale,
+      slowThreshold: Number(sessionSettings.slowRequestThreshold ?? 2000),
+      pageContext: getPageContext(),
+      allEvents: diagnosticEvents.all,
+      networkEvents: getNetworkEvents(),
+      text: {
+        domReadyTime: t("domReadyTime"),
+        pageLoadComplete: t("pageLoadComplete"),
+        resourceSize: t("resourceSize"),
+        longTasks: t("longTasks"),
+        over50ms: t("over50ms")
+      },
+      formatTime,
+      formatUrl
     };
   }
 
-  function formatResourceTiming(resource: PerformanceResourceTiming): string {
-    const url = formatUrl(resource.name);
-    const size = formatBytes(Math.max(resource.transferSize, resource.encodedBodySize));
-    return `${Math.round(resource.duration)}ms / ${size} / ${resource.initiatorType || "resource"} / ${url}`;
+  function buildPerformancePrompt(): string {
+    return buildPerformancePromptText(performanceContext());
   }
 
-  function formatBytes(bytes: number): string {
-    if (!Number.isFinite(bytes) || bytes <= 0) return "0KB";
-    if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
-    return `${Math.round(bytes / 1024)}KB`;
+  function formatResourceTiming(resource: PerformanceResourceTiming): string {
+    return formatPerformanceResourceTiming(resource, formatUrl);
   }
 
   function eventTypeLabel(event: LiveDiagnosticEvent): string {
@@ -2456,442 +961,27 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   }
 
   function summarizeNetworkData(event: LiveDiagnosticEvent): string {
-    const body = event.responseBody || event.requestBody || "";
-    if (body) return summarizePayload(body);
-    const contentType = typeof event.metadata?.contentType === "string" ? event.metadata.contentType : "";
-    const source = typeof event.metadata?.source === "string" ? event.metadata.source : "network";
-    return [contentType, source, typeof event.duration === "number" ? `${event.duration}ms` : ""].filter(Boolean).join(" / ") || t("noResponseBodyCollected");
-  }
-
-  function summarizePayload(value: string): string {
-    const trimmed = value.trim();
-    if (!trimmed) return t("emptyData");
-    try {
-      const json = JSON.parse(trimmed);
-      if (Array.isArray(json)) {
-        const first = json[0] && typeof json[0] === "object" ? Object.keys(json[0]).slice(0, 5).join(", ") : "";
-        return uiLocale === "en" ? `Array ${json.length} items${first ? ` / ${first}` : ""}` : `数组 ${json.length} 项${first ? ` / ${first}` : ""}`;
-      }
-      if (json && typeof json === "object") {
-        return `${t("objectFields")} / ${Object.keys(json).slice(0, 8).join(", ")}`;
-      }
-      return truncate(String(json), 160);
-    } catch {
-      return truncate(trimmed.replace(/\s+/g, " "), 180);
-    }
+    return summarizeNetworkEventData(
+      event,
+      {
+        emptyData: t("emptyData"),
+        objectFields: t("objectFields"),
+        noResponseBodyCollected: t("noResponseBodyCollected")
+      },
+      uiLocale
+    );
   }
 
   function renderPayloadPanel(value: string | undefined, emptyText: string): string {
-    if (!value) return `<div class="empty compact">${escapeHtml(emptyText)}</div>`;
-    const trimmed = value.trim();
-    if (!trimmed) return `<div class="empty compact">${escapeHtml(emptyText)}</div>`;
-    const parsed = parseJsonPayload(trimmed);
-    if (parsed.ok) {
-      return `<div class="payload-preview">${renderJsonPreview(parsed.value, 0)}</div>`;
-    }
-    return `<pre class="payload-raw">${escapeHtml(truncate(trimmed, 6000))}</pre>`;
-  }
-
-  function parseJsonPayload(value: string): { ok: true; value: unknown } | { ok: false } {
-    try {
-      return { ok: true, value: JSON.parse(value) };
-    } catch {
-      return { ok: false };
-    }
-  }
-
-  function renderJsonPreview(value: unknown, depth: number): string {
-    if (depth > 4) {
-      return `<span class="json-muted">...</span>`;
-    }
-    if (Array.isArray(value)) {
-      if (value.length === 0) return `<span class="json-muted">[]</span>`;
-      const visible = value.slice(0, 8);
-      return `
-        <div class="json-node">
-          <strong>Array(${value.length})</strong>
-          ${visible.map((item, index) => `<div class="json-row"><span>${index}</span>${renderJsonPreview(item, depth + 1)}</div>`).join("")}
-          ${value.length > visible.length ? `<div class="json-muted">${uiLocale === "en" ? `${value.length - visible.length} more items` : `还有 ${value.length - visible.length} 项`}</div>` : ""}
-        </div>
-      `;
-    }
-    if (value && typeof value === "object") {
-      const entries = Object.entries(value as Record<string, unknown>);
-      if (entries.length === 0) return `<span class="json-muted">{}</span>`;
-      return `
-        <div class="json-node">
-          ${entries
-            .slice(0, 18)
-            .map(([key, item]) => `<div class="json-row"><span>${escapeHtml(key)}</span>${renderJsonPreview(item, depth + 1)}</div>`)
-            .join("")}
-          ${entries.length > 18 ? `<div class="json-muted">${uiLocale === "en" ? `${entries.length - 18} more fields` : `还有 ${entries.length - 18} 个字段`}</div>` : ""}
-        </div>
-      `;
-    }
-    if (typeof value === "string") return `<code>${escapeHtml(truncate(value, 360))}</code>`;
-    if (value === null) return `<span class="json-muted">null</span>`;
-    return `<code>${escapeHtml(String(value))}</code>`;
-  }
-
-  function detailRow(label: string, value: string): string {
-    return `
-      <div class="detail-row">
-        <span>${escapeHtml(label)}</span>
-        <code>${escapeHtml(value)}</code>
-      </div>
-    `;
-  }
-
-  function formatMetadataValue(value: unknown): string {
-    if (!value) return "";
-    if (typeof value === "string") return value;
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch {
-      return String(value);
-    }
-  }
-
-  function networkStatusClass(event: LiveDiagnosticEvent): string {
-    if (event.severity === "error" || (typeof event.status === "number" && event.status >= 400)) return "bad";
-    if (event.severity === "warning") return "warn";
-    return "ok";
-  }
-
-  function formatNetworkStatus(event: LiveDiagnosticEvent): string {
-    const status = typeof event.status === "number" ? String(event.status) : event.severity;
-    const duration = typeof event.duration === "number" ? `${event.duration}ms` : "";
-    return [status, duration].filter(Boolean).join(" / ");
-  }
-
-  function formatUrl(value: string): string {
-    if (!value) return "unknown";
-    try {
-      const url = new URL(value, location.href);
-      return truncate(`${url.pathname}${url.search}`, 96);
-    } catch {
-      return truncate(value, 96);
-    }
+    return renderNetworkPayloadPanel(value, emptyText, uiLocale);
   }
 
   function formatTime(timestamp: number): string {
-    return new Date(timestamp).toLocaleTimeString(uiLocale === "en" ? "en-US" : "zh-CN", { hour12: false });
-  }
-
-  function truncate(value: string, max: number): string {
-    return value.length <= max ? value : `${value.slice(0, max)}...`;
-  }
-
-  function getPageContext(): Record<string, unknown> {
-    return {
-      url: location.href,
-      title: document.title,
-      userAgent: navigator.userAgent,
-      language: navigator.language,
-      viewport: {
-        width: window.innerWidth,
-        height: window.innerHeight,
-        devicePixelRatio: window.devicePixelRatio
-      },
-      startedAt: Date.now()
-    };
-  }
-
-  function inputRow(prop: string, label: string, value: string, type = "text"): string {
-    return `
-      <label class="row">
-        <span>${label}</span>
-        <input data-prop="${prop}" type="${type}" value="${escapeHtml(value)}" />
-      </label>
-    `;
-  }
-
-  function selectRow(prop: string, label: string, value: string, options: string[]): string {
-    return `
-      <label class="row">
-        <span>${label}</span>
-        <select data-prop="${prop}">
-          ${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`).join("")}
-        </select>
-      </label>
-    `;
-  }
-
-  function resolveInspectableTarget(target: EventTarget | null): HTMLElement | null {
-    if (target instanceof HTMLElement) return target;
-    if (target instanceof SVGElement) {
-      const svg = target.closest("svg");
-      if (svg?.parentElement instanceof HTMLElement) return svg.parentElement;
-    }
-    return null;
-  }
-
-  function buildSelector(element: HTMLElement): string {
-    if (element.id && /^[A-Za-z][\w-]*$/.test(element.id)) {
-      return `#${CSS.escape(element.id)}`;
-    }
-
-    const dataSelector = ["data-testid", "data-test", "data-cy", "name", "aria-label"]
-      .map((attr) => {
-        const value = element.getAttribute(attr);
-        return value ? `[${attr}="${cssAttrEscape(value)}"]` : "";
-      })
-      .find(Boolean);
-    if (dataSelector) return `${element.tagName.toLowerCase()}${dataSelector}`;
-
-    const parts: string[] = [];
-    let node: HTMLElement | null = element;
-    while (node && node.nodeType === Node.ELEMENT_NODE && node !== document.body && parts.length < 5) {
-      let part = node.tagName.toLowerCase();
-      const classNames = Array.from(node.classList)
-        .filter((name) => !/^(hover|focus|active|selected|open|ng-|v-|css-|__[a-z0-9])/i.test(name))
-        .slice(0, 2);
-      if (classNames.length > 0) {
-        part += `.${classNames.map((name) => CSS.escape(name)).join(".")}`;
-      } else {
-        const index = nthOfType(node);
-        if (index > 1) {
-          part += `:nth-of-type(${index})`;
-        }
-      }
-      parts.unshift(part);
-      node = node.parentElement;
-    }
-    return parts.join(" > ");
-  }
-
-  function buildDomPath(element: HTMLElement): string {
-    const parts: string[] = [];
-    let node: HTMLElement | null = element;
-    while (node && node !== document.documentElement && parts.length < 8) {
-      parts.unshift(`${node.tagName.toLowerCase()}${node.id ? `#${node.id}` : ""}`);
-      node = node.parentElement;
-    }
-    return parts.join(" > ");
-  }
-
-  function buildElementLocator(element: HTMLElement, selector: string, domPath: string): ElementLocator {
-    return {
-      tagName: element.tagName.toLowerCase(),
-      id: element.id || "",
-      classList: Array.from(element.classList),
-      attributes: collectLocatorAttributes(element),
-      openingTag: buildOpeningTag(element),
-      outerHTMLSnippet: truncateText(element.outerHTML.replace(/\s+/g, " "), 900),
-      selector,
-      domPath,
-      parentChain: buildParentChain(element),
-      matchedCssRules: collectMatchedCssRules(element)
-    };
-  }
-
-  function collectLocatorAttributes(element: HTMLElement): Record<string, string> {
-    const priority = new Set([
-      "id",
-      "class",
-      "role",
-      "aria-label",
-      "aria-labelledby",
-      "aria-describedby",
-      "data-testid",
-      "data-test",
-      "data-cy",
-      "name",
-      "type",
-      "href",
-      "src",
-      "alt",
-      "title",
-      "placeholder"
-    ]);
-    const attributes: Record<string, string> = {};
-    for (const attr of Array.from(element.attributes)) {
-      if (!priority.has(attr.name) && !attr.name.startsWith("data-")) continue;
-      attributes[attr.name] = truncateText(attr.value, 220);
-      if (Object.keys(attributes).length >= 24) break;
-    }
-    return attributes;
-  }
-
-  function buildOpeningTag(element: HTMLElement): string {
-    const attrs = Array.from(element.attributes)
-      .filter((attr) => attr.name !== "style")
-      .slice(0, 16)
-      .map((attr) => `${attr.name}="${truncateText(attr.value, 180)}"`)
-      .join(" ");
-    return `<${element.tagName.toLowerCase()}${attrs ? ` ${attrs}` : ""}>`;
-  }
-
-  function buildParentChain(element: HTMLElement): ElementAncestor[] {
-    const chain: ElementAncestor[] = [];
-    let node = element.parentElement;
-    while (node && node !== document.documentElement && chain.length < 6) {
-      chain.push({
-        tagName: node.tagName.toLowerCase(),
-        id: node.id || "",
-        classList: Array.from(node.classList),
-        selector: compactElementSelector(node)
-      });
-      node = node.parentElement;
-    }
-    return chain;
-  }
-
-  function compactElementSelector(element: HTMLElement): string {
-    const classList = Array.from(element.classList).slice(0, 4);
-    return `${element.tagName.toLowerCase()}${element.id ? `#${CSS.escape(element.id)}` : ""}${classList.length ? `.${classList.map((name) => CSS.escape(name)).join(".")}` : ""}`;
-  }
-
-  function collectMatchedCssRules(element: HTMLElement): MatchedCssRule[] {
-    const matches: MatchedCssRule[] = [];
-    const visitRules = (rules: CSSRuleList, source: string, condition?: string) => {
-      for (const rule of Array.from(rules)) {
-        if (matches.length >= 16) return;
-        if (rule instanceof CSSStyleRule) {
-          if (safeMatches(element, rule.selectorText)) {
-            matches.push({
-              selectorText: rule.selectorText,
-              style: truncateText(rule.style.cssText, 520),
-              source,
-              condition
-            });
-          }
-          continue;
-        }
-        if ("cssRules" in rule) {
-          const nested = rule as CSSMediaRule | CSSSupportsRule;
-          const nextCondition = "conditionText" in nested ? nested.conditionText : condition;
-          visitRules(nested.cssRules, source, nextCondition || condition);
-        }
-      }
-    };
-
-    for (const sheet of Array.from(document.styleSheets)) {
-      if (matches.length >= 16) break;
-      let rules: CSSRuleList;
-      try {
-        rules = sheet.cssRules;
-      } catch {
-        continue;
-      }
-      visitRules(rules, stylesheetSource(sheet));
-    }
-    return matches;
-  }
-
-  function safeMatches(element: HTMLElement, selectorText: string): boolean {
-    try {
-      return element.matches(selectorText);
-    } catch {
-      return false;
-    }
-  }
-
-  function stylesheetSource(sheet: CSSStyleSheet): string {
-    if (sheet.href) return sheet.href;
-    const owner = sheet.ownerNode instanceof Element ? sheet.ownerNode : null;
-    if (!owner) return "inline stylesheet";
-    const id = owner.id ? `#${owner.id}` : "";
-    const dataAttrs = Array.from(owner.attributes)
-      .filter((attr) => attr.name.startsWith("data-"))
-      .slice(0, 2)
-      .map((attr) => `[${attr.name}="${truncateText(attr.value, 80)}"]`)
-      .join("");
-    return `${owner.tagName.toLowerCase()}${id}${dataAttrs}`;
-  }
-
-  function nthOfType(element: HTMLElement): number {
-    let index = 1;
-    let sibling = element.previousElementSibling;
-    while (sibling) {
-      if (sibling.tagName === element.tagName) index += 1;
-      sibling = sibling.previousElementSibling;
-    }
-    return index;
-  }
-
-  function labelElement(element: HTMLElement): string {
-    const className = Array.from(element.classList).slice(0, 2).join(".");
-    return `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ""}${className ? `.${className}` : ""}`;
-  }
-
-  function textSnippet(element: HTMLElement): string {
-    return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 140);
+    return formatLocalizedTime(timestamp, uiLocale);
   }
 
   function canEditTextContent(element: HTMLElement): boolean {
-    const blockedTags = new Set(["SCRIPT", "STYLE", "LINK", "META", "IFRAME", "CANVAS", "SVG", "IMG", "VIDEO", "AUDIO", "OBJECT"]);
-    if (blockedTags.has(element.tagName)) return false;
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return false;
-    if (element.closest("[contenteditable='false']")) return false;
-    return editableTextValue(element).trim().length > 0 || currentChange?.textAfter !== undefined;
-  }
-
-  function editableTextValue(element: HTMLElement): string {
-    return (element.innerText || element.textContent || "").replace(/\u00a0/g, " ");
-  }
-
-  function focusEditableElement(element: HTMLElement): void {
-    element.focus({ preventScroll: true });
-    const selection = window.getSelection();
-    if (!selection) return;
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-
-  function truncateText(value: string, max: number): string {
-    return value.length <= max ? value : `${value.slice(0, max)}...`;
-  }
-
-  function cssBlock(styles: Record<string, string>): string {
-    const entries = Object.entries(styles).filter(([, value]) => value);
-    if (entries.length === 0) return t("noCssEdits");
-    return entries.map(([key, value]) => `${key}: ${value};`).join("\n");
-  }
-
-  function toHexColor(value: string): string {
-    const match = value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-    if (!match) return "#000000";
-    return `#${[match[1], match[2], match[3]].map((part) => Number(part).toString(16).padStart(2, "0")).join("")}`;
-  }
-
-  function normalizeFontWeight(value: string): string {
-    if (/^\d+$/.test(value)) return value;
-    if (value === "bold") return "700";
-    if (value === "normal") return "400";
-    return "400";
-  }
-
-  function cssAttrEscape(value: string): string {
-    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  }
-
-  function cssStringEscape(value: string): string {
-    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n|\r/g, "");
-  }
-
-  function escapeHtml(value: string): string {
-    return value.replace(/[&<>"']/g, (char) => {
-      const map: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-      return map[char];
-    });
-  }
-
-  async function copyText(text: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.style.cssText = "position:fixed;left:-9999px;top:-9999px;";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      textarea.remove();
-    }
+    return canEditTextContentBase(element, currentChange?.textAfter !== undefined);
   }
 
   function toast(message: string): void {
@@ -2903,1253 +993,4 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     window.setTimeout(() => node.remove(), 1800);
   }
 
-  function launcherIcon(type: "select" | "panel"): string {
-    if (type === "select") {
-      return `
-        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path d="M5 4l8 16 1.9-6.1L21 12 5 4z" />
-          <path d="M13.8 13.8l4.4 4.4" />
-        </svg>
-      `;
-    }
-    return `
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <rect x="4" y="5" width="16" height="14" rx="2" />
-        <path d="M9 5v14" />
-        <path d="M12.5 9h4.5" />
-        <path d="M12.5 13h4.5" />
-      </svg>
-    `;
-  }
-
-  function panelIcon(type: "settings"): string {
-    if (type === "settings") {
-      return `
-        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z" />
-          <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2.2 2.2 0 0 1-3.11 3.11l-.05-.05a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.09 1.65V21.5a2.2 2.2 0 0 1-4.4 0v-.12a1.8 1.8 0 0 0-1.09-1.65 1.8 1.8 0 0 0-1.98.36l-.05.05a2.2 2.2 0 0 1-3.11-3.11l.05-.05A1.8 1.8 0 0 0 3.36 15 1.8 1.8 0 0 0 1.7 13.9H1.5a2.2 2.2 0 0 1 0-4.4h.2a1.8 1.8 0 0 0 1.66-1.09 1.8 1.8 0 0 0-.36-1.98l-.05-.05a2.2 2.2 0 0 1 3.11-3.11l.05.05a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 9.18 2V1.9a2.2 2.2 0 0 1 4.4 0V2a1.8 1.8 0 0 0 1.09 1.65 1.8 1.8 0 0 0 1.98-.36l.05-.05a2.2 2.2 0 0 1 3.11 3.11l-.05.05a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.65 1.09h.25a2.2 2.2 0 0 1 0 4.4h-.25A1.8 1.8 0 0 0 19.4 15z" />
-        </svg>
-      `;
-    }
-    return "";
-  }
-
-  function bindLauncherEvents(): void {
-    if (!launcherDock) return;
-    const launcher = launcherDock.querySelector<HTMLButtonElement>(".devlite-launcher");
-    const hitArea = launcherDock.querySelector<HTMLDivElement>(".launcher-hit-area");
-    const actionButtons = Array.from(launcherDock.querySelectorAll<HTMLButtonElement>("[data-launcher-action]"));
-    launcherDock.addEventListener("pointerenter", () => setLauncherExpanded(true));
-    launcherDock.addEventListener("pointerleave", scheduleLauncherCollapse);
-    launcherDock.addEventListener("focusin", () => setLauncherExpanded(true));
-    launcherDock.addEventListener("focusout", scheduleLauncherCollapse);
-    [launcher, hitArea, ...actionButtons].forEach((node) => {
-      node?.addEventListener("pointerenter", () => setLauncherExpanded(true));
-      node?.addEventListener("pointerleave", scheduleLauncherCollapse);
-    });
-    launcher?.addEventListener("pointerdown", startLauncherDrag);
-    launcher?.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (suppressLauncherClick) {
-        suppressLauncherClick = false;
-        return;
-      }
-      openPanel();
-    });
-
-    actionButtons.forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const action = button.dataset.launcherAction;
-        if (action === "select") {
-          setLauncherExpanded(false);
-          startInspector();
-          toast(t("clickToSelect"));
-          return;
-        }
-        setLauncherExpanded(false);
-        openPanel();
-      });
-    });
-  }
-
-  function setLauncherExpanded(expanded: boolean): void {
-    if (!launcherDock) return;
-    if (launcherCollapseTimer !== null) {
-      window.clearTimeout(launcherCollapseTimer);
-      launcherCollapseTimer = null;
-    }
-    launcherDock.classList.toggle("expanded", expanded);
-  }
-
-  function scheduleLauncherCollapse(): void {
-    if (!launcherDock) return;
-    if (launcherDock.matches(":focus-within")) return;
-    if (launcherCollapseTimer !== null) {
-      window.clearTimeout(launcherCollapseTimer);
-    }
-    launcherCollapseTimer = window.setTimeout(() => {
-      launcherDock?.classList.remove("expanded");
-      launcherCollapseTimer = null;
-    }, 220);
-  }
-
-  function applyLauncherPosition(): void {
-    if (!launcherDock) return;
-    const minTop = Math.min(74, Math.max(36, window.innerHeight / 2));
-    const maxTop = Math.max(minTop, window.innerHeight - minTop);
-    launcherTop = Math.min(Math.max(minTop, launcherTop), maxTop);
-    launcherDock.style.top = `${launcherTop}px`;
-  }
-
-  function startLauncherDrag(event: PointerEvent): void {
-    if (!launcherDock) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const launcher = event.currentTarget as HTMLButtonElement;
-    const pointerId = event.pointerId;
-    const startY = event.clientY;
-    const startTop = launcherTop;
-    let moved = false;
-
-    launcher.setPointerCapture(pointerId);
-
-    const onMove = (moveEvent: PointerEvent) => {
-      const delta = moveEvent.clientY - startY;
-      if (Math.abs(delta) > 3) moved = true;
-      launcherTop = startTop + delta;
-      applyLauncherPosition();
-    };
-
-    const onUp = () => {
-      suppressLauncherClick = moved;
-      if (launcher.hasPointerCapture(pointerId)) {
-        launcher.releasePointerCapture(pointerId);
-      }
-      launcher.removeEventListener("pointermove", onMove);
-      launcher.removeEventListener("pointerup", onUp);
-      launcher.removeEventListener("pointercancel", onUp);
-    };
-
-    launcher.addEventListener("pointermove", onMove);
-    launcher.addEventListener("pointerup", onUp);
-    launcher.addEventListener("pointercancel", onUp);
-  }
-
-  function applyPanelPosition(): void {
-    if (!panel) return;
-    const rect = panel.getBoundingClientRect();
-    const maxTop = Math.max(8, window.innerHeight - Math.min(rect.height || 80, window.innerHeight - 16) - 8);
-    const maxRight = Math.max(8, window.innerWidth - 80);
-    panelPosition = {
-      right: Math.min(Math.max(8, panelPosition.right), maxRight),
-      top: Math.min(Math.max(8, panelPosition.top), maxTop)
-    };
-    panel.style.right = `${panelPosition.right}px`;
-    panel.style.top = `${panelPosition.top}px`;
-  }
-
-  function startPanelDrag(event: PointerEvent): void {
-    if (!panel) return;
-    const target = event.target as HTMLElement | null;
-    if (target?.closest("button")) return;
-    event.preventDefault();
-    event.stopPropagation();
-
-    const rect = panel.getBoundingClientRect();
-    const offsetX = event.clientX - rect.left;
-    const offsetY = event.clientY - rect.top;
-    const pointerId = event.pointerId;
-    panel.setPointerCapture(pointerId);
-    panel.classList.add("dragging");
-
-    const onMove = (moveEvent: PointerEvent) => {
-      const nextLeft = Math.min(Math.max(8, moveEvent.clientX - offsetX), Math.max(8, window.innerWidth - rect.width - 8));
-      const nextTop = Math.min(Math.max(8, moveEvent.clientY - offsetY), Math.max(8, window.innerHeight - rect.height - 8));
-      panelPosition = {
-        right: Math.max(8, window.innerWidth - nextLeft - rect.width),
-        top: nextTop
-      };
-      applyPanelPosition();
-    };
-
-    const onUp = () => {
-      if (panel?.hasPointerCapture(pointerId)) {
-        panel.releasePointerCapture(pointerId);
-      }
-      panel?.classList.remove("dragging");
-      panel?.removeEventListener("pointermove", onMove);
-      panel?.removeEventListener("pointerup", onUp);
-      panel?.removeEventListener("pointercancel", onUp);
-    };
-
-    panel.addEventListener("pointermove", onMove);
-    panel.addEventListener("pointerup", onUp);
-    panel.addEventListener("pointercancel", onUp);
-  }
-
-  function isOverlayEvent(event: Event): boolean {
-    const target = event.target as Node | null;
-    return !!target && isOverlayNode(target);
-  }
-
-  function isOverlayNode(node: Node): boolean {
-    return !!overlayHost && (node === overlayHost || overlayHost.contains(node));
-  }
-
-  function randomId(): string {
-    return crypto.randomUUID ? crypto.randomUUID() : `devlite-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  }
-
-  function overlayStyles(): string {
-    return `
-      :host {
-        all: initial;
-        --dl-bg: #FAF9F5;
-        --dl-surface: #FFFFFF;
-        --dl-surface2: #F4F3EE;
-        --dl-sidebar: #F1EFE7;
-        --dl-border: #E8E6DC;
-        --dl-borderStrong: #D4D0C4;
-        --dl-text: #141413;
-        --dl-textMuted: #6F6A60;
-        --dl-primary: #D97757;
-        --dl-primaryHover: #C15F3C;
-        --dl-primarySoft: #F3DED4;
-        --dl-onPrimary: #FFFFFF;
-        --dl-danger: #B94A48;
-        --dl-warning: #B8792F;
-        --dl-success: #788C5D;
-        --dl-codeText: #7B402F;
-        --dl-toastBg: #141413;
-        --dl-shadow: rgba(32, 28, 22, 0.18);
-        --dl-focus: rgba(217, 119, 87, 0.32);
-      }
-      .devlite-highlighter {
-        position: fixed;
-        top: 0;
-        left: 0;
-        display: none;
-        box-sizing: border-box;
-        border: 2px solid var(--dl-primary);
-        background: color-mix(in srgb, var(--dl-primary) 12%, transparent);
-        color: var(--dl-primary);
-        font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
-        padding: 0;
-        pointer-events: none;
-        box-shadow: 0 0 0 1px color-mix(in srgb, var(--dl-surface) 88%, transparent), 0 10px 30px var(--dl-shadow);
-      }
-      .devlite-panel {
-        position: fixed;
-        right: 16px;
-        top: 16px;
-        width: min(760px, calc(100vw - 32px));
-        height: min(560px, calc(100dvh - 32px));
-        min-width: min(360px, calc(100vw - 32px));
-        min-height: 280px;
-        max-width: calc(100vw - 32px);
-        max-height: calc(100dvh - 32px);
-        overflow: hidden;
-        resize: both;
-        pointer-events: auto;
-        box-sizing: border-box;
-        border: 1px solid var(--dl-borderStrong);
-        border-radius: 8px;
-        background: var(--dl-bg);
-        color: var(--dl-text);
-        box-shadow: 0 24px 80px var(--dl-shadow);
-        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
-      .devlite-panel[hidden] { display: none; }
-      .style-editor-popover {
-        position: fixed;
-        left: 0;
-        top: 0;
-        width: min(320px, calc(100vw - 16px));
-        max-height: min(520px, calc(100dvh - 16px));
-        overflow: auto;
-        pointer-events: auto;
-        box-sizing: border-box;
-        border: 1px solid var(--dl-borderStrong);
-        border-radius: 8px;
-        background: var(--dl-bg);
-        color: var(--dl-text);
-        box-shadow: 0 18px 58px var(--dl-shadow);
-        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
-      .style-editor-popover[hidden] { display: none; }
-      .style-editor-popover.dragging { user-select: none; }
-      .style-editor-head {
-        position: sticky;
-        top: 0;
-        z-index: 1;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        padding: 10px;
-        border-bottom: 1px solid var(--dl-border);
-        background: var(--dl-bg);
-        cursor: move;
-        touch-action: none;
-        user-select: none;
-      }
-      .style-editor-head strong {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: 13px;
-      }
-      .style-editor-popover > .rows {
-        padding: 10px;
-      }
-      .style-editor-popover .row {
-        grid-template-columns: 58px minmax(0, 1fr);
-      }
-      .style-editor-details {
-        border-top: 1px solid var(--dl-border);
-      }
-      .style-editor-details summary {
-        padding: 9px 10px;
-        cursor: pointer;
-        color: var(--dl-codeText);
-        font-weight: 600;
-        user-select: none;
-      }
-      .style-editor-details .rows {
-        padding: 0 10px 10px;
-      }
-      .style-editor-actions {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
-        gap: 8px;
-        padding: 10px;
-        border-top: 1px solid var(--dl-border);
-      }
-      .devlite-dock {
-        position: fixed;
-        right: 0;
-        top: 50%;
-        width: 112px;
-        height: 148px;
-        transform: translateY(-50%);
-        pointer-events: none;
-      }
-      .launcher-hit-area {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-      }
-      .devlite-dock.expanded .launcher-hit-area {
-        pointer-events: auto;
-      }
-      .launcher-actions {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-      }
-      .devlite-dock.expanded .launcher-actions,
-      .devlite-dock:focus-within .launcher-actions {
-        pointer-events: auto;
-      }
-      .launcher-action {
-        position: absolute;
-        right: 48px;
-        display: grid;
-        place-items: center;
-        width: 38px;
-        height: 38px;
-        padding: 0;
-        border-radius: 50%;
-        color: var(--dl-primary);
-        opacity: 0;
-        pointer-events: none;
-        box-shadow: 0 10px 28px var(--dl-shadow);
-        transform: translate(18px, 0) scale(.86);
-        transition: opacity 170ms ease, transform 170ms ease, background 160ms ease, border-color 160ms ease, color 160ms ease;
-      }
-      .launcher-action[data-launcher-action="select"] {
-        top: 22px;
-        transform: translate(20px, 18px) scale(.86);
-      }
-      .launcher-action[data-launcher-action="panel"] {
-        bottom: 22px;
-        transform: translate(20px, -18px) scale(.86);
-      }
-      .devlite-dock.expanded .launcher-action,
-      .devlite-dock:focus-within .launcher-action {
-        opacity: 1;
-        pointer-events: auto;
-        transform: translate(0, 0) scale(1);
-      }
-      .launcher-action svg {
-        display: block;
-        width: 18px;
-        height: 18px;
-        fill: none;
-        stroke: currentColor;
-        stroke-width: 1.9;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
-      .devlite-launcher {
-        position: absolute;
-        right: 0;
-        top: 50%;
-        width: 42px;
-        height: 52px;
-        transform: translateY(-50%);
-        pointer-events: auto;
-        box-sizing: border-box;
-        border: 1px solid var(--dl-borderStrong);
-        border-right: 0;
-        border-radius: 8px 0 0 8px;
-        background: var(--dl-bg);
-        color: var(--dl-primary);
-        box-shadow: 0 12px 40px var(--dl-shadow);
-        cursor: pointer;
-        touch-action: none;
-        transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
-      }
-      .devlite-launcher:hover {
-        border-color: var(--dl-primary);
-        background: var(--dl-primarySoft);
-      }
-      .devlite-launcher:active { transform: translateY(-50%) scale(.98); }
-      .devlite-launcher img {
-        display: block;
-        width: 30px;
-        height: 30px;
-        margin: 10px 5px 10px 7px;
-        pointer-events: none;
-      }
-      .panel-shell {
-        display: grid;
-        grid-template-columns: 154px minmax(0, 1fr);
-        height: 100%;
-        min-height: 0;
-      }
-      .panel-sidebar {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        min-width: 0;
-        padding: 12px;
-        box-sizing: border-box;
-        background: var(--dl-sidebar);
-        border-right: 1px solid var(--dl-border);
-        cursor: move;
-      }
-      .panel-brand strong {
-        display: block;
-        color: var(--dl-text);
-        font-size: 14px;
-      }
-      .panel-brand {
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        min-width: 0;
-      }
-      .panel-brand img {
-        width: 30px;
-        height: 30px;
-        flex: 0 0 auto;
-      }
-      .panel-brand span {
-        display: block;
-        margin-top: 2px;
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .panel-nav {
-        display: grid;
-        gap: 6px;
-      }
-      .nav-item {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        width: 100%;
-        min-width: 0;
-        text-align: left;
-        border-color: transparent;
-        background: transparent;
-      }
-      .nav-item span {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .nav-item strong {
-        min-width: 20px;
-        height: 18px;
-        border-radius: 5px;
-        background: var(--dl-danger);
-        color: #fff;
-        font-size: 11px;
-        line-height: 18px;
-        text-align: center;
-      }
-      .nav-item.active {
-        background: var(--dl-surface);
-        border-color: var(--dl-borderStrong);
-        color: var(--dl-primary);
-      }
-      .config-button.active {
-        border-color: var(--dl-primary);
-        background: var(--dl-primarySoft);
-        color: var(--dl-primary);
-      }
-      .sidebar-spacer { flex: 1; }
-      .sidebar-tools {
-        display: grid;
-        grid-template-columns: 1fr 36px;
-        gap: 8px;
-      }
-      .config-button {
-        width: 100%;
-        font-weight: 600;
-      }
-      .config-button.icon-only,
-      .locale-button {
-        display: grid;
-        place-items: center;
-        width: 100%;
-        padding: 0;
-      }
-      .config-button.icon-only svg {
-        display: block;
-        width: 16px;
-        height: 16px;
-        fill: none;
-        stroke: currentColor;
-        stroke-width: 1.6;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
-      .locale-button {
-        font-weight: 700;
-      }
-      .panel-main {
-        display: flex;
-        min-width: 0;
-        min-height: 0;
-        flex-direction: column;
-      }
-      .panel-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 12px;
-        border-bottom: 1px solid var(--dl-border);
-        cursor: move;
-        user-select: none;
-      }
-      .devlite-panel.dragging { user-select: none; }
-      .panel-header strong { display:block; font-size: 14px; letter-spacing: 0; }
-      .panel-header span { display:block; color:var(--dl-textMuted); font-size:12px; }
-      .panel-content {
-        min-height: 0;
-        overflow: auto;
-        padding: 12px;
-      }
-      .empty {
-        padding: 16px 12px;
-        color:var(--dl-textMuted);
-        background: var(--dl-surface2);
-        border-radius: 8px;
-      }
-      .empty.compact { padding: 12px; }
-      .toolbar {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-bottom: 10px;
-      }
-      .target {
-        display:grid;
-        grid-template-columns: 1fr auto;
-        align-items:center;
-        gap:8px;
-        padding:10px;
-        margin-bottom: 8px;
-        border:1px solid var(--dl-border);
-        border-radius: 8px;
-        background: var(--dl-surface);
-      }
-      .style-record-list {
-        display: grid;
-        gap: 8px;
-      }
-      .style-record {
-        padding: 10px;
-        border: 1px solid var(--dl-border);
-        border-radius: 8px;
-        background: var(--dl-surface);
-      }
-      .style-record-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        min-width: 0;
-      }
-      .style-record-head strong {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: var(--dl-text);
-      }
-      .style-record-head span {
-        flex: 0 0 auto;
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .style-record code {
-        display: block;
-        margin-top: 6px;
-      }
-      .style-record p {
-        margin: 7px 0 0;
-        color: var(--dl-text);
-      }
-      code {
-        overflow:hidden;
-        text-overflow:ellipsis;
-        white-space:nowrap;
-        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-        color:var(--dl-codeText);
-      }
-      pre {
-        max-height: 132px;
-        overflow: auto;
-        margin: 8px 0 0;
-        padding: 8px;
-        border-radius: 6px;
-        background: var(--dl-surface2);
-        color: var(--dl-text);
-        font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-        white-space: pre-wrap;
-      }
-      .rows { display:grid; gap:7px; }
-      .row {
-        display:grid;
-        grid-template-columns: 86px 1fr;
-        align-items:center;
-        gap:10px;
-      }
-      .row span { color:var(--dl-textMuted); }
-      input, select, textarea {
-        min-width:0;
-        box-sizing:border-box;
-        border:1px solid var(--dl-borderStrong);
-        border-radius:6px;
-        background:var(--dl-surface);
-        color:var(--dl-text);
-        padding:0 8px;
-        font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-      }
-      input, select { height:30px; }
-      input[type="color"] { padding:2px; }
-      textarea {
-        min-height: 74px;
-        resize: vertical;
-        padding: 8px;
-        line-height: 1.45;
-      }
-      .text-editor {
-        display: grid;
-        gap: 8px;
-        padding: 10px;
-        margin-bottom: 8px;
-        border: 1px solid var(--dl-border);
-        border-radius: 8px;
-        background: var(--dl-surface);
-      }
-      .text-row {
-        display: grid;
-        grid-template-columns: 86px minmax(0, 1fr);
-        align-items: start;
-        gap: 10px;
-      }
-      .text-row span {
-        padding-top: 7px;
-        color:var(--dl-textMuted);
-      }
-      .text-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        justify-content: flex-end;
-      }
-      button {
-        height:30px;
-        border:1px solid var(--dl-borderStrong);
-        border-radius:6px;
-        background:var(--dl-surface);
-        color:var(--dl-text);
-        padding:0 10px;
-        font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        cursor:pointer;
-        transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
-      }
-      button:hover { border-color:var(--dl-primary); color:var(--dl-primary); }
-      button:focus-visible {
-        outline: 2px solid var(--dl-focus);
-        outline-offset: 2px;
-      }
-      button:active { transform: scale(.98); }
-      .primary {
-        background:var(--dl-primary);
-        border-color:var(--dl-primary);
-        color:var(--dl-onPrimary);
-      }
-      .primary:hover { color:var(--dl-onPrimary); background:var(--dl-primaryHover); }
-      .actions {
-        display:grid;
-        grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-        gap:8px;
-        padding-top:12px;
-      }
-      .actions button { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .icon-button { white-space:nowrap; }
-      .diagnostic-list {
-        display: grid;
-        gap: 8px;
-      }
-      .diagnostic-toolbar {
-        align-items: center;
-        justify-content: space-between;
-      }
-      .filter-tabs {
-        display: flex;
-        min-width: 0;
-        gap: 6px;
-      }
-      .filter-tabs button {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .filter-tabs button.active {
-        border-color: var(--dl-primary);
-        background: var(--dl-primarySoft);
-        color: var(--dl-primary);
-      }
-      .filter-tabs strong {
-        min-width: 18px;
-        height: 18px;
-        border-radius: 5px;
-        background: var(--dl-danger);
-        color: #fff;
-        font-size: 11px;
-        line-height: 18px;
-        text-align: center;
-      }
-      .issue {
-        padding: 10px;
-        border: 1px solid var(--dl-border);
-        border-radius: 8px;
-        background: var(--dl-surface);
-      }
-      details.issue {
-        padding: 0;
-      }
-      details.issue[open] {
-        padding-bottom: 10px;
-      }
-      .issue.error {
-        border-color: color-mix(in srgb, var(--dl-danger) 42%, var(--dl-border));
-      }
-      .issue.warning {
-        border-color: color-mix(in srgb, var(--dl-warning) 42%, var(--dl-border));
-      }
-      .issue-head {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-      }
-      .issue-head strong {
-        color: var(--dl-text);
-      }
-      .issue-head span {
-        flex: 0 0 auto;
-        margin-left: auto;
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .issue-summary {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto auto;
-        align-items: center;
-        gap: 8px;
-        padding: 10px;
-        cursor: pointer;
-        user-select: none;
-      }
-      .issue-summary::marker {
-        color: var(--dl-textMuted);
-      }
-      .issue-summary span {
-        display: grid;
-        min-width: 0;
-        gap: 3px;
-      }
-      .issue-summary strong,
-      .issue-summary small {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .issue-summary strong {
-        color: var(--dl-text);
-      }
-      .issue-summary small,
-      .issue-summary em {
-        color: var(--dl-textMuted);
-        font-size: 12px;
-        font-style: normal;
-      }
-      .issue-summary b {
-        min-width: 24px;
-        height: 20px;
-        border-radius: 5px;
-        background: var(--dl-primarySoft);
-        color: var(--dl-primary);
-        font-size: 12px;
-        line-height: 20px;
-        text-align: center;
-      }
-      .issue p {
-        margin: 7px 0 0;
-        color: var(--dl-text);
-        line-height: 1.45;
-        overflow-wrap: anywhere;
-      }
-      .diagnostic-group > p,
-      .diagnostic-group > code,
-      .diagnostic-group > .issue-samples {
-        margin-left: 10px;
-        margin-right: 10px;
-      }
-      .issue-samples {
-        display: grid;
-        gap: 6px;
-        margin-top: 8px;
-      }
-      .issue-sample {
-        display: grid;
-        gap: 4px;
-        padding: 8px;
-        border-radius: 6px;
-        background: var(--dl-surface2);
-      }
-      .issue-sample span {
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .issue code {
-        min-width: 0;
-      }
-      .network-summary {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 8px;
-        margin-bottom: 10px;
-      }
-      .network-summary div {
-        padding: 10px;
-        border-radius: 8px;
-        background: var(--dl-surface2);
-      }
-      .network-summary strong {
-        display: block;
-        color: var(--dl-text);
-        font-size: 18px;
-        line-height: 1.1;
-        font-variant-numeric: tabular-nums;
-      }
-      .network-summary span {
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .network-workspace {
-        display: grid;
-        grid-template-columns: minmax(190px, .82fr) minmax(260px, 1.18fr);
-        gap: 10px;
-        min-height: 0;
-      }
-      .network-list {
-        display: grid;
-        align-content: start;
-        gap: 6px;
-        min-width: 0;
-      }
-      .network-row {
-        display: grid;
-        grid-template-columns: 48px minmax(0, 1fr) auto;
-        gap: 6px 8px;
-        height: auto;
-        padding: 8px;
-        text-align: left;
-        border-color: var(--dl-border);
-        background: var(--dl-surface);
-      }
-      .network-row.selected {
-        border-color: var(--dl-primary);
-        background: var(--dl-primarySoft);
-      }
-      .network-method {
-        color: var(--dl-primary);
-        font-weight: 700;
-      }
-      .network-url {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: var(--dl-text);
-      }
-      .network-status {
-        font-variant-numeric: tabular-nums;
-        color: var(--dl-textMuted);
-      }
-      .network-status.bad,
-      .network-detail-head b.bad { color: var(--dl-danger); }
-      .network-status.warn,
-      .network-detail-head b.warn { color: var(--dl-warning); }
-      .network-status.ok,
-      .network-detail-head b.ok { color: var(--dl-success); }
-      .network-hint {
-        grid-column: 2 / 4;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .network-detail {
-        min-width: 0;
-        padding: 10px;
-        border: 1px solid var(--dl-border);
-        border-radius: 8px;
-        background: var(--dl-surface);
-      }
-      .network-detail-head {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        align-items: start;
-        gap: 10px;
-      }
-      .network-detail-head strong,
-      .network-detail-head span {
-        display: block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .network-detail-head span {
-        margin-top: 3px;
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .detail-tabs {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin: 10px 0;
-      }
-      .detail-tabs button {
-        height: 28px;
-      }
-      .detail-tabs button.active {
-        border-color: var(--dl-primary);
-        background: var(--dl-primarySoft);
-        color: var(--dl-primary);
-      }
-      .detail-grid {
-        display: grid;
-        gap: 7px;
-      }
-      .detail-grid.compact {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        margin-bottom: 10px;
-      }
-      .detail-row {
-        display: grid;
-        gap: 4px;
-        min-width: 0;
-        padding: 8px;
-        border-radius: 6px;
-        background: var(--dl-surface2);
-      }
-      .detail-row span {
-        color: var(--dl-textMuted);
-        font-size: 11px;
-      }
-      .detail-row code {
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
-      .payload-preview,
-      .payload-raw {
-        max-height: 260px;
-        overflow: auto;
-      }
-      .payload-preview {
-        display: grid;
-        gap: 4px;
-        padding: 8px;
-        border-radius: 6px;
-        background: var(--dl-surface2);
-      }
-      .json-node {
-        display: grid;
-        gap: 4px;
-      }
-      .json-row {
-        display: grid;
-        grid-template-columns: minmax(52px, .35fr) minmax(0, 1fr);
-        gap: 8px;
-        min-width: 0;
-      }
-      .json-row > span,
-      .json-muted {
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .perf-metrics {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 8px;
-        margin-bottom: 10px;
-      }
-      .perf-metrics div {
-        padding: 10px;
-        border-radius: 8px;
-        background: var(--dl-surface2);
-      }
-      .perf-metrics strong {
-        display: block;
-        color: var(--dl-text);
-        font-size: 18px;
-        line-height: 1.1;
-        font-variant-numeric: tabular-nums;
-      }
-      .perf-metrics span,
-      .perf-metrics small {
-        display: block;
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .perf-issues {
-        display: grid;
-        gap: 8px;
-      }
-      .perf-issue {
-        padding: 10px;
-        border: 1px solid var(--dl-border);
-        border-radius: 8px;
-        background: var(--dl-surface);
-      }
-      .perf-issue.error { border-color: color-mix(in srgb, var(--dl-danger) 42%, var(--dl-border)); }
-      .perf-issue.warning { border-color: color-mix(in srgb, var(--dl-warning) 42%, var(--dl-border)); }
-      .perf-issue p {
-        margin: 7px 0 0;
-        color: var(--dl-text);
-        overflow-wrap: anywhere;
-      }
-      .perf-evidence {
-        display: grid;
-        gap: 8px;
-        margin-top: 10px;
-      }
-      .perf-evidence section {
-        display: grid;
-        gap: 6px;
-        padding: 10px;
-        border-radius: 8px;
-        background: var(--dl-surface2);
-      }
-      .perf-evidence strong {
-        color: var(--dl-text);
-      }
-      .perf-evidence code {
-        display: block;
-        white-space: nowrap;
-      }
-      .settings-panel {
-        display: grid;
-        gap: 10px;
-      }
-      .settings-card {
-        display: grid;
-        gap: 10px;
-        padding: 10px;
-        border: 1px solid var(--dl-border);
-        border-radius: 8px;
-        background: var(--dl-surface);
-      }
-      .settings-card h3 {
-        margin: 0;
-        color: var(--dl-text);
-        font-size: 13px;
-      }
-      .theme-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-      }
-      .theme-option {
-        display: grid;
-        grid-template-columns: 44px minmax(0, 1fr);
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-        border: 1px solid var(--dl-border);
-        border-radius: 7px;
-        padding: 7px;
-        cursor: pointer;
-      }
-      .theme-option.selected,
-      .theme-option:has(input:checked) {
-        border-color: var(--dl-primary);
-        background: var(--dl-primarySoft);
-      }
-      .theme-option input {
-        position: absolute;
-        opacity: 0;
-        pointer-events: none;
-      }
-      .theme-option > span:last-child {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: var(--dl-text);
-      }
-      .theme-swatch {
-        display: grid;
-        grid-template-columns: 14px 1fr;
-        gap: 3px;
-        width: 44px;
-        height: 30px;
-        border: 1px solid var(--swatch-border);
-        border-radius: 6px;
-        background: var(--swatch-bg);
-        padding: 4px;
-        box-sizing: border-box;
-      }
-      .theme-swatch i,
-      .theme-swatch b {
-        display: block;
-        border-radius: 3px;
-      }
-      .theme-swatch i {
-        background: var(--swatch-primary);
-      }
-      .theme-swatch b {
-        background: var(--swatch-surface);
-      }
-      .settings-fields {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-      }
-      .settings-fields .full {
-        grid-column: 1 / -1;
-      }
-      .field {
-        display: grid;
-        gap: 6px;
-      }
-      .field span,
-      .setting-inline span {
-        color: var(--dl-textMuted);
-        font-size: 12px;
-      }
-      .setting-inline {
-        align-self: end;
-        min-height: 30px;
-      }
-      .setting-inline input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
-      }
-      .settings-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        justify-content: flex-end;
-      }
-      .toast {
-        position:fixed;
-        right:18px;
-        bottom:18px;
-        background:var(--dl-toastBg);
-        color:var(--dl-bg);
-        border-radius:6px;
-        padding:8px 10px;
-        pointer-events:none;
-        font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
-      @media (max-width: 560px) {
-        .devlite-panel {
-          right: 8px !important;
-          width: calc(100vw - 16px);
-        }
-        .panel-shell {
-          grid-template-columns: 1fr;
-        }
-        .panel-sidebar {
-          flex-direction: row;
-          align-items: center;
-          overflow: auto;
-          border-right: 0;
-          border-bottom: 1px solid var(--dl-border);
-        }
-        .panel-brand,
-        .sidebar-spacer {
-          display: none;
-        }
-        .panel-nav {
-          display: flex;
-          flex: 1 1 auto;
-        }
-        .nav-item,
-        .config-button {
-          width: auto;
-          flex: 0 0 auto;
-        }
-        .sidebar-tools {
-          grid-template-columns: 48px 36px;
-          flex: 0 0 auto;
-        }
-        .row {
-          grid-template-columns: 72px 1fr;
-        }
-        .text-row {
-          grid-template-columns: 72px minmax(0, 1fr);
-        }
-        .actions,
-        .network-summary,
-        .theme-grid,
-        .settings-fields {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-        .network-workspace {
-          grid-template-columns: 1fr;
-        }
-        .detail-grid.compact,
-        .perf-metrics {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-      }
-    `;
-  }
 })();
