@@ -2,7 +2,7 @@
 
 DevLite is a lightweight inspection-mode Chrome extension for live page edits, data lookup, page diagnostics, and repair prompt exports for agents.
 
-By default, it does not call AI services, does not upload data, and only diagnoses the current page after the user explicitly starts a session.
+By default, it does not call AI services or upload data. The lightweight right-side launcher appears on regular HTTP/HTTPS pages, and diagnostics only start after the user explicitly opens a session.
 
 ## Features
 
@@ -17,6 +17,7 @@ By default, it does not call AI services, does not upload data, and only diagnos
 - Edit HTML text content directly on the page
 - Track page changes
 - Open a draggable always-on-top diagnostics panel from the right-side page icon
+- Keep the page icon available on regular HTTP/HTTPS pages while injecting collectors only after user action
 - Export AI Prompt, Markdown, or JSON
 - Optionally use the user's own OpenAI, DeepSeek, Anthropic, or Gemini API key
 

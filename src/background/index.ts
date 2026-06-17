@@ -86,6 +86,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
     const tab = sender.tab;
+    await ensureInjectedScript(tabId);
     const page = message.page ?? (tab ? createFallbackPageContext(tab) : undefined);
     if (!page) return { ok: false, error: "缺少页面信息" };
     const session = sessions.get(tabId) ?? createSession(tabId, page as PageContext);
@@ -302,6 +303,10 @@ async function ensurePageScripts(tabId: number): Promise<void> {
     target: { tabId },
     files: ["content.js"]
   });
+  await ensureInjectedScript(tabId);
+}
+
+async function ensureInjectedScript(tabId: number): Promise<void> {
   await chrome.scripting.executeScript({
     target: { tabId },
     files: ["injected.js"],

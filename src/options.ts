@@ -22,7 +22,7 @@ function render(): void {
     <main class="page">
       <header class="hero">
         <div class="hero-brand">
-          <img class="hero-logo" src="/icons/devlite.svg" alt="" />
+          <img class="hero-logo" src="/icons/devlite-128.png" alt="" />
           <div>
             <h1>DevLite 设置</h1>
             <p>默认本地诊断。AI 只在用户配置 API Key 并确认发送后启用。</p>

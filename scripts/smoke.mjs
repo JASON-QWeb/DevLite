@@ -34,7 +34,14 @@ assert(
 );
 assert(manifest.background?.service_worker === "background.js", "background service worker path mismatch");
 assert(manifest.background?.type === "module", "background service worker must be a module");
-assert(!manifest.host_permissions, "default host_permissions must not be declared");
+const contentScript = manifest.content_scripts?.find((script) => script.js?.includes("content.js"));
+assert(contentScript, "content.js must be declared as a static content script");
+assert(contentScript.run_at === "document_idle", "content.js should run at document_idle");
+for (const origin of ["http://*/*", "https://*/*"]) {
+  assert(contentScript.matches?.includes(origin), `content.js must match ${origin}`);
+  assert(manifest.host_permissions?.includes(origin), `host_permissions must include ${origin}`);
+  assert(!manifest.optional_host_permissions?.includes(origin), `${origin} should not be optional when it is required`);
+}
 assert(manifest.icons?.["128"] === "icons/devlite-128.png", "128px icon path mismatch");
 assert(manifest.action?.default_icon?.["32"] === "icons/devlite-32.png", "action icon path mismatch");
 

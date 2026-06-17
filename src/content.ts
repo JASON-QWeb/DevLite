@@ -80,7 +80,7 @@
 
   const PAGE_CHANNEL = "devlite:page";
   const CONTROL_CHANNEL = "devlite:control";
-  const LOGO_URL = chrome.runtime.getURL("icons/devlite.svg");
+  const LOGO_URL = chrome.runtime.getURL("icons/devlite-128.png");
   const EDITABLE_PROPS = [
     "color",
     "background-color",
@@ -110,8 +110,10 @@
   let overlayHost: HTMLDivElement | null = null;
   let shadow: ShadowRoot | null = null;
   let highlighter: HTMLDivElement | null = null;
+  let styleEditor: HTMLDivElement | null = null;
   let launcherDock: HTMLDivElement | null = null;
   let launcherTop = Math.round(window.innerHeight / 2);
+  let launcherCollapseTimer: number | null = null;
   let suppressLauncherClick = false;
   let panel: HTMLDivElement | null = null;
   let panelPosition = { right: 16, top: 16 };
@@ -195,6 +197,24 @@
   );
 
   document.addEventListener(
+    "dblclick",
+    (event) => {
+      if (inlineTextEditState) return;
+      if (isOverlayEvent(event)) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (!target || isOverlayNode(target)) return;
+      if (!inspectorActive && (!selectedElement || (target !== selectedElement && !selectedElement.contains(target)))) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (target !== selectedElement || !currentChange) {
+        selectElement(target);
+      }
+      startInlineTextEdit();
+    },
+    true
+  );
+
+  document.addEventListener(
     "mousemove",
     (event) => {
       if (!inspectorActive || isOverlayEvent(event)) return;
@@ -209,7 +229,9 @@
   window.addEventListener("resize", () => {
     applyLauncherPosition();
     applyPanelPosition();
+    syncElementOverlays();
   });
+  document.addEventListener("scroll", syncElementOverlays, true);
 
   async function handleRuntimeMessage(message: any): Promise<any> {
     if (message?.type === "devlite-start-capture") {
@@ -250,6 +272,7 @@
     inspectorActive = true;
     ensureOverlay();
     activePanelTab = "element";
+    hideStyleEditor();
     hidePanel();
     void ensureCapture();
     document.documentElement.style.cursor = "crosshair";
@@ -284,12 +307,16 @@
     style.textContent = overlayStyles();
     highlighter = document.createElement("div");
     highlighter.className = "devlite-highlighter";
+    styleEditor = document.createElement("div");
+    styleEditor.className = "style-editor-popover";
+    styleEditor.hidden = true;
     launcherDock = document.createElement("div");
     launcherDock.className = "devlite-dock";
     launcherDock.innerHTML = `
+      <div class="launcher-hit-area" aria-hidden="true"></div>
       <div class="launcher-actions" aria-label="DevLite 快捷操作">
-        <button class="launcher-action" type="button" data-launcher-action="select" title="快速选择元素" aria-label="快速选择元素">选</button>
-        <button class="launcher-action" type="button" data-launcher-action="panel" title="打开整体面板" aria-label="打开整体面板">面</button>
+        <button class="launcher-action" type="button" data-launcher-action="select" title="快速选择元素" aria-label="快速选择元素">${launcherIcon("select")}</button>
+        <button class="launcher-action" type="button" data-launcher-action="panel" title="打开整体面板" aria-label="打开整体面板">${launcherIcon("panel")}</button>
       </div>
       <button class="devlite-launcher" type="button" title="拖动或打开 DevLite" aria-label="拖动或打开 DevLite">
         <img src="${LOGO_URL}" alt="" />
@@ -299,7 +326,7 @@
     panel = document.createElement("div");
     panel.className = "devlite-panel";
     panel.hidden = true;
-    shadow.append(style, highlighter, launcherDock, panel);
+    shadow.append(style, highlighter, launcherDock, styleEditor, panel);
     document.documentElement.appendChild(overlayHost);
     applyLauncherPosition();
   }
@@ -310,6 +337,12 @@
     if (highlighter) {
       highlighter.style.display = "none";
     }
+  }
+
+  function hideStyleEditor(): void {
+    if (!styleEditor) return;
+    styleEditor.hidden = true;
+    styleEditor.innerHTML = "";
   }
 
   function hidePanel(): void {
@@ -357,9 +390,20 @@
     inspectorActive = false;
     document.documentElement.style.cursor = "";
     activePanelTab = "element";
-    panelOpen = true;
-    renderPanel();
-    startPanelRefresh();
+    renderStyleEditor();
+    if (panelOpen) {
+      renderPanel();
+    }
+  }
+
+  function syncElementOverlays(): void {
+    if (inspectorActive && hoveredElement) {
+      updateHighlighter(hoveredElement);
+      return;
+    }
+    if (!selectedElement) return;
+    updateHighlighter(selectedElement);
+    updateStyleEditorPosition();
   }
 
   function renderPanel(): void {
@@ -369,9 +413,10 @@
     panel.hidden = false;
     applyPanelPosition();
 
+    const changeCount = getStyleChangeRecords().length;
     const diagnosticCount = getProblemEvents().length;
     const networkCount = getNetworkEvents().length;
-    const tabTitle = activePanelTab === "element" ? "元素定位选择修改" : activePanelTab === "diagnostics" ? "页面诊断" : "数据获取";
+    const tabTitle = activePanelTab === "element" ? "修改记录" : activePanelTab === "diagnostics" ? "页面诊断" : "数据获取";
     const tabBody = activePanelTab === "element" ? renderElementTab() : activePanelTab === "diagnostics" ? renderDiagnosticsTab() : renderNetworkTab();
 
     panel.innerHTML = `
@@ -385,7 +430,7 @@
             </div>
           </div>
           <nav class="panel-nav" aria-label="DevLite 功能">
-            ${navButton("element", "元素定位", 0)}
+            ${navButton("element", "元素修改", changeCount)}
             ${navButton("diagnostics", "页面诊断", diagnosticCount)}
             ${navButton("network", "数据获取", networkCount)}
           </nav>
@@ -421,7 +466,8 @@
 
   function panelHeaderMeta(): string {
     if (activePanelTab === "element") {
-      return selectedElement ? labelElement(selectedElement) : inspectorActive ? "点击页面元素完成定位" : "选择后实时修改 CSS";
+      const count = getStyleChangeRecords().length;
+      return count > 0 ? `${count} 个元素` : inspectorActive ? "点击页面元素完成定位" : "页面浮层负责编辑";
     }
     if (activePanelTab === "diagnostics") {
       const count = getProblemEvents().length;
@@ -432,57 +478,80 @@
   }
 
   function renderElementTab(): string {
-    if (!selectedElement || !currentChange) {
-      return `
-        <div class="toolbar">
-          <button data-action="quick-select" class="primary">${inspectorActive ? "正在选择" : "快速选择元素"}</button>
-          ${inspectorActive ? `<button data-action="stop-select">停止选择</button>` : ""}
-        </div>
-        <div class="empty">在页面上点击目标元素后，这里会显示可修改样式。</div>
-      `;
-    }
-
-    const element = selectedElement;
-    const computed = getComputedStyle(element);
-    const rows = [
-      inputRow("color", "文字颜色", toHexColor(computed.color), "color"),
-      inputRow("background-color", "背景颜色", toHexColor(computed.backgroundColor), "color"),
-      inputRow("font-size", "字号", computed.fontSize),
-      inputRow("font-weight", "字重", computed.fontWeight),
-      inputRow("line-height", "行高", computed.lineHeight),
-      inputRow("letter-spacing", "字距", computed.letterSpacing),
-      inputRow("padding", "内边距", computed.padding),
-      inputRow("margin", "外边距", computed.margin),
-      inputRow("width", "宽度", computed.width),
-      inputRow("height", "高度", computed.height),
-      inputRow("border-radius", "圆角", computed.borderRadius),
-      inputRow("box-shadow", "阴影", computed.boxShadow),
-      selectRow("display", "显示", computed.display, ["block", "inline-block", "flex", "inline-flex", "grid", "none"]),
-      inputRow("gap", "间距", computed.gap),
-      selectRow("justify-content", "主轴", computed.justifyContent, ["normal", "flex-start", "center", "space-between", "space-around", "flex-end"]),
-      selectRow("align-items", "交叉轴", computed.alignItems, ["normal", "stretch", "flex-start", "center", "flex-end", "baseline"]),
-      inputRow("opacity", "透明度", computed.opacity)
-    ].join("");
-    const textEditor = renderTextEditor(element);
-
+    const records = getStyleChangeRecords();
     return `
       <div class="toolbar">
-        <button data-action="continue-select">返回继续选择</button>
-        <button data-action="quick-select" class="primary">重新选择元素</button>
-      </div>
-      <div class="target">
-        <code>${escapeHtml(currentChange.selector)}</code>
-        <button data-action="copy-selector">复制 Selector</button>
-      </div>
-      ${textEditor}
-      <div class="rows">${rows}</div>
-      <div class="actions">
-        <button data-action="hide">隐藏</button>
-        <button data-action="undo">撤销</button>
-        <button data-action="copy-css">复制 CSS</button>
+        <button data-action="quick-select" class="primary">${inspectorActive ? "正在选择" : "选择元素"}</button>
+        ${inspectorActive ? `<button data-action="stop-select">停止选择</button>` : ""}
         <button data-action="copy-ai" class="primary">复制全部 Prompt</button>
       </div>
+      ${
+        records.length === 0
+          ? `<div class="empty">暂无修改记录。</div>`
+          : `<div class="style-record-list">${records.map((change, index) => renderStyleChangeRecord(change, index)).join("")}</div>`
+      }
     `;
+  }
+
+  function renderStyleChangeRecord(change: StyleChange, index: number): string {
+    return `
+      <article class="style-record">
+        <div class="style-record-head">
+          <strong>${index + 1}. ${escapeHtml(change.elementLabel)}</strong>
+          <span>${formatTime(change.updatedAt)}</span>
+        </div>
+        <code>${escapeHtml(change.selector)}</code>
+        <p>${escapeHtml(summarizeStyleChange(change))}</p>
+      </article>
+    `;
+  }
+
+  function getStyleChangeRecords(): StyleChange[] {
+    const records = new Map<string, StyleChange>();
+    for (const change of sessionSnapshot?.styleChanges ?? []) {
+      if (hasRecordedChange(change)) {
+        records.set(change.id, change);
+      }
+    }
+    if (currentChange && hasRecordedChange(currentChange)) {
+      records.set(currentChange.id, currentChange);
+    }
+    return Array.from(records.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  function hasRecordedChange(change: StyleChange): boolean {
+    return Object.keys(change.after).length > 0 || change.textAfter !== undefined || change.htmlAfter !== undefined;
+  }
+
+  function summarizeStyleChange(change: StyleChange): string {
+    const parts = Object.keys(change.after).map((prop) => stylePropLabel(prop));
+    if (change.textAfter !== undefined || change.htmlAfter !== undefined) {
+      parts.unshift("文字内容");
+    }
+    return parts.length > 0 ? parts.join("、") : "已选择，暂无修改";
+  }
+
+  function stylePropLabel(prop: string): string {
+    const labels: Record<string, string> = {
+      color: "文字颜色",
+      "background-color": "背景颜色",
+      "font-size": "字号",
+      "font-weight": "字重",
+      "line-height": "行高",
+      "letter-spacing": "字距",
+      padding: "内边距",
+      margin: "外边距",
+      width: "宽度",
+      height: "高度",
+      "border-radius": "圆角",
+      "box-shadow": "阴影",
+      display: "显示",
+      gap: "间距",
+      "justify-content": "主轴",
+      "align-items": "交叉轴",
+      opacity: "透明度"
+    };
+    return labels[prop] ?? prop;
   }
 
   function renderTextEditor(element: HTMLElement): string {
@@ -502,6 +571,111 @@
         </div>
       </div>
     `;
+  }
+
+  function renderStyleEditor(): void {
+    ensureOverlay();
+    if (!styleEditor || !selectedElement || !currentChange) return;
+    const computed = getComputedStyle(selectedElement);
+    const basicRows = [
+      inputRow("color", "文字", toHexColor(computed.color), "color"),
+      inputRow("background-color", "背景", toHexColor(computed.backgroundColor), "color"),
+      inputRow("font-size", "字号", computed.fontSize),
+      selectRow("font-weight", "字重", normalizeFontWeight(computed.fontWeight), ["300", "400", "500", "600", "700", "800"])
+    ].join("");
+    const detailRows = [
+      inputRow("line-height", "行高", computed.lineHeight),
+      inputRow("letter-spacing", "字距", computed.letterSpacing),
+      inputRow("padding", "内边距", computed.padding),
+      inputRow("margin", "外边距", computed.margin),
+      inputRow("width", "宽度", computed.width),
+      inputRow("height", "高度", computed.height),
+      inputRow("border-radius", "圆角", computed.borderRadius),
+      inputRow("box-shadow", "阴影", computed.boxShadow),
+      selectRow("display", "显示", computed.display, ["block", "inline-block", "flex", "inline-flex", "grid", "none"]),
+      inputRow("gap", "间距", computed.gap),
+      selectRow("justify-content", "主轴", computed.justifyContent, ["normal", "flex-start", "center", "space-between", "space-around", "flex-end"]),
+      selectRow("align-items", "交叉轴", computed.alignItems, ["normal", "stretch", "flex-start", "center", "flex-end", "baseline"]),
+      inputRow("opacity", "透明度", computed.opacity)
+    ].join("");
+
+    styleEditor.hidden = false;
+    styleEditor.innerHTML = `
+      <div class="style-editor-head">
+        <strong>${escapeHtml(currentChange.elementLabel)}</strong>
+        <button type="button" data-style-action="close" class="icon-button">关闭</button>
+      </div>
+      <div class="rows">${basicRows}</div>
+      <details class="style-editor-details">
+        <summary>更多</summary>
+        <div class="rows">${detailRows}</div>
+      </details>
+      <div class="style-editor-actions">
+        ${canEditTextContent(selectedElement) ? `<button type="button" data-style-action="text">编辑文字</button>` : ""}
+        <button type="button" data-style-action="select">继续选择</button>
+        <button type="button" data-style-action="undo">撤销</button>
+      </div>
+    `;
+    bindStyleEditorEvents();
+    updateStyleEditorPosition();
+  }
+
+  function bindStyleEditorEvents(): void {
+    if (!styleEditor) return;
+    styleEditor.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-prop]").forEach((input) => {
+      input.addEventListener("input", () => {
+        const prop = input.dataset.prop;
+        if (!prop || !selectedElement || !currentChange) return;
+        applyStyle(prop, input.value);
+      });
+      input.addEventListener("change", () => {
+        const prop = input.dataset.prop;
+        if (!prop || !selectedElement || !currentChange) return;
+        applyStyle(prop, input.value);
+      });
+    });
+
+    styleEditor.querySelectorAll<HTMLButtonElement>("[data-style-action]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const action = button.dataset.styleAction;
+        if (action === "close") {
+          hideStyleEditor();
+          hideHighlighter();
+          return;
+        }
+        if (action === "text") {
+          startInlineTextEdit();
+          return;
+        }
+        if (action === "select") {
+          startInspector();
+          return;
+        }
+        if (action === "undo") {
+          undoCurrentChange();
+        }
+      });
+    });
+  }
+
+  function updateStyleEditorPosition(): void {
+    if (!styleEditor || styleEditor.hidden || !selectedElement) return;
+    const rect = selectedElement.getBoundingClientRect();
+    const editorRect = styleEditor.getBoundingClientRect();
+    const width = editorRect.width || 300;
+    const height = editorRect.height || 240;
+    let left = rect.right + 10;
+    if (left + width > window.innerWidth - 8) {
+      left = Math.max(8, rect.right - width);
+    }
+    let top = Math.max(8, rect.top);
+    if (top + height > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - height - 8);
+    }
+    styleEditor.style.left = `${Math.round(left)}px`;
+    styleEditor.style.top = `${Math.round(top)}px`;
   }
 
   function renderDiagnosticsTab(): string {
@@ -702,6 +876,10 @@
     currentChange.updatedAt = Date.now();
     syncCurrentChange();
     updateHighlighter(selectedElement);
+    updateStyleEditorPosition();
+    if (panelOpen && activePanelTab === "element") {
+      schedulePanelRender();
+    }
   }
 
   function applyTextContent(value: string): void {
@@ -710,6 +888,10 @@
     selectedElement.textContent = value;
     recordTextAfter(selectedElement);
     updateHighlighter(selectedElement);
+    updateStyleEditorPosition();
+    if (panelOpen && activePanelTab === "element") {
+      schedulePanelRender();
+    }
   }
 
   function startInlineTextEdit(): void {
@@ -735,6 +917,10 @@
         if (selectedElement !== element) return;
         recordTextAfter(element);
         updateHighlighter(element);
+        updateStyleEditorPosition();
+        if (panelOpen && activePanelTab === "element") {
+          schedulePanelRender();
+        }
       },
       onBlur: () => {
         stopInlineTextEdit();
@@ -821,6 +1007,7 @@
     currentChange = null;
     selectedElement = null;
     hideHighlighter();
+    hideStyleEditor();
     renderPanel();
   }
 
@@ -884,6 +1071,7 @@
     selectedElement = null;
     currentChange = null;
     hideHighlighter();
+    hideStyleEditor();
     hidePanel();
   }
 
@@ -1276,6 +1464,13 @@
     return `#${[match[1], match[2], match[3]].map((part) => Number(part).toString(16).padStart(2, "0")).join("")}`;
   }
 
+  function normalizeFontWeight(value: string): string {
+    if (/^\d+$/.test(value)) return value;
+    if (value === "bold") return "700";
+    if (value === "normal") return "400";
+    return "400";
+  }
+
   function cssAttrEscape(value: string): string {
     return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
@@ -1311,9 +1506,38 @@
     window.setTimeout(() => node.remove(), 1800);
   }
 
+  function launcherIcon(type: "select" | "panel"): string {
+    if (type === "select") {
+      return `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M5 4l8 16 1.9-6.1L21 12 5 4z" />
+          <path d="M13.8 13.8l4.4 4.4" />
+        </svg>
+      `;
+    }
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <rect x="4" y="5" width="16" height="14" rx="2" />
+        <path d="M9 5v14" />
+        <path d="M12.5 9h4.5" />
+        <path d="M12.5 13h4.5" />
+      </svg>
+    `;
+  }
+
   function bindLauncherEvents(): void {
     if (!launcherDock) return;
     const launcher = launcherDock.querySelector<HTMLButtonElement>(".devlite-launcher");
+    const hitArea = launcherDock.querySelector<HTMLDivElement>(".launcher-hit-area");
+    const actionButtons = Array.from(launcherDock.querySelectorAll<HTMLButtonElement>("[data-launcher-action]"));
+    launcherDock.addEventListener("pointerenter", () => setLauncherExpanded(true));
+    launcherDock.addEventListener("pointerleave", scheduleLauncherCollapse);
+    launcherDock.addEventListener("focusin", () => setLauncherExpanded(true));
+    launcherDock.addEventListener("focusout", scheduleLauncherCollapse);
+    [launcher, hitArea, ...actionButtons].forEach((node) => {
+      node?.addEventListener("pointerenter", () => setLauncherExpanded(true));
+      node?.addEventListener("pointerleave", scheduleLauncherCollapse);
+    });
     launcher?.addEventListener("pointerdown", startLauncherDrag);
     launcher?.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1325,24 +1549,49 @@
       openPanel();
     });
 
-    launcherDock.querySelectorAll<HTMLButtonElement>("[data-launcher-action]").forEach((button) => {
+    actionButtons.forEach((button) => {
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         const action = button.dataset.launcherAction;
         if (action === "select") {
+          setLauncherExpanded(false);
           startInspector();
           toast("点击页面元素完成定位");
           return;
         }
+        setLauncherExpanded(false);
         openPanel();
       });
     });
   }
 
+  function setLauncherExpanded(expanded: boolean): void {
+    if (!launcherDock) return;
+    if (launcherCollapseTimer !== null) {
+      window.clearTimeout(launcherCollapseTimer);
+      launcherCollapseTimer = null;
+    }
+    launcherDock.classList.toggle("expanded", expanded);
+  }
+
+  function scheduleLauncherCollapse(): void {
+    if (!launcherDock) return;
+    if (launcherDock.matches(":focus-within")) return;
+    if (launcherCollapseTimer !== null) {
+      window.clearTimeout(launcherCollapseTimer);
+    }
+    launcherCollapseTimer = window.setTimeout(() => {
+      launcherDock?.classList.remove("expanded");
+      launcherCollapseTimer = null;
+    }, 220);
+  }
+
   function applyLauncherPosition(): void {
     if (!launcherDock) return;
-    launcherTop = Math.min(Math.max(36, launcherTop), Math.max(36, window.innerHeight - 36));
+    const minTop = Math.min(74, Math.max(36, window.innerHeight / 2));
+    const maxTop = Math.max(minTop, window.innerHeight - minTop);
+    launcherTop = Math.min(Math.max(minTop, launcherTop), maxTop);
     launcherDock.style.top = `${launcherTop}px`;
   }
 
@@ -1484,39 +1733,133 @@
         font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .devlite-panel[hidden] { display: none; }
+      .style-editor-popover {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: min(320px, calc(100vw - 16px));
+        max-height: min(520px, calc(100dvh - 16px));
+        overflow: auto;
+        pointer-events: auto;
+        box-sizing: border-box;
+        border: 1px solid #d6d8d2;
+        border-radius: 8px;
+        background: #fbfbf8;
+        color: #161815;
+        box-shadow: 0 18px 58px rgba(22,24,21,.22);
+        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .style-editor-popover[hidden] { display: none; }
+      .style-editor-head {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px;
+        border-bottom: 1px solid #e4e5df;
+        background: #fbfbf8;
+      }
+      .style-editor-head strong {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+      }
+      .style-editor-popover > .rows {
+        padding: 10px;
+      }
+      .style-editor-popover .row {
+        grid-template-columns: 58px minmax(0, 1fr);
+      }
+      .style-editor-details {
+        border-top: 1px solid #eceee7;
+      }
+      .style-editor-details summary {
+        padding: 9px 10px;
+        cursor: pointer;
+        color: #27483b;
+        font-weight: 600;
+        user-select: none;
+      }
+      .style-editor-details .rows {
+        padding: 0 10px 10px;
+      }
+      .style-editor-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+        gap: 8px;
+        padding: 10px;
+        border-top: 1px solid #eceee7;
+      }
       .devlite-dock {
         position: fixed;
         right: 0;
         top: 50%;
-        width: 150px;
-        height: 58px;
+        width: 112px;
+        height: 148px;
         transform: translateY(-50%);
         pointer-events: none;
       }
+      .launcher-hit-area {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      .devlite-dock.expanded .launcher-hit-area {
+        pointer-events: auto;
+      }
       .launcher-actions {
         position: absolute;
-        right: 52px;
-        top: 50%;
-        display: flex;
-        gap: 8px;
-        opacity: 0;
+        inset: 0;
         pointer-events: none;
-        transform: translate(10px, -50%);
-        transition: opacity 180ms ease, transform 180ms ease;
       }
-      .devlite-dock:hover .launcher-actions,
+      .devlite-dock.expanded .launcher-actions,
       .devlite-dock:focus-within .launcher-actions {
-        opacity: 1;
         pointer-events: auto;
-        transform: translate(0, -50%);
       }
       .launcher-action {
-        width: 42px;
-        height: 42px;
+        position: absolute;
+        right: 48px;
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
         padding: 0;
         border-radius: 50%;
-        font-weight: 700;
+        color: #163d31;
+        opacity: 0;
+        pointer-events: none;
         box-shadow: 0 10px 28px rgba(22,24,21,.18);
+        transform: translate(18px, 0) scale(.86);
+        transition: opacity 170ms ease, transform 170ms ease, background 160ms ease, border-color 160ms ease, color 160ms ease;
+      }
+      .launcher-action[data-launcher-action="select"] {
+        top: 22px;
+        transform: translate(20px, 18px) scale(.86);
+      }
+      .launcher-action[data-launcher-action="panel"] {
+        bottom: 22px;
+        transform: translate(20px, -18px) scale(.86);
+      }
+      .devlite-dock.expanded .launcher-action,
+      .devlite-dock:focus-within .launcher-action {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translate(0, 0) scale(1);
+      }
+      .launcher-action svg {
+        display: block;
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.9;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
       .devlite-launcher {
         position: absolute;
@@ -1674,6 +2017,43 @@
         border:1px solid #e8e9e3;
         border-radius: 8px;
         background: #fff;
+      }
+      .style-record-list {
+        display: grid;
+        gap: 8px;
+      }
+      .style-record {
+        padding: 10px;
+        border: 1px solid #e2e4dc;
+        border-radius: 8px;
+        background: #fff;
+      }
+      .style-record-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-width: 0;
+      }
+      .style-record-head strong {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #151713;
+      }
+      .style-record-head span {
+        flex: 0 0 auto;
+        color: #697064;
+        font-size: 12px;
+      }
+      .style-record code {
+        display: block;
+        margin-top: 6px;
+      }
+      .style-record p {
+        margin: 7px 0 0;
+        color: #333a31;
       }
       code {
         overflow:hidden;

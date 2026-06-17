@@ -64,10 +64,16 @@ Chrome Extension Manifest V3
 
 ```json
 {
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "optional_host_permissions": [
-    "http://*/*",
-    "https://*/*",
     "https://api.openai.com/*",
     "https://api.deepseek.com/*",
     "https://api.anthropic.com/*",
@@ -77,12 +83,14 @@ Chrome Extension Manifest V3
 ```
 
 - `activeTab`：用户主动点击扩展后，临时访问当前页面。
+- `content_scripts`：在普通 HTTP/HTTPS 页面默认显示右侧 DevLite 入口。
+- `host_permissions`：允许用户点击页面入口后，按需向当前 HTTP/HTTPS 页面注入采集脚本。
 - `scripting`：向当前页面注入诊断脚本和元素选择器。
 - `storage`：保存本地设置，例如脱敏字段和用户 API Key。
 - `clipboardWrite`：复制报告和 Prompt。
 - `optional_host_permissions`：仅在用户启用对应能力时请求，例如 AI 服务接口访问。
 
-DevLite 不默认申请 `<all_urls>` 常驻权限。
+DevLite 会在普通 HTTP/HTTPS 页面默认显示右侧入口，但不会自动开始诊断采集。`injected script` 只在用户打开面板、开始诊断或选择元素后按需注入。
 
 ## 开发
 

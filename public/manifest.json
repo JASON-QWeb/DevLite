@@ -24,10 +24,16 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "optional_host_permissions": [
-    "http://*/*",
-    "https://*/*",
     "https://api.openai.com/*",
     "https://api.deepseek.com/*",
     "https://api.anthropic.com/*",
