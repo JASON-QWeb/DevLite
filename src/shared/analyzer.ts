@@ -1,0 +1,178 @@
+import type { AnalysisFinding, AnalysisResult, DiagnosticEvent, DiagnosticSession } from "./types";
+
+export function analyzeSession(session: DiagnosticSession, slowRequestThreshold: number): AnalysisResult {
+  const events = session.events;
+  const jsErrors = events.filter((event) => event.type === "js-error");
+  const promiseErrors = events.filter((event) => event.type === "unhandled-rejection");
+  const consoleErrors = events.filter((event) => event.type === "console-error");
+  const networkEvents = events.filter((event) => event.type === "network");
+  const failedRequests = networkEvents.filter((event) => isFailedStatus(event.status) || event.severity === "error");
+  const slowRequests = networkEvents.filter((event) => typeof event.duration === "number" && event.duration >= slowRequestThreshold);
+  const resourceErrors = events.filter((event) => event.type === "resource-error");
+
+  const findings: AnalysisFinding[] = [
+    ...buildNetworkFindings(failedRequests),
+    ...buildJsFindings([...jsErrors, ...promiseErrors, ...consoleErrors]),
+    ...buildResourceFindings(resourceErrors),
+    ...buildPerformanceFindings(slowRequests)
+  ];
+
+  if (session.styleChanges.length > 0) {
+    findings.push({
+      title: "存在页面临时修改",
+      detail: `本次会话记录了 ${session.styleChanges.length} 处页面临时修改，可导出通用 AI Prompt 后在源码中实现。`,
+      severity: "info",
+      evidence: session.styleChanges.slice(0, 5).map((change) => `${change.selector}: ${changeEvidence(change)}`),
+      suggestion: "导出 AI Prompt 后，在项目中定位对应组件、文案和样式文件，按现有技术栈实现这些页面调整。"
+    });
+  }
+
+  const counters = {
+    jsErrors: jsErrors.length,
+    promiseErrors: promiseErrors.length,
+    consoleErrors: consoleErrors.length,
+    failedRequests: failedRequests.length,
+    slowRequests: slowRequests.length,
+    resourceErrors: resourceErrors.length,
+    styleChanges: session.styleChanges.length
+  };
+
+  const summary = buildSummary(counters);
+
+  return { summary, findings, counters };
+}
+
+function buildSummary(counters: AnalysisResult["counters"]): string {
+  const parts = [
+    counters.jsErrors ? `${counters.jsErrors} 个 JS 错误` : "",
+    counters.promiseErrors ? `${counters.promiseErrors} 个 Promise 异常` : "",
+    counters.consoleErrors ? `${counters.consoleErrors} 条 console.error` : "",
+    counters.failedRequests ? `${counters.failedRequests} 个失败请求` : "",
+    counters.slowRequests ? `${counters.slowRequests} 个慢请求` : "",
+    counters.resourceErrors ? `${counters.resourceErrors} 个资源加载失败` : "",
+    counters.styleChanges ? `${counters.styleChanges} 处页面修改` : ""
+  ].filter(Boolean);
+
+  if (parts.length === 0) {
+    return "当前诊断未发现明显错误。可以继续复现问题，或检查业务状态是否符合预期。";
+  }
+
+  return `当前页面检测到 ${parts.join("、")}。`;
+}
+
+function changeEvidence(change: DiagnosticSession["styleChanges"][number]): string {
+  const styleKeys = Object.keys(change.after);
+  const parts = [
+    styleKeys.length > 0 ? `CSS ${styleKeys.join(", ")}` : "",
+    change.textAfter !== undefined && change.textAfter !== (change.textBefore ?? "") ? "文字内容" : ""
+  ].filter(Boolean);
+  return parts.join(" / ") || "未记录具体字段";
+}
+
+function buildNetworkFindings(events: DiagnosticEvent[]): AnalysisFinding[] {
+  const grouped = new Map<string, DiagnosticEvent[]>();
+  for (const event of events) {
+    const key = `${event.status ?? "ERR"} ${event.method ?? "GET"} ${event.url ?? event.source ?? "unknown"}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), event]);
+  }
+
+  return [...grouped.entries()].slice(0, 8).map(([key, group]) => {
+    const sample = group[0];
+    const status = sample.status;
+    const suggestion = networkSuggestion(status, sample.message);
+    return {
+      title: `请求异常：${key}`,
+      detail: group.length > 1 ? `同一请求出现 ${group.length} 次异常。` : sample.message,
+      severity: "error",
+      evidence: group.slice(0, 3).map((event) => `${formatTime(event.timestamp)} ${event.duration ?? "-"}ms ${event.message}`),
+      suggestion
+    };
+  });
+}
+
+function buildJsFindings(events: DiagnosticEvent[]): AnalysisFinding[] {
+  const grouped = new Map<string, DiagnosticEvent[]>();
+  for (const event of events) {
+    const key = normalizeErrorMessage(event.message);
+    grouped.set(key, [...(grouped.get(key) ?? []), event]);
+  }
+
+  return [...grouped.entries()].slice(0, 8).map(([message, group]) => ({
+    title: `脚本错误：${message}`,
+    detail: group.length > 1 ? `同类脚本错误出现 ${group.length} 次。` : group[0].message,
+    severity: "error",
+    evidence: group.slice(0, 3).map((event) => event.stack || `${formatTime(event.timestamp)} ${event.source ?? ""}`.trim()),
+    suggestion: jsSuggestion(message)
+  }));
+}
+
+function buildResourceFindings(events: DiagnosticEvent[]): AnalysisFinding[] {
+  if (events.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      title: "静态资源加载失败",
+      detail: `页面有 ${events.length} 个图片、脚本、样式或字体资源加载失败。`,
+      severity: "warning",
+      evidence: events.slice(0, 8).map((event) => event.url || event.message),
+      suggestion: "检查资源 URL、CDN 发布路径、缓存版本和跨域配置。图片类资源建议提供 fallback。"
+    }
+  ];
+}
+
+function buildPerformanceFindings(events: DiagnosticEvent[]): AnalysisFinding[] {
+  if (events.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      title: "存在慢请求",
+      detail: `检测到 ${events.length} 个请求耗时超过阈值。`,
+      severity: "warning",
+      evidence: events.slice(0, 8).map((event) => `${event.duration}ms ${event.method ?? "GET"} ${event.url ?? ""}`),
+      suggestion: "优先检查接口响应时间、数据库查询、缓存命中率，以及前端是否串行等待了多个接口。"
+    }
+  ];
+}
+
+function networkSuggestion(status?: number, message = ""): string {
+  if (status === 401) return "优先检查登录态、Token 过期、Cookie SameSite 配置或鉴权中间件。";
+  if (status === 403) return "优先检查当前账号权限、接口权限策略、CSRF 校验或网关规则。";
+  if (status === 404) return "优先检查接口路由、静态资源发布路径、前端环境变量和反向代理配置。";
+  if (status === 408 || status === 504) return "优先检查网关超时、后端慢查询、上游服务可用性和重试策略。";
+  if (status && status >= 500) return "优先检查后端服务日志、异常堆栈、数据库或依赖服务状态。";
+  if (/cors/i.test(message)) return "这是跨域相关错误，检查 Access-Control-Allow-Origin、预检请求和凭证配置。";
+  if (/mixed content/i.test(message)) return "HTTPS 页面加载了 HTTP 资源，需改为 HTTPS 或移除不安全资源。";
+  return "检查请求 URL、网络状态、浏览器控制台和服务端日志。";
+}
+
+function jsSuggestion(message: string): string {
+  if (/cannot read prop|cannot read properties|undefined|null/i.test(message)) {
+    return "前端可能缺少空值保护。检查接口返回结构是否变化，并在组件中使用可选链、默认值或加载态。";
+  }
+  if (/chunkloaderror|loading chunk/i.test(message)) {
+    return "前端资源版本可能与缓存不一致。检查部署版本、CDN 缓存和 chunk 失败后的刷新策略。";
+  }
+  if (/is not a function/i.test(message)) {
+    return "可能是模块导出、依赖版本或运行时数据类型不符合预期。检查调用对象来源。";
+  }
+  if (/script error/i.test(message)) {
+    return "跨域脚本错误信息被浏览器隐藏。检查脚本 crossorigin、CORS 响应头和 sourcemap。";
+  }
+  return "根据错误堆栈定位触发组件，补充边界状态处理和异常保护。";
+}
+
+function normalizeErrorMessage(message: string): string {
+  return message.replace(/\s+/g, " ").slice(0, 160);
+}
+
+function isFailedStatus(status?: number): boolean {
+  return typeof status === "number" && status >= 400;
+}
+
+function formatTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString("zh-CN", { hour12: false });
+}

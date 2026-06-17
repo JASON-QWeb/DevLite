@@ -1,0 +1,5 @@
+node_modules/
+dist/
+easybug.zip
+.DS_Store
+*.log
