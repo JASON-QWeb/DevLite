@@ -31,6 +31,12 @@
       "run_at": "document_idle"
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/devlite-logo.png", "icons/devlite-16.png", "icons/devlite-32.png", "icons/devlite-48.png", "icons/devlite-128.png", "icons/devlite.svg"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
   "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
   "host_permissions": ["http://*/*", "https://*/*"]
 }
