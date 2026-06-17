@@ -12,6 +12,7 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
   let bufferEarlyEvents = true;
   const pendingEvents: any[] = [];
   const MAX_PENDING_EVENTS = 200;
+  let controlMessageToken: string | null = null;
   let settings = {
     collectResponseBody: false,
     maxResponseLength: 2048,
@@ -29,6 +30,9 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     if (!isTrustedControlMessage(event)) return;
     const data = event.data;
     if (!data || data.channel !== CONTROL_CHANNEL) return;
+    if (typeof data.token !== "string") return;
+    if (controlMessageToken !== null && data.token !== controlMessageToken && data.type !== "start") return;
+    controlMessageToken = data.token;
     if (data.type === "start") {
       active = true;
       bufferEarlyEvents = false;
@@ -85,15 +89,17 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     originalConsoleError(...args);
   };
 
-	  console.log = (...args: unknown[]) => {
-	    emit({
-	      type: "console-log",
-	      severity: "info",
-	      message: args.map(serialize).join(" "),
-	      metadata: {
-	        consoleMethod: "log"
-	      }
-    });
+  console.log = (...args: unknown[]) => {
+    if (active) {
+      emit({
+        type: "console-log",
+        severity: "info",
+        message: args.map(serialize).join(" "),
+        metadata: {
+          consoleMethod: "log"
+        }
+      });
+    }
     originalConsoleLog(...args);
   };
 
@@ -250,6 +256,7 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     window.postMessage(
       {
         channel: PAGE_CHANNEL,
+        token: controlMessageToken,
         event
       },
       pageMessageTargetOrigin

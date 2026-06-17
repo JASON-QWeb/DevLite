@@ -11,7 +11,7 @@
     "qa": "npm run build && node scripts/qa-extension.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "store:images": "npm run build && node scripts/generate-store-images.mjs",
-    "zip": "npm run build && cd dist && zip -r ../devlite.zip ."
+    "zip": "npm run build && rm -f devlite.zip && cd dist && zip -r ../devlite.zip ."
   },
   "devDependencies": {
     "@types/chrome": "^0.0.306",

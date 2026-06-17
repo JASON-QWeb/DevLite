@@ -78,6 +78,7 @@ function render(): void {
                 ? `<button class="danger" data-action="stop">${t("stopDiagnosis")}</button>`
                 : `<button class="primary" data-action="start">${t("startDiagnosis")}</button>`
             }
+            <button data-action="open-panel">${t("openPanel")}</button>
             <button data-action="inspect">${t("inspect")}</button>
             <button data-action="report">${t("generateReport")}</button>
             <button data-action="copy-report" ${state.report ? "" : "disabled"}>${t("copyReport")}</button>
@@ -291,6 +292,12 @@ async function handleAction(action: string): Promise<void> {
       const response = await sendMessage({ type: "start-inspector" });
       if (!response?.ok) throw new Error(response?.error || t("inspectFailed"));
       showToast(t("clickElement"));
+      window.close();
+    }
+
+    if (action === "open-panel") {
+      const response = await sendMessage({ type: "open-page-panel" });
+      if (!response?.ok) throw new Error(response?.error || t("openPanelFailed"));
       window.close();
     }
 

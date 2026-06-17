@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "DevLite"
+  },
+  "extensionDescription": {
+    "message": "直接在浏览器中诊断页面、记录改动，并生成 Agent 修复任务。"
+  }
+}

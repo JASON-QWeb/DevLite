@@ -64,8 +64,7 @@ class SessionStore {
     const run = this.writeQueue.catch(() => undefined).then(async () => {
       const sessions = cloneSessions(await this.load());
       result = mutator(sessions);
-      await this.save(sessions);
-      this.cache = sessions;
+      this.cache = await this.save(sessions);
     });
     this.writeQueue = run.then(
       () => undefined,
@@ -99,12 +98,31 @@ class SessionStore {
     return sessions;
   }
 
-  private async save(sessions: Map<number, DiagnosticSession>): Promise<void> {
-    const stored: StoredSessions = {};
-    for (const [tabId, session] of sessions) {
-      stored[String(tabId)] = session;
+  private async save(sessions: Map<number, DiagnosticSession>): Promise<Map<number, DiagnosticSession>> {
+    const attempts = [
+      sessions,
+      compactSessions(sessions, { maxSessions: 10, maxEvents: 300, maxStyleChanges: 120 }),
+      compactSessions(sessions, { maxSessions: 3, maxEvents: 160, maxStyleChanges: 60 }),
+      compactSessions(sessions, { maxSessions: 1, maxEvents: 80, maxStyleChanges: 30 })
+    ];
+    let lastQuotaError: unknown;
+
+    for (const attempt of attempts) {
+      try {
+        await this.storage.set({ [SESSIONS_KEY]: serializeSessions(attempt) });
+        if (attempt !== sessions) {
+          console.warn("[DevLite] session storage quota exceeded; saved a compacted session snapshot");
+        }
+        return attempt;
+      } catch (error) {
+        if (!isQuotaError(error)) throw error;
+        lastQuotaError = error;
+      }
     }
-    await this.storage.set({ [SESSIONS_KEY]: stored });
+
+    console.warn("[DevLite] session storage quota exceeded; clearing persisted sessions", lastQuotaError);
+    await this.storage.remove(SESSIONS_KEY);
+    return new Map();
   }
 
   private get storage(): chrome.storage.StorageArea {
@@ -120,4 +138,37 @@ function cloneSessions(sessions: Map<number, DiagnosticSession>): Map<number, Di
     cloned.set(tabId, JSON.parse(JSON.stringify(session)) as DiagnosticSession);
   }
   return cloned;
+}
+
+function serializeSessions(sessions: Map<number, DiagnosticSession>): StoredSessions {
+  const stored: StoredSessions = {};
+  for (const [tabId, session] of sessions) {
+    stored[String(tabId)] = session;
+  }
+  return stored;
+}
+
+function compactSessions(
+  sessions: Map<number, DiagnosticSession>,
+  limits: { maxSessions: number; maxEvents: number; maxStyleChanges: number }
+): Map<number, DiagnosticSession> {
+  const compacted = new Map<number, DiagnosticSession>();
+  const sorted = Array.from(sessions.entries()).sort(([, left], [, right]) => {
+    return (right.updatedAt || right.createdAt || 0) - (left.updatedAt || left.createdAt || 0);
+  });
+
+  for (const [tabId, session] of sorted.slice(0, limits.maxSessions)) {
+    compacted.set(tabId, {
+      ...session,
+      events: session.events.slice(-limits.maxEvents),
+      styleChanges: session.styleChanges.slice(-limits.maxStyleChanges)
+    });
+  }
+
+  return compacted;
+}
+
+function isQuotaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /quota|QUOTA_BYTES|exceeded/i.test(message);
 }

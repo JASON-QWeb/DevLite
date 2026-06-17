@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "DevLite"
+  },
+  "extensionDescription": {
+    "message": "Diagnose pages, record live edits, and generate repair prompts for agents directly in the browser."
+  }
+}

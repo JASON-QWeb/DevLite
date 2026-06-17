@@ -227,13 +227,14 @@
         <ul>
           <li><code>scripting</code>：用于在当前页面注入诊断脚本、元素选择器和页面面板。</li>
           <li><code>storage</code>：用于保存本地设置和本地诊断会话。</li>
-          <li><code>clipboardWrite</code>：用于用户主动点击后复制诊断报告、CSS 修改记录、元素信息或修复 Prompt。</li>
           <li>
             <code>host_permissions</code> 中的 <code>http://*/*</code> 和 <code>https://*/*</code>：用于在普通
             HTTP/HTTPS 页面显示 DevLite 入口，并在用户主动操作后诊断当前页面。
           </li>
         </ul>
-        <p>DevLite 不请求 <code>tabs</code>、<code>cookies</code>、<code>webRequest</code>、<code>debugger</code>、<code>history</code>、<code>downloads</code> 等权限。</p>
+        <p>
+          DevLite 不请求 <code>clipboardWrite</code>、<code>tabs</code>、<code>cookies</code>、<code>webRequest</code>、<code>debugger</code>、<code>history</code>、<code>downloads</code> 等权限。复制诊断报告、CSS 修改记录、元素信息或修复 Prompt 时，仅在用户主动点击后调用浏览器剪贴板能力。
+        </p>
 
         <h2>用户控制</h2>
         <p>用户可以通过以下方式控制数据处理：</p>

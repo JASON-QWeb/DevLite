@@ -85,6 +85,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
   isolatedWindow.__DEVLITE_CONTENT_INSTALLED__ = true;
   const pageMessageTargetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
+  const pageMessageToken = randomId();
 
   let captureActive = false;
   let inspectorActive = false;
@@ -1338,11 +1339,17 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function postControlMessage(message: Record<string, unknown>): void {
-    window.postMessage({ channel: CONTROL_CHANNEL, ...message }, pageMessageTargetOrigin);
+    window.postMessage({ channel: CONTROL_CHANNEL, token: pageMessageToken, ...message }, pageMessageTargetOrigin);
   }
 
   function isTrustedPageMessage(event: MessageEvent): boolean {
-    return event.source === window && (pageMessageTargetOrigin === "*" || event.origin === window.location.origin);
+    const data = event.data;
+    return (
+      event.source === window &&
+      (pageMessageTargetOrigin === "*" || event.origin === window.location.origin) &&
+      data?.channel === PAGE_CHANNEL &&
+      data?.token === pageMessageToken
+    );
   }
 
   function getConnectedSelectedElement(): HTMLElement | null {

@@ -14,6 +14,8 @@ const requiredFiles = [
   "popup.js",
   "options.html",
   "options.js",
+  "_locales/zh_CN/messages.json",
+  "_locales/en/messages.json",
   "icons/devlite-16.png",
   "icons/devlite-32.png",
   "icons/devlite-48.png",
@@ -27,13 +29,12 @@ for (const file of requiredFiles) {
 const manifest = JSON.parse(await readFile(join(dist, "manifest.json"), "utf8"));
 
 assert(manifest.manifest_version === 3, "manifest_version must be 3");
-assert(manifest.name === "DevLite", "extension name must be DevLite");
-assert(
-  manifest.description === "直接在浏览器中诊断页面、记录改动，并生成 Agent 修复任务。",
-  "extension description mismatch"
-);
+assert(manifest.name === "__MSG_extensionName__", "extension name must use i18n message");
+assert(manifest.description === "__MSG_extensionDescription__", "extension description must use i18n message");
+assert(manifest.default_locale === "zh_CN", "default locale must be zh_CN");
 assert(manifest.background?.service_worker === "background.js", "background service worker path mismatch");
 assert(manifest.background?.type === "module", "background service worker must be a module");
+assert(manifest.action?.default_popup === "popup.html", "action default popup path mismatch");
 const contentScript = manifest.content_scripts?.find((script) => script.js?.includes("content.js"));
 assert(contentScript, "content.js must be declared as a static content script");
 assert(contentScript.run_at === "document_idle", "content.js should run at document_idle");
@@ -47,6 +48,7 @@ assert(manifest.icons?.["128"] === "icons/devlite-128.png", "128px icon path mis
 assert(manifest.action?.default_icon?.["32"] === "icons/devlite-32.png", "action icon path mismatch");
 
 const permissions = manifest.permissions ?? [];
+assert(!permissions.includes("clipboardWrite"), "clipboardWrite should not be requested");
 for (const permission of ["debugger", "webRequest", "tabs", "cookies"]) {
   assert(!permissions.includes(permission), `permission ${permission} should not be requested by default`);
 }

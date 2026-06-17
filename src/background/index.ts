@@ -15,7 +15,7 @@ import type {
 } from "../shared/types";
 
 const responseBodyCaptureTabs = new Set<number>();
-const CONTENT_SCRIPT_ID = "devlite-content";
+const LEGACY_CONTENT_SCRIPT_ID = "devlite-content";
 const MAIN_WORLD_SCRIPT_ID = "devlite-main-world-injected";
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -31,12 +31,6 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onStartup.addListener(() => {
   void registerMainWorldScript();
   void pruneExpiredSessions().catch((error) => console.warn("[DevLite] prune sessions failed", error));
-});
-
-chrome.action.onClicked.addListener((tab) => {
-  void openPagePanel(tab).catch((error) => {
-    console.error("[DevLite] action click error", error);
-  });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -262,6 +256,12 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     return { ok: true };
   }
 
+  if (type === "open-page-panel") {
+    const tab = await getActiveTab();
+    const opened = await openPagePanel(tab);
+    return opened ? { ok: true } : { ok: false, error: "当前页面不支持打开 DevLite 面板" };
+  }
+
   return { ok: false, error: `未知消息类型：${type}` };
 }
 
@@ -300,11 +300,11 @@ async function upsertEvent(tabId: number, event: DiagnosticEvent): Promise<void>
 
 async function upsertEvents(tabId: number, events: DiagnosticEvent[]): Promise<void> {
   if (events.length === 0) return;
-	  await sessionStore.update(tabId, (session) => {
-	    if (!session) return undefined;
-	    for (const event of events) {
-	      session.events.push(event);
-	    }
+  await sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    for (const event of events) {
+      session.events.push(event);
+    }
     if (session.events.length > 500) {
       session.events.splice(0, session.events.length - 500);
     }
@@ -401,31 +401,27 @@ async function ensureInjectedScript(tabId: number): Promise<void> {
   });
 }
 
-async function openPagePanel(tab: chrome.tabs.Tab): Promise<void> {
-  if (typeof tab.id !== "number") return;
-  if (!isInjectableUrl(tab.url)) return;
+async function openPagePanel(tab: chrome.tabs.Tab): Promise<boolean> {
+  if (typeof tab.id !== "number") return false;
+  if (!isInjectableUrl(tab.url)) return false;
   await ensurePageScripts(tab.id);
   if (!(await sessionStore.has(tab.id))) {
     await sessionStore.set(tab.id, createSession(tab.id, createFallbackPageContext(tab)));
   }
   await chrome.tabs.sendMessage(tab.id, { type: "devlite-open-panel" });
+  return true;
 }
 
 async function registerMainWorldScript(): Promise<void> {
   if (!chrome.scripting.registerContentScripts) return;
   try {
     const existing = new Set(
-      (await chrome.scripting.getRegisteredContentScripts({ ids: [CONTENT_SCRIPT_ID, MAIN_WORLD_SCRIPT_ID] })).map((script) => script.id)
+      (await chrome.scripting.getRegisteredContentScripts({ ids: [LEGACY_CONTENT_SCRIPT_ID, MAIN_WORLD_SCRIPT_ID] })).map((script) => script.id)
     );
-    const scripts: chrome.scripting.RegisteredContentScript[] = [];
-    if (!existing.has(CONTENT_SCRIPT_ID)) {
-      scripts.push({
-        id: CONTENT_SCRIPT_ID,
-        matches: ["http://*/*", "https://*/*"],
-        js: ["content.js"],
-        runAt: "document_idle"
-      });
+    if (existing.has(LEGACY_CONTENT_SCRIPT_ID)) {
+      await chrome.scripting.unregisterContentScripts({ ids: [LEGACY_CONTENT_SCRIPT_ID] });
     }
+    const scripts: chrome.scripting.RegisteredContentScript[] = [];
     if (!existing.has(MAIN_WORLD_SCRIPT_ID)) {
       scripts.push({
         id: MAIN_WORLD_SCRIPT_ID,
