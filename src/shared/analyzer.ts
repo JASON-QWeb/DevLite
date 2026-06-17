@@ -22,13 +22,13 @@ export function analyzeSession(session: DiagnosticSession, slowRequestThreshold:
     findings.push({
       title: en ? "Temporary page edits detected" : "存在页面临时修改",
       detail: en
-        ? `${session.styleChanges.length} temporary page edits were recorded. Export the AI prompt to implement them in source code.`
-        : `本次会话记录了 ${session.styleChanges.length} 处页面临时修改，可导出通用 AI Prompt 后在源码中实现。`,
+        ? `${session.styleChanges.length} temporary page edits were recorded. Export the repair prompt to implement them in source code.`
+        : `本次会话记录了 ${session.styleChanges.length} 处页面临时修改，可导出修复 Prompt 后在源码中实现。`,
       severity: "info",
       evidence: session.styleChanges.slice(0, 5).map((change) => `${change.selector}: ${changeEvidence(change, locale)}`),
       suggestion: en
-        ? "After exporting the AI prompt, locate the related components, copy, and style files, then implement the edits using the existing stack."
-        : "导出 AI Prompt 后，在项目中定位对应组件、文案和样式文件，按现有技术栈实现这些页面调整。"
+        ? "After exporting the repair prompt, locate the related components, copy, and style files, then implement the edits using the existing stack."
+        : "导出修复 Prompt 后，在项目中定位对应组件、文案和样式文件，按现有技术栈实现这些页面调整。"
     });
   }
 

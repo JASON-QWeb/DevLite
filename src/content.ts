@@ -558,7 +558,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       <div class="toolbar">
         <button data-action="quick-select" class="primary">${inspectorActive ? t("selecting") : t("selectElement")}</button>
         ${inspectorActive ? `<button data-action="stop-select">${t("stopSelecting")}</button>` : ""}
-        <button data-action="copy-ai" class="primary">${t("copyFullPrompt")}</button>
+        <button data-action="copy-prompt" class="primary">${t("copyFullPrompt")}</button>
       </div>
       ${
         records.length === 0
@@ -1073,11 +1073,11 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       return;
     }
 
-    if (action === "copy-ai") {
+    if (action === "copy-prompt") {
       if (styleChangeSyncPromise) {
         await styleChangeSyncPromise.catch(() => null);
       }
-      const response = await sendRuntime({ type: "generate-export", format: "ai" });
+      const response = await sendRuntime({ type: "generate-export", format: "prompt" });
       if (response?.ok && response.text) {
         await copyText(response.text);
         toast(t("fullPromptCopied"));

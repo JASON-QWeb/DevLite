@@ -8,8 +8,6 @@ type PopupState = {
   settings: DiagnosticSettings | null;
   report: string;
   analysis: AnalysisResult | null;
-  aiPreview: string;
-  aiResult: string;
   busy: boolean;
   toast: string;
 };
@@ -19,8 +17,6 @@ const state: PopupState = {
   settings: null,
   report: "",
   analysis: null,
-  aiPreview: "",
-  aiResult: "",
   busy: false,
   toast: ""
 };
@@ -48,7 +44,6 @@ function render(): void {
   const active = !!state.session?.active;
   const analysis = state.analysis;
   const settings = state.settings;
-  const aiReady = settings?.ai.mode === "user-key" && !!settings.ai.apiKey;
   const t = createTranslator(settings?.locale);
 
   app.innerHTML = `
@@ -92,7 +87,7 @@ function render(): void {
             <h2>${t("export")}</h2>
           </div>
           <div class="section-body exports">
-            <button data-export="ai">AI Prompt</button>
+            <button data-export="prompt">${t("repairPrompt")}</button>
             <button data-export="markdown">Markdown</button>
             <button data-export="json">JSON</button>
           </div>
@@ -105,22 +100,6 @@ function render(): void {
           </div>
           <div class="section-body">
             ${renderStyleChanges(state.session, t("emptyStyleChanges"))}
-          </div>
-        </div>
-
-        <div class="section">
-          <div class="section-header">
-            <h2>${t("aiAnalysis")}</h2>
-            <button class="ghost" data-action="options">${t("settings")}</button>
-          </div>
-          <div class="section-body">
-            ${
-              aiReady
-                ? `<button class="primary" data-action="ai-preview">${t("generateAiPreview")}</button>`
-                : `<div class="empty">${t("localAiNote")}</div>`
-            }
-            ${state.aiPreview ? renderAiPreview() : ""}
-            ${state.aiResult ? `<div class="ai-result">${escapeHtml(state.aiResult)}</div>` : ""}
           </div>
         </div>
 
@@ -171,17 +150,6 @@ function renderStyleChanges(session: DiagnosticSession | null, emptyText: string
         `
         )
         .join("")}
-    </div>
-  `;
-}
-
-function renderAiPreview(): string {
-  const t = createTranslator(state.settings?.locale);
-  return `
-    <textarea readonly>${escapeHtml(state.aiPreview)}</textarea>
-    <div class="preview-actions">
-      <button class="primary" data-action="ai-run">${t("confirmSendAi")}</button>
-      <button data-action="ai-cancel">${t("cancel")}</button>
     </div>
   `;
 }
@@ -239,30 +207,6 @@ async function handleAction(action: string): Promise<void> {
       chrome.runtime.openOptionsPage();
     }
 
-    if (action === "ai-preview") {
-      const response = await sendMessage({ type: "generate-export", format: "ai" });
-      if (!response?.ok) throw new Error(response?.error || t("previewFailed"));
-      state.aiPreview = response.text;
-      state.aiResult = "";
-      showToast(t("aiPreviewReady"));
-    }
-
-    if (action === "ai-cancel") {
-      state.aiPreview = "";
-      showToast(t("aiCancelled"));
-    }
-
-    if (action === "ai-run") {
-      if (state.settings?.ai.provider) {
-        await requestAiPermission(state.settings.ai.provider);
-      }
-      const response = await sendMessage({ type: "run-ai-analysis" });
-      if (!response?.ok) throw new Error(response?.error || t("aiFailed"));
-      state.aiResult = response.result.content;
-      state.aiPreview = "";
-      showToast(t("aiDone"));
-    }
-
     await refresh();
   } catch (error) {
     showToast(error instanceof Error ? error.message : String(error));
@@ -297,29 +241,6 @@ async function copyExport(format: ExportFormat): Promise<void> {
 function sendMessage(message: any): Promise<any> {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (response) => resolve(response));
-  });
-}
-
-function requestAiPermission(provider: string): Promise<void> {
-  const origins: Record<string, string[]> = {
-    openai: ["https://api.openai.com/*"],
-    deepseek: ["https://api.deepseek.com/*"],
-    anthropic: ["https://api.anthropic.com/*"],
-    gemini: ["https://generativelanguage.googleapis.com/*"]
-  };
-
-  return new Promise((resolve, reject) => {
-    chrome.permissions.request({ origins: origins[provider] ?? [] }, (granted) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!granted) {
-        reject(new Error(uiText(state.settings?.locale, "aiFailed")));
-        return;
-      }
-      resolve();
-    });
   });
 }
 

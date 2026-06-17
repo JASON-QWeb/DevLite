@@ -17,14 +17,6 @@ export interface DiagnosticSettings {
   slowRequestThreshold: number;
   retainHours: number;
   extraRedactionKeys: string[];
-  ai: AiSettings;
-}
-
-export interface AiSettings {
-  mode: "off" | "user-key";
-  provider: "openai" | "deepseek" | "anthropic" | "gemini";
-  apiKey: string;
-  model: string;
 }
 
 export interface PageContext {
@@ -139,11 +131,4 @@ export interface AnalysisResult {
   };
 }
 
-export type ExportFormat = "ai" | "markdown" | "json";
-
-export interface AiAnalysisResult {
-  provider: AiSettings["provider"];
-  model: string;
-  content: string;
-  createdAt: number;
-}
+export type ExportFormat = "prompt" | "markdown" | "json";

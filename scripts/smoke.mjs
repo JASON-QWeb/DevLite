@@ -42,6 +42,7 @@ for (const origin of ["http://*/*", "https://*/*"]) {
   assert(manifest.host_permissions?.includes(origin), `host_permissions must include ${origin}`);
   assert(!manifest.optional_host_permissions?.includes(origin), `${origin} should not be optional when it is required`);
 }
+assert(!manifest.optional_host_permissions, "optional_host_permissions should not be declared for the non-AI release");
 assert(manifest.icons?.["128"] === "icons/devlite-128.png", "128px icon path mismatch");
 assert(manifest.action?.default_icon?.["32"] === "icons/devlite-32.png", "action icon path mismatch");
 

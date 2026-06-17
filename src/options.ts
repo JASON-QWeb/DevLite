@@ -1,6 +1,6 @@
 import { DEFAULT_SETTINGS } from "./shared/defaults";
 import { createTranslator, uiText } from "./shared/i18n";
-import type { AiSettings, DiagnosticSettings } from "./shared/types";
+import type { DiagnosticSettings } from "./shared/types";
 import "./ui/options.css";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -65,38 +65,6 @@ function render(): void {
           </div>
         </section>
 
-        <section class="section">
-          <h2>${t("aiMode")}</h2>
-          <div class="body">
-            <label class="field">
-              <span>${t("mode")}</span>
-              <select id="aiMode">
-                <option value="off" ${settings.ai.mode === "off" ? "selected" : ""}>${t("off")}</option>
-                <option value="user-key" ${settings.ai.mode === "user-key" ? "selected" : ""}>${t("userKey")}</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>${t("provider")}</span>
-              <select id="aiProvider">
-                ${providerOption("openai", "OpenAI")}
-                ${providerOption("deepseek", "DeepSeek")}
-                ${providerOption("anthropic", "Anthropic")}
-                ${providerOption("gemini", "Google Gemini")}
-              </select>
-            </label>
-            <label class="field">
-              <span>${t("model")}</span>
-              <input id="aiModel" value="${escapeHtml(settings.ai.model)}" />
-            </label>
-            <label class="field">
-              <span>API Key</span>
-              <input id="aiApiKey" type="password" autocomplete="off" value="${escapeHtml(settings.ai.apiKey)}" />
-            </label>
-            <div class="note">
-              ${t("apiKeyNote")}
-            </div>
-          </div>
-        </section>
       </div>
 
       <div class="actions">
@@ -109,23 +77,9 @@ function render(): void {
   bindEvents();
 }
 
-function providerOption(value: AiSettings["provider"], label: string): string {
-  return `<option value="${value}" ${settings.ai.provider === value ? "selected" : ""}>${label}</option>`;
-}
-
 function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-action]").forEach((node) => {
     node.addEventListener("click", () => void handleAction(node.dataset.action ?? ""));
-  });
-  document.querySelector<HTMLSelectElement>("#aiProvider")?.addEventListener("change", (event) => {
-    const provider = (event.target as HTMLSelectElement).value as AiSettings["provider"];
-    const model = document.querySelector<HTMLInputElement>("#aiModel");
-    if (model && !model.dataset.touched) {
-      model.value = defaultModel(provider);
-    }
-  });
-  document.querySelector<HTMLInputElement>("#aiModel")?.addEventListener("input", (event) => {
-    (event.target as HTMLInputElement).dataset.touched = "true";
   });
 }
 
@@ -163,10 +117,6 @@ function collectForm(): DiagnosticSettings {
     .split(/\n+/)
     .map((item) => item.trim())
     .filter(Boolean);
-  const mode = (document.querySelector<HTMLSelectElement>("#aiMode")?.value ?? "off") as AiSettings["mode"];
-  const provider = (document.querySelector<HTMLSelectElement>("#aiProvider")?.value ?? "openai") as AiSettings["provider"];
-  const model = document.querySelector<HTMLInputElement>("#aiModel")?.value.trim() || defaultModel(provider);
-  const apiKey = document.querySelector<HTMLInputElement>("#aiApiKey")?.value.trim() ?? "";
 
   return {
     ...settings,
@@ -174,24 +124,8 @@ function collectForm(): DiagnosticSettings {
     collectResponseBody,
     maxResponseLength,
     slowRequestThreshold,
-    extraRedactionKeys,
-    ai: {
-      mode,
-      provider,
-      model,
-      apiKey
-    }
+    extraRedactionKeys
   };
-}
-
-function defaultModel(provider: AiSettings["provider"]): string {
-  const models: Record<AiSettings["provider"], string> = {
-    openai: "gpt-4.1-mini",
-    deepseek: "deepseek-chat",
-    anthropic: "",
-    gemini: "gemini-1.5-flash"
-  };
-  return models[provider];
 }
 
 function sendMessage(message: any): Promise<any> {

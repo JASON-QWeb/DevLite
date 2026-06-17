@@ -231,7 +231,7 @@ try {
   await shadowClick(page, ".devlite-launcher");
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel reopens after inline edit");
   await shadowClick(page, 'button[data-tab="element"]');
-  await shadowClick(page, 'button[data-action="copy-ai"]');
+  await shadowClick(page, 'button[data-action="copy-prompt"]');
   await delay(300);
   const editPrompt = readClipboard();
   assert(editPrompt.includes("changes"), "edit prompt contains changes");
@@ -264,11 +264,11 @@ try {
   `);
   const jsonSession = JSON.parse(jsonExport.text);
   assert(jsonExport?.ok && Array.isArray(jsonSession.events) && Array.isArray(jsonSession.styleChanges), "json export succeeds");
-  const aiExport = await evaluate(extensionPage, `
-    new Promise((resolve) => chrome.runtime.sendMessage({ type: "generate-export", format: "ai" }, resolve))
+  const promptExport = await evaluate(extensionPage, `
+    new Promise((resolve) => chrome.runtime.sendMessage({ type: "generate-export", format: "prompt" }, resolve))
   `);
-  assert(aiExport?.ok && aiExport.text.includes("changes") && aiExport.text.includes("Updated by DevLite QA prompt export"), "AI prompt export succeeds");
-  record("popup/runtime exports markdown json and AI prompt", true);
+  assert(promptExport?.ok && promptExport.text.includes("changes") && promptExport.text.includes("Updated by DevLite QA prompt export"), "repair prompt export succeeds");
+  record("popup/runtime exports markdown json and repair prompt", true);
 
   const stopResponse = await evaluate(extensionPage, `
     new Promise((resolve) => chrome.runtime.sendMessage({ type: "stop-diagnosis" }, resolve))

@@ -6,13 +6,7 @@ export const DEFAULT_SETTINGS: DiagnosticSettings = {
   maxResponseLength: 2048,
   slowRequestThreshold: 2000,
   retainHours: 24,
-  extraRedactionKeys: [],
-  ai: {
-    mode: "off",
-    provider: "openai",
-    apiKey: "",
-    model: "gpt-4.1-mini"
-  }
+  extraRedactionKeys: []
 };
 
 export const SETTINGS_KEY = "devlite.settings";

@@ -266,24 +266,6 @@ textarea {
     monospace;
 }
 
-.preview-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.ai-result {
-  white-space: pre-wrap;
-  max-height: 220px;
-  overflow: auto;
-  border: 1px solid #e1e4dc;
-  border-radius: 7px;
-  padding: 10px;
-  background: #fbfbf8;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
 .footer {
   display: flex;
   justify-content: space-between;

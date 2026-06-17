@@ -10,10 +10,10 @@ export function generateExport(session: DiagnosticSession, settings: DiagnosticS
     return generateMarkdownReport(session, settings);
   }
 
-  return generateAiPrompt(session, settings.locale);
+  return generateRepairPrompt(session, settings.locale);
 }
 
-export function generateAiPrompt(session: DiagnosticSession, locale: UiLocale = "zh"): string {
+export function generateRepairPrompt(session: DiagnosticSession, locale: UiLocale = "zh"): string {
   return JSON.stringify(
     {
       task:

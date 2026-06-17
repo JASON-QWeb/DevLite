@@ -2,7 +2,7 @@
 
 DevLite is a lightweight inspection-mode Chrome extension for live page edits, data lookup, page diagnostics, and repair prompt exports for agents.
 
-By default, it does not call AI services or upload data. The lightweight right-side launcher appears on regular HTTP/HTTPS pages, and diagnostics only start after the user explicitly opens a session.
+By default, diagnostics stay local and no data is uploaded. The lightweight right-side launcher appears on regular HTTP/HTTPS pages, and diagnostics only start after the user explicitly opens a session.
 
 ## Features
 
@@ -19,8 +19,7 @@ By default, it does not call AI services or upload data. The lightweight right-s
 - Open a draggable always-on-top diagnostics panel from the right-side page icon
 - Keep the page icon available on regular HTTP/HTTPS pages while injecting collectors only after user action
 - Switch between Chinese and English UI, with reports and prompts following the selected language
-- Export AI Prompt, Markdown, or JSON
-- Optionally use the user's own OpenAI, DeepSeek, Anthropic, or Gemini API key
+- Export repair prompt, Markdown, or JSON
 
 ## Architecture
 
@@ -33,7 +32,7 @@ Chrome Extension Manifest V3
 └── injected script
 ```
 
-The content script handles page interaction and the visual CSS editor. The injected script runs in the page context so it can hook `fetch`, `XMLHttpRequest`, and console errors. The background service worker aggregates data, redacts sensitive fields, generates reports, and optionally calls AI providers with the user's own API key.
+The content script handles page interaction and the visual CSS editor. The injected script runs in the page context so it can hook `fetch`, `XMLHttpRequest`, and console errors. The background service worker aggregates data, redacts sensitive fields, and generates reports and repair prompt exports.
 
 ## Development
 
@@ -85,6 +84,5 @@ Install the DevLite Skill: read <your DevLite repository URL>/SKILL.md, then cre
 - No full response body collection by default.
 - Sensitive fields are redacted.
 - CSS and text edits are temporary and only affect the current browser page.
-- AI analysis requires explicit user confirmation.
 
 See the Chinese documentation in [docs/隐私与上架策略.md](./docs/隐私与上架策略.md).

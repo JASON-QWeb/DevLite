@@ -32,11 +32,5 @@
     }
   ],
   "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
-  "host_permissions": ["http://*/*", "https://*/*"],
-  "optional_host_permissions": [
-    "https://api.openai.com/*",
-    "https://api.deepseek.com/*",
-    "https://api.anthropic.com/*",
-    "https://generativelanguage.googleapis.com/*"
-  ]
+  "host_permissions": ["http://*/*", "https://*/*"]
 }

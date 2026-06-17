@@ -4,8 +4,6 @@ import { generateExport } from "../shared/exporters";
 import { generateMarkdownReport } from "../shared/report";
 import { sanitizeEvent, sanitizeSession } from "../shared/redaction";
 import type {
-  AiAnalysisResult,
-  AiSettings,
   DiagnosticEvent,
   DiagnosticSession,
   DiagnosticSettings,
@@ -202,15 +200,6 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     return { ok: true, text: generateExport(safeSession, settings, message.format as ExportFormat) };
   }
 
-  if (type === "run-ai-analysis") {
-    const tabId = await getSessionTabId(sender);
-    const session = await requireSession(tabId);
-    const settings = await getSettings();
-    const safeSession = sanitizeSession(session, settings);
-    const result = await runAiAnalysis(safeSession, settings);
-    return { ok: true, result };
-  }
-
   if (type === "open-options") {
     await chrome.runtime.openOptionsPage();
     return { ok: true };
@@ -361,112 +350,11 @@ async function saveSettings(settings: DiagnosticSettings): Promise<void> {
 
 function mergeSettings(input?: Partial<DiagnosticSettings>): DiagnosticSettings {
   return {
-    ...DEFAULT_SETTINGS,
-    ...(input ?? {}),
-    ai: {
-      ...DEFAULT_SETTINGS.ai,
-      ...(input?.ai ?? {})
-    },
+    locale: input?.locale ?? DEFAULT_SETTINGS.locale,
+    collectResponseBody: input?.collectResponseBody ?? DEFAULT_SETTINGS.collectResponseBody,
+    maxResponseLength: input?.maxResponseLength ?? DEFAULT_SETTINGS.maxResponseLength,
+    slowRequestThreshold: input?.slowRequestThreshold ?? DEFAULT_SETTINGS.slowRequestThreshold,
+    retainHours: input?.retainHours ?? DEFAULT_SETTINGS.retainHours,
     extraRedactionKeys: input?.extraRedactionKeys ?? DEFAULT_SETTINGS.extraRedactionKeys
   };
-}
-
-async function runAiAnalysis(session: DiagnosticSession, settings: DiagnosticSettings): Promise<AiAnalysisResult> {
-  if (settings.ai.mode !== "user-key" || !settings.ai.apiKey.trim()) {
-    throw new Error("请先在设置页启用用户 API Key 并填写密钥。");
-  }
-  if (!settings.ai.model.trim()) {
-    throw new Error("请先在设置页填写模型 ID。");
-  }
-
-  await requestAiPermission(settings.ai.provider);
-
-  const prompt = generateExport(session, settings, "ai");
-  const content = await callAiProvider(settings.ai, prompt);
-
-  return {
-    provider: settings.ai.provider,
-    model: settings.ai.model,
-    content,
-    createdAt: Date.now()
-  };
-}
-
-async function requestAiPermission(provider: AiSettings["provider"]): Promise<void> {
-  const origins: Record<AiSettings["provider"], string[]> = {
-    openai: ["https://api.openai.com/*"],
-    deepseek: ["https://api.deepseek.com/*"],
-    anthropic: ["https://api.anthropic.com/*"],
-    gemini: ["https://generativelanguage.googleapis.com/*"]
-  };
-
-  const granted = await chrome.permissions.request({ origins: origins[provider] });
-  if (!granted) {
-    throw new Error("用户未授权访问所选 AI 服务接口。");
-  }
-}
-
-async function callAiProvider(ai: AiSettings, prompt: string): Promise<string> {
-  if (ai.provider === "openai" || ai.provider === "deepseek") {
-    const baseUrl = ai.provider === "openai" ? "https://api.openai.com/v1/chat/completions" : "https://api.deepseek.com/chat/completions";
-    const response = await fetch(baseUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${ai.apiKey}`
-      },
-      body: JSON.stringify({
-        model: ai.model,
-        messages: [
-          { role: "system", content: "你是资深前端问题诊断和代码实现助手。请基于 DevLite 报告给出可执行修复建议。" },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0.2
-      })
-    });
-    const json = await parseJsonResponse(response);
-    return json.choices?.[0]?.message?.content ?? JSON.stringify(json, null, 2);
-  }
-
-  if (ai.provider === "anthropic") {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ai.apiKey,
-        "anthropic-version": "2023-06-01"
-      },
-      body: JSON.stringify({
-        model: ai.model,
-        max_tokens: 3000,
-        messages: [{ role: "user", content: prompt }]
-      })
-    });
-    const json = await parseJsonResponse(response);
-    return json.content?.map((item: any) => item.text).filter(Boolean).join("\n") ?? JSON.stringify(json, null, 2);
-  }
-
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ai.model)}:generateContent?key=${encodeURIComponent(ai.apiKey)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }]
-    })
-  });
-  const json = await parseJsonResponse(response);
-  return json.candidates?.[0]?.content?.parts?.map((item: any) => item.text).filter(Boolean).join("\n") ?? JSON.stringify(json, null, 2);
-}
-
-async function parseJsonResponse(response: Response): Promise<any> {
-  const text = await response.text();
-  let json: any;
-  try {
-    json = text ? JSON.parse(text) : {};
-  } catch {
-    json = { raw: text };
-  }
-  if (!response.ok) {
-    throw new Error(json.error?.message || json.message || `AI 请求失败：${response.status}`);
-  }
-  return json;
 }
