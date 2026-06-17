@@ -30,9 +30,9 @@ export function cssBlock(styles: Record<string, string>, emptyText: string): str
 }
 
 export function toHexColor(value: string): string {
-  const match = value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+  const match = value.match(/rgba?\(\s*([\d.]+%?)(?:\s*,\s*|\s+)([\d.]+%?)(?:\s*,\s*|\s+)([\d.]+%?)/i);
   if (!match) return "#000000";
-  return `#${[match[1], match[2], match[3]].map((part) => Number(part).toString(16).padStart(2, "0")).join("")}`;
+  return `#${[match[1], match[2], match[3]].map((part) => cssColorChannelToHex(part)).join("")}`;
 }
 
 export function normalizeFontWeight(value: string): string {
@@ -47,9 +47,20 @@ export function cssAttrEscape(value: string): string {
 }
 
 export function cssStringEscape(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n|\r/g, "");
+  return value
+    .replace(/\0/g, "\uFFFD")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\)/g, "\\)")
+    .replace(/[\n\r\f]/g, "");
 }
 
 export function randomId(): string {
   return crypto.randomUUID ? crypto.randomUUID() : `devlite-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function cssColorChannelToHex(value: string): string {
+  const numeric = value.endsWith("%") ? (Number(value.slice(0, -1)) / 100) * 255 : Number(value);
+  const clamped = Math.min(255, Math.max(0, Math.round(Number.isFinite(numeric) ? numeric : 0)));
+  return clamped.toString(16).padStart(2, "0");
 }

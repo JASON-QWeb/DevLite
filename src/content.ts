@@ -84,6 +84,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     return;
   }
   isolatedWindow.__DEVLITE_CONTENT_INSTALLED__ = true;
+  const pageMessageTargetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
 
   let captureActive = false;
   let inspectorActive = false;
@@ -102,10 +103,14 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   let renderedPanelTab: OverlayTab | null = null;
   let panelRenderVersion = 0;
   let networkDetailTab: NetworkDetailTab = "preview";
+  let networkErrorOnly = false;
+  let networkListWidth = 260;
+  let panelGestureActive = false;
   let diagnosticFilter: DiagnosticFilter = "issues";
   let selectedNetworkEventId: string | null = null;
   let uiLocale: UiLocale = "zh";
   let captureStartPromise: Promise<void> | null = null;
+  let captureGeneration = 0;
   const diagnosticEvents = new DiagnosticEventStore();
   let sessionSnapshot: { events?: LiveDiagnosticEvent[]; styleChanges?: StyleChange[] } | null = null;
   let styleChangeSyncPromise: Promise<any> | null = null;
@@ -113,14 +118,14 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   const panelPositionController = new PanelPositionController();
   const styleEditorPositionController = new StyleEditorPositionController();
   const diagnosticEventBatcher = new DiagnosticEventBatcher((events) => {
-    void sendRuntime({ type: "diagnostic-events", events });
+    void sendRuntime({ type: "diagnostic-events", events }).catch(handleAsyncError);
   });
   const panelRefreshController = new PanelRefreshController({
     isEditingField: isEditingPanelField,
     isPanelOpen: () => panelOpen,
     refresh: refreshSessionSnapshot,
     render: renderPanel,
-    shouldSkipIntervalRender: () => activePanelTab === "element" || isEditingPanelField()
+    shouldSkipIntervalRender: () => panelGestureActive || activePanelTab === "element" || isEditingPanelField()
   });
   const inlineTextEditor = new InlineTextEditor({
     canEdit: canEditTextContent,
@@ -148,14 +153,16 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    void handleRuntimeMessage(message).then(sendResponse);
+    void handleRuntimeMessage(message)
+      .then((response) => safeSendResponse(sendResponse, response))
+      .catch((error) => safeSendResponse(sendResponse, { ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   });
 
   void loadUiLocale();
 
   window.addEventListener("message", (event) => {
-    if (event.source !== window) return;
+    if (!isTrustedPageMessage(event)) return;
     const data = event.data;
     if (!data || data.channel !== PAGE_CHANNEL || !data.event) return;
     if (!captureActive) return;
@@ -174,9 +181,9 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       const source = "src" in target ? String(target.src) : "href" in target ? String(target.href) : "";
       if (!source) return;
       sendDiagnosticEvent({
-        type: "resource-error",
-        severity: "warning",
-        message: uiLocale === "en" ? `${tag} ${t("resourceLoadFailed")}` : `${tag} ${t("resourceLoadFailed")}`,
+	        type: "resource-error",
+	        severity: "warning",
+	        message: `${tag} ${t("resourceLoadFailed")}`,
         url: source,
         source: tag,
         metadata: {
@@ -225,10 +232,11 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       if (event.target instanceof Node && overlayHost?.contains(event.target)) return;
       const target = resolveInspectableTarget(event.target);
       if (!target || overlayHost?.contains(target)) return;
-      if (!inspectorActive && (!selectedElement || (target !== selectedElement && !selectedElement.contains(target)))) return;
+      const selected = getConnectedSelectedElement();
+      if (!inspectorActive && (!selected || (target !== selected && !selected.contains(target)))) return;
       event.preventDefault();
       event.stopPropagation();
-      if (target !== selectedElement || !currentChange) {
+      if (target !== selected || !currentChange) {
         selectElement(target);
       }
       startInlineTextEdit();
@@ -257,21 +265,28 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   document.addEventListener("scroll", syncElementOverlays, true);
 
   async function handleRuntimeMessage(message: any): Promise<any> {
+    if (message?.type === "devlite-ping") {
+      return { ok: true };
+    }
+
     if (message?.type === "devlite-start-capture") {
+      captureGeneration += 1;
       captureActive = true;
       sessionSettings = mergePanelSettings(message.settings ?? {});
       uiLocale = normalizeLocale(sessionSettings.locale);
       applyOverlayTheme();
-      sendRuntime({ type: "page-context", page: getPageContext() });
-      window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
+      void sendRuntime({ type: "page-context", page: getPageContext() }).catch(handleAsyncError);
+      postControlMessage({ type: "start", settings: sessionSettings });
       performanceMonitor.start();
       return { ok: true };
     }
 
     if (message?.type === "devlite-stop-capture") {
+      captureGeneration += 1;
+      captureStartPromise = null;
       captureActive = false;
       flushDiagnosticEvents();
-      window.postMessage({ channel: CONTROL_CHANNEL, type: "stop" }, "*");
+      postControlMessage({ type: "stop" });
       performanceMonitor.stop();
       schedulePanelRender();
       return { ok: true };
@@ -296,14 +311,18 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   async function loadUiLocale(): Promise<void> {
-    const response = await sendRuntime({ type: "get-settings" });
-    if (!response?.ok) return;
-    sessionSettings = mergePanelSettings(response.settings ?? {});
-    uiLocale = normalizeLocale(response.settings?.locale);
-    applyOverlayTheme();
-    syncLauncherLabels();
-    if (panelOpen) renderPanel();
-    if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+    try {
+      const response = await sendRuntime({ type: "get-settings" });
+      if (!response?.ok) return;
+      sessionSettings = mergePanelSettings(response.settings ?? {});
+      uiLocale = normalizeLocale(response.settings?.locale);
+      applyOverlayTheme();
+      syncLauncherLabels();
+      if (panelOpen) renderPanel();
+      if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+    } catch (error) {
+      handleAsyncError(error);
+    }
   }
 
   function t(key: ContentTextKey): string {
@@ -317,7 +336,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     activePanelTab = "element";
     hideStyleEditor();
     hidePanel();
-    void ensureCapture();
+    void ensureCapture().catch(handleAsyncError);
     document.documentElement.style.cursor = "crosshair";
   }
 
@@ -337,7 +356,10 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     panelOpen = true;
     renderPanel();
     startPanelRefresh();
-    void ensureCapture().then(() => ensureResponseBodyCapture());
+    void ensureCapture().then(async () => {
+      await ensureResponseBodyCapture();
+      if (panelOpen) renderPanel();
+    }).catch(handleAsyncError);
   }
 
   function ensureOverlay(): void {
@@ -409,6 +431,10 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   function updateHighlighter(element: HTMLElement): void {
     ensureOverlay();
     if (!highlighter) return;
+    if (!element.isConnected) {
+      hideHighlighter();
+      return;
+    }
     const rect = element.getBoundingClientRect();
     highlighter.style.display = "block";
     highlighter.style.transform = `translate(${Math.max(0, rect.left)}px, ${Math.max(0, rect.top)}px)`;
@@ -434,11 +460,17 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function syncElementOverlays(): void {
     if (inspectorActive && hoveredElement) {
+      if (!hoveredElement.isConnected) {
+        hoveredElement = null;
+        hideHighlighter();
+        return;
+      }
       updateHighlighter(hoveredElement);
       return;
     }
-    if (!selectedElement) return;
-    updateHighlighter(selectedElement);
+    const element = getConnectedSelectedElement();
+    if (!element) return;
+    updateHighlighter(element);
     updateStyleEditorPosition();
   }
 
@@ -482,8 +514,10 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
         selectedNetworkEventId = id;
         renderPanel();
       },
-      onStartDrag: (event) => panelPositionController.startDrag(panel, event),
-      onStartResize: (event) => panelPositionController.startResize(panel, event),
+      onNetworkListResize: startNetworkListResize,
+      onError: showInteractionError,
+      onStartDrag: startPanelDrag,
+      onStartResize: startPanelResize,
       onStyleInput: applyStyle,
       onTab: (tab) => {
         activePanelTab = tab;
@@ -503,16 +537,26 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   async function handlePanelScopedAction(action: string, source?: HTMLElement): Promise<void> {
-    if (action === "copy-selected-style-prompt") {
+    if (action === "copy-prompt" && activePanelTab === "element") {
       await copySelectedStylePrompt();
       return;
     }
-    if (action === "copy-record-prompt") {
-      await copyStylePromptById(source?.dataset.changeId ?? "");
+    if (action === "select-all-style-records") {
+      selectAllStyleRecords();
       return;
     }
     if (action === "undo-style-record") {
       await undoStyleChangeById(source?.dataset.changeId ?? "");
+      return;
+    }
+    if (action === "clear-network-events") {
+      await clearNetworkEvents();
+      return;
+    }
+    if (action === "toggle-network-errors") {
+      networkErrorOnly = !networkErrorOnly;
+      selectedNetworkEventId = null;
+      renderPanel();
       return;
     }
 
@@ -528,7 +572,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       getPendingStyleSync: () => styleChangeSyncPromise,
       getProblemEvents,
       getSelectedNetworkEvent: getSelectedNetworkEventForAction,
-      getSelectedElement: () => selectedElement,
+      getSelectedElement: getConnectedSelectedElement,
       getSettings: mergedPanelSettings,
       renderPanel,
       savePanelSettings,
@@ -589,17 +633,15 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       return;
     }
     await copyText(generateRepairPromptForChanges(selectedChanges, uiLocale, getPageContext()));
-    toast(t("selectedPromptCopied"));
+    toast(t("fullPromptCopied"));
   }
 
-  async function copyStylePromptById(id: string): Promise<void> {
-    const change = getStyleChangeRecords().find((item) => item.id === id);
-    if (!change) {
-      toast(t("noSelectedElements"));
-      return;
-    }
-    await copyText(generateRepairPromptForChanges([change], uiLocale, getPageContext()));
-    toast(t("recordPromptCopied"));
+  function selectAllStyleRecords(): void {
+    const inputs = Array.from(panel?.querySelectorAll<HTMLInputElement>("input[data-style-record-select]") ?? []);
+    const shouldSelectAll = inputs.some((input) => !input.checked);
+    inputs.forEach((input) => {
+      input.checked = shouldSelectAll;
+    });
   }
 
   async function undoStyleChangeById(id: string): Promise<void> {
@@ -612,10 +654,11 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     }
 
     stopInlineTextEdit();
+    const wasSelected = currentChange?.id === change.id || selectedElement === element;
     undoStyleChange(change, element);
     await sendRuntime({ type: "style-change-delete", id: change.id });
     removeLocalStyleChange(change.id);
-    if (currentChange?.id === change.id || selectedElement === element) {
+    if (wasSelected) {
       currentChange = null;
       selectedElement = null;
       hideHighlighter();
@@ -626,7 +669,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function resolveStyleChangeElement(change: StyleChange): HTMLElement | null {
-    if (currentChange?.id === change.id && selectedElement) return selectedElement;
+    if (currentChange?.id === change.id && selectedElement?.isConnected) return selectedElement;
     try {
       const element = document.querySelector(change.selector);
       return element instanceof HTMLElement ? element : null;
@@ -649,17 +692,19 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function renderStyleEditor(): void {
     ensureOverlay();
-    if (!styleEditor || !selectedElement || !currentChange) return;
+    const element = getConnectedSelectedElement();
+    if (!styleEditor || !element || !currentChange) return;
     styleEditor.hidden = false;
     styleEditor.innerHTML = renderStyleEditorView({
-      element: selectedElement,
+      element,
       change: currentChange,
-      canEditText: canEditTextContent(selectedElement),
+      canEditText: canEditTextContent(element),
       t
     });
     bindStyleEditorEvents({
       editor: styleEditor,
       onAction: handleStyleEditorAction,
+      onError: showInteractionError,
       onStartDrag: startStyleEditorDrag,
       onStyleInput: applyStyle
     });
@@ -694,24 +739,25 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       return;
     }
     if (action === "undo") {
-      undoCurrentChange();
+      await undoCurrentChange();
     }
   }
 
   async function copySelectedElement(): Promise<void> {
-    if (!selectedElement) return;
-    await copyText(selectedElement.outerHTML);
+    const element = getConnectedSelectedElement();
+    if (!element) return;
+    await copyText(element.outerHTML);
     toast(t("elementCopied"));
   }
 
   function startImageReplacement(): void {
-    if (!selectedElement || !currentChange || !imageReplaceInput) return;
+    if (!getConnectedSelectedElement() || !currentChange || !imageReplaceInput) return;
     imageReplaceInput.click();
   }
 
   function replaceSelectedImage(src: string, label = ""): void {
-    if (!selectedElement || !currentChange) return;
-    const element = selectedElement;
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange) return;
     applyImageReplacement(currentChange, element, src, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"));
     syncCurrentChange();
     updateHighlighter(element);
@@ -721,7 +767,8 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function replaceSelectedIcon(): void {
-    if (!selectedElement || !currentChange) return;
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange) return;
     const value = window.prompt(t("replaceIconPrompt"), "");
     const next = value?.trim();
     if (!next) {
@@ -729,7 +776,6 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       return;
     }
 
-    const element = selectedElement;
     applyIconReplacement(currentChange, element, next, t("replaceIcon"));
     syncCurrentChange();
     updateHighlighter(element);
@@ -739,7 +785,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function updateStyleEditorPosition(): void {
-    styleEditorPositionController.update(styleEditor, selectedElement);
+    styleEditorPositionController.update(styleEditor, getConnectedSelectedElement());
   }
 
   function startStyleEditorDrag(event: PointerEvent): void {
@@ -759,12 +805,16 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function renderNetworkTab(): string {
-    const events = getNetworkEvents().slice(0, 20);
+    const allEvents = getNetworkEvents();
+    const events = (networkErrorOnly ? allEvents.filter(isNetworkErrorEvent) : allEvents).slice(0, 20);
     const selected = getSelectedNetworkEvent(events);
     return renderNetworkTabView({
       events,
+      totalCount: allEvents.length,
       selected,
       detailTab: networkDetailTab,
+      filterErrorsOnly: networkErrorOnly,
+      listWidth: networkListWidth,
       slowThreshold: Number(sessionSettings.slowRequestThreshold ?? 2000),
       t,
       formatUrl,
@@ -781,7 +831,81 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function getSelectedNetworkEventForAction(): LiveDiagnosticEvent | null {
-    return getSelectedNetworkEvent(getNetworkEvents().slice(0, 20));
+    const events = (networkErrorOnly ? getNetworkEvents().filter(isNetworkErrorEvent) : getNetworkEvents()).slice(0, 20);
+    return getSelectedNetworkEvent(events);
+  }
+
+  function isNetworkErrorEvent(event: LiveDiagnosticEvent): boolean {
+    return event.severity === "error" || (typeof event.status === "number" && event.status >= 400);
+  }
+
+  function startPanelDrag(event: PointerEvent): void {
+    if (!panel) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, input, select, textarea, summary, [data-panel-resize]")) return;
+    panelGestureActive = true;
+    panelPositionController.startDrag(panel, event, () => {
+      panelGestureActive = false;
+    });
+  }
+
+  function startPanelResize(event: PointerEvent): void {
+    if (!panel) return;
+    panelGestureActive = true;
+    panelPositionController.startResize(panel, event, () => {
+      panelGestureActive = false;
+    });
+  }
+
+  function startNetworkListResize(event: PointerEvent): void {
+    const splitter = event.currentTarget as HTMLElement | null;
+    const workspace = splitter?.closest<HTMLElement>(".network-workspace");
+    const list = workspace?.querySelector<HTMLElement>(".network-list");
+    if (!workspace || !list) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startX = event.clientX;
+    const startWidth = list.getBoundingClientRect().width;
+    const minListWidth = 150;
+    const minDetailWidth = 260;
+    const workspaceWidth = workspace.getBoundingClientRect().width;
+    const maxListWidth = Math.max(minListWidth, workspaceWidth - minDetailWidth);
+    let frameId: number | null = null;
+    let pendingWidth = networkListWidth;
+    const clampWidth = (value: number): number => {
+      return Math.round(Math.min(Math.max(value, minListWidth), maxListWidth));
+    };
+    const flushWidth = (): void => {
+      frameId = null;
+      workspace.style.setProperty("--network-list-width", `${networkListWidth}px`);
+    };
+    const applyWidth = (value: number): void => {
+      pendingWidth = clampWidth(value);
+      networkListWidth = pendingWidth;
+      if (frameId !== null) return;
+      frameId = window.requestAnimationFrame(flushWidth);
+    };
+    const handleMove = (moveEvent: PointerEvent): void => {
+      moveEvent.preventDefault();
+      applyWidth(startWidth + moveEvent.clientX - startX);
+    };
+    const stopResize = (): void => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+        flushWidth();
+      }
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+      panelGestureActive = false;
+    };
+
+    panelGestureActive = true;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
   }
 
   function findFreshNetworkEventWithPayload(events: LiveDiagnosticEvent[], selected: LiveDiagnosticEvent): LiveDiagnosticEvent | null {
@@ -893,10 +1017,11 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function applyStyle(prop: string, value: string): void {
-    if (!selectedElement || !currentChange) return;
-    applyStyleChange(currentChange, selectedElement, prop, value);
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange) return;
+    applyStyleChange(currentChange, element, prop, value);
     syncCurrentChange();
-    updateHighlighter(selectedElement);
+    updateHighlighter(element);
     updateStyleEditorPosition();
     if (panelOpen && activePanelTab === "element") {
       schedulePanelRender();
@@ -904,11 +1029,12 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function applyTextContent(value: string): void {
-    if (!selectedElement || !currentChange || !canEditTextContent(selectedElement)) return;
-    ensureTextChangeBaseline(selectedElement);
-    selectedElement.textContent = value;
-    recordTextAfter(selectedElement);
-    updateHighlighter(selectedElement);
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange || !canEditTextContent(element)) return;
+    ensureTextChangeBaseline(element);
+    replaceEditableText(element, value);
+    recordTextAfter(element);
+    updateHighlighter(element);
     updateStyleEditorPosition();
     if (panelOpen && activePanelTab === "element") {
       schedulePanelRender();
@@ -916,11 +1042,12 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function startInlineTextEdit(): void {
-    if (!selectedElement || !currentChange) {
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange) {
       toast(t("noEditableText"));
       return;
     }
-    inlineTextEditor.start(selectedElement);
+    inlineTextEditor.start(element);
   }
 
   function stopInlineTextEdit(): void {
@@ -940,7 +1067,10 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function syncCurrentChange(): void {
     if (!currentChange) return;
-    const sync = sendRuntime({ type: "style-change-upsert", change: currentChange });
+    const sync = sendRuntime({ type: "style-change-upsert", change: currentChange }).catch((error) => {
+      handleAsyncError(error);
+      return null;
+    });
     styleChangeSyncPromise = sync;
     void sync.finally(() => {
       if (styleChangeSyncPromise === sync) {
@@ -949,10 +1079,13 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     });
   }
 
-  function undoCurrentChange(): void {
-    if (!selectedElement || !currentChange) return;
-    undoStyleChange(currentChange, selectedElement);
-    sendRuntime({ type: "style-change-delete", id: currentChange.id });
+  async function undoCurrentChange(): Promise<void> {
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange) return;
+    const change = currentChange;
+    undoStyleChange(change, element);
+    await sendRuntime({ type: "style-change-delete", id: change.id });
+    removeLocalStyleChange(change.id);
     currentChange = null;
     selectedElement = null;
     hideHighlighter();
@@ -976,8 +1109,13 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function sendRuntime(message: any): Promise<any> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(message, (response) => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
         resolve(response);
       });
     });
@@ -986,9 +1124,12 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   async function ensureCapture(): Promise<void> {
     if (captureActive) return;
     if (captureStartPromise) return captureStartPromise;
+    const generation = captureGeneration + 1;
+    captureGeneration = generation;
 
     captureStartPromise = (async () => {
       const response = await sendRuntime({ type: "start-page-capture", page: getPageContext() });
+      if (generation !== captureGeneration) return;
       if (!response?.ok) {
         toast(response?.error || t("startCaptureFailed"));
         return;
@@ -998,12 +1139,14 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       sessionSnapshot = response.session ?? null;
       captureActive = true;
       mergeSessionEvents(sessionSnapshot?.events ?? []);
-      sendRuntime({ type: "page-context", page: getPageContext() });
-      window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
+      void sendRuntime({ type: "page-context", page: getPageContext() }).catch(handleAsyncError);
+      postControlMessage({ type: "start", settings: sessionSettings });
       performanceMonitor.start();
       schedulePanelRender();
     })().finally(() => {
-      captureStartPromise = null;
+      if (generation === captureGeneration) {
+        captureStartPromise = null;
+      }
     });
 
     return captureStartPromise;
@@ -1063,6 +1206,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function schedulePanelRender(): void {
+    if (panelGestureActive) return;
     panelRefreshController.scheduleRender();
   }
 
@@ -1085,6 +1229,22 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function getNetworkEvents(): LiveDiagnosticEvent[] {
     return diagnosticEvents.getNetworkEvents();
+  }
+
+  async function clearNetworkEvents(): Promise<void> {
+    diagnosticEventBatcher.removeWhere((event) => event.type === "network");
+    diagnosticEvents.clearNetworkEvents();
+    selectedNetworkEventId = null;
+    if (sessionSnapshot) {
+      sessionSnapshot = {
+        ...sessionSnapshot,
+        events: (sessionSnapshot.events ?? []).filter((event) => event.type !== "network")
+      };
+    }
+    await sendRuntime({ type: "clear-network-events" });
+    await ensureCapture();
+    renderPanel();
+    toast(t("networkDataCleared"));
   }
 
   function getConsoleLogEvents(): LiveDiagnosticEvent[] {
@@ -1174,7 +1334,57 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function syncInjectedSettings(): void {
     if (!captureActive) return;
-    window.postMessage({ channel: CONTROL_CHANNEL, type: "settings", settings: sessionSettings }, "*");
+    postControlMessage({ type: "settings", settings: sessionSettings });
+  }
+
+  function postControlMessage(message: Record<string, unknown>): void {
+    window.postMessage({ channel: CONTROL_CHANNEL, ...message }, pageMessageTargetOrigin);
+  }
+
+  function isTrustedPageMessage(event: MessageEvent): boolean {
+    return event.source === window && (pageMessageTargetOrigin === "*" || event.origin === window.location.origin);
+  }
+
+  function getConnectedSelectedElement(): HTMLElement | null {
+    if (!selectedElement) return null;
+    if (selectedElement.isConnected) return selectedElement;
+    selectedElement = null;
+    currentChange = null;
+    hideHighlighter();
+    hideStyleEditor();
+    if (panelOpen) schedulePanelRender();
+    return null;
+  }
+
+  function replaceEditableText(element: HTMLElement, value: string): void {
+    if (element.childElementCount === 0) {
+      element.textContent = value;
+      return;
+    }
+    const textNode = Array.from(element.childNodes).find((node) => node.nodeType === Node.TEXT_NODE);
+    if (textNode) {
+      textNode.textContent = value;
+      return;
+    }
+    element.insertBefore(document.createTextNode(value), element.firstChild);
+  }
+
+  function safeSendResponse(sendResponse: (response?: any) => void, response: any): void {
+    try {
+      sendResponse(response);
+    } catch (error) {
+      handleAsyncError(error);
+    }
+  }
+
+  function showInteractionError(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    toast(message || t("exportFailed"));
+    handleAsyncError(error);
+  }
+
+  function handleAsyncError(error: unknown): void {
+    console.warn("[DevLite] async operation failed", error);
   }
 
   function capturePanelUiState(root: ParentNode | null): PanelUiState {

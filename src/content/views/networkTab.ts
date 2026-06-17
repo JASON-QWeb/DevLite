@@ -10,8 +10,11 @@ import type { LiveDiagnosticEvent, NetworkDetailTab } from "../types";
 
 type NetworkTabContext = {
   events: LiveDiagnosticEvent[];
+  totalCount: number;
   selected: LiveDiagnosticEvent | null;
   detailTab: NetworkDetailTab;
+  filterErrorsOnly: boolean;
+  listWidth: number;
   slowThreshold: number;
   t: (key: ContentTextKey) => string;
   formatUrl: (value: string) => string;
@@ -25,10 +28,7 @@ export function pickSelectedNetworkEvent(events: LiveDiagnosticEvent[], selected
 }
 
 export function renderNetworkTabView(context: NetworkTabContext): string {
-  const { events, selected, t, slowThreshold } = context;
-  if (events.length === 0) {
-    return `<div class="empty compact">${t("noNetworkData")}</div>`;
-  }
+  const { events, selected, t, slowThreshold, totalCount, filterErrorsOnly } = context;
 
   const failed = events.filter((event) => event.severity === "error" || (typeof event.status === "number" && event.status >= 400)).length;
   const slow = events.filter((event) => typeof event.duration === "number" && event.duration >= slowThreshold).length;
@@ -36,21 +36,28 @@ export function renderNetworkTabView(context: NetworkTabContext): string {
   return `
       <div class="network-panel">
         <div class="toolbar network-toolbar">
-          <button data-action="copy-selected-network" ${selected ? "" : "disabled"}>${t("copySelectedRequest")}</button>
+          <button data-action="copy-selected-network" class="primary" ${selected ? "" : "disabled"}>${t("copySelectedRequest")}</button>
+          <button data-action="clear-network-events" ${totalCount === 0 ? "disabled" : ""}>${t("clearNetworkData")}</button>
+          <button data-action="toggle-network-errors" class="${filterErrorsOnly ? "active" : ""}" ${totalCount === 0 ? "disabled" : ""}>${t("errorsOnly")}</button>
         </div>
         <div class="network-summary">
           <div><strong>${events.length}</strong><span>${t("latestRequests")}</span></div>
           <div><strong>${failed}</strong><span>${t("failed")}</span></div>
           <div><strong>${slow}</strong><span>${t("slow")}</span></div>
         </div>
-        <div class="network-workspace">
-          <div class="network-list" role="list">
-            ${events.map((event) => renderNetworkListItem(event, selected?.id === event.id, context)).join("")}
-          </div>
-          <section class="network-detail">
-            ${selected ? renderNetworkDetail(selected, context) : `<div class="empty compact">${t("selectRequest")}</div>`}
-          </section>
-        </div>
+        ${
+          events.length === 0
+            ? `<div class="empty compact">${filterErrorsOnly ? t("noNetworkErrors") : t("noNetworkData")}</div>`
+            : `<div class="network-workspace" style="--network-list-width: ${Math.round(context.listWidth)}px">
+                <div class="network-list" role="list">
+                  ${events.map((event) => renderNetworkListItem(event, selected?.id === event.id, context)).join("")}
+                </div>
+                <button type="button" class="network-splitter" data-network-splitter aria-label="${t("resizeNetworkList")}"></button>
+                <section class="network-detail">
+                  ${selected ? renderNetworkDetail(selected, context) : `<div class="empty compact">${t("selectRequest")}</div>`}
+                </section>
+              </div>`
+        }
       </div>
     `;
 }
@@ -63,10 +70,10 @@ function renderNetworkListItem(event: LiveDiagnosticEvent, selected: boolean, co
       <button type="button" class="network-row ${selected ? "selected" : ""}" data-network-id="${escapeHtml(event.id)}" role="listitem" aria-pressed="${selected}">
         <span class="network-method-stack">
           <span class="network-method">${escapeHtml(event.method || "GET")}</span>
+          <span class="network-code ${statusClass}">${escapeHtml(status)}</span>
           <span class="network-duration">${escapeHtml(duration)}</span>
         </span>
         <span class="network-url">${escapeHtml(context.formatUrl(event.url || ""))}</span>
-        <span class="network-status ${statusClass}">${escapeHtml(status)}</span>
         <span class="network-hint">${escapeHtml(context.summarizeNetworkData(event))}</span>
       </button>
     `;
@@ -82,10 +89,10 @@ function renderNetworkDetail(event: LiveDiagnosticEvent, context: NetworkTabCont
         <b class="${networkStatusClass(event)}">${escapeHtml(formatNetworkStatus(event))}</b>
       </div>
       <div class="detail-tabs">
-        ${networkDetailButton("preview", "Preview", context.detailTab)}
-        ${networkDetailButton("response", "Response", context.detailTab)}
-        ${networkDetailButton("request", "Request", context.detailTab)}
-        ${networkDetailButton("headers", "Headers", context.detailTab)}
+        ${networkDetailButton("preview", context.t("preview"), context.detailTab)}
+        ${networkDetailButton("response", context.t("response"), context.detailTab)}
+        ${networkDetailButton("request", context.t("request"), context.detailTab)}
+        ${networkDetailButton("headers", context.t("headers"), context.detailTab)}
       </div>
       ${renderNetworkDetailBody(event, context)}
     `;

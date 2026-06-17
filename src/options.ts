@@ -11,9 +11,13 @@ let toast = "";
 void init();
 
 async function init(): Promise<void> {
-  const response = await sendMessage({ type: "get-settings" });
-  if (response?.ok) {
-    settings = response.settings;
+  try {
+    const response = await sendMessage({ type: "get-settings" });
+    if (response?.ok) {
+      settings = response.settings;
+    }
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : String(error));
   }
   render();
 }
@@ -22,6 +26,7 @@ function render(): void {
   if (!app) return;
   const t = createTranslator(settings.locale);
   applyTheme(settings.uiTheme);
+  document.documentElement.lang = settings.locale === "en" ? "en" : "zh-CN";
   app.innerHTML = `
     <main class="page">
       <header class="hero">
@@ -123,12 +128,13 @@ async function handleThemeChange(value: string): Promise<void> {
   };
   settings = next;
   applyTheme(settings.uiTheme);
-  const response = await sendMessage({ type: "save-settings", settings: next });
-  if (response?.ok) {
+  try {
+    const response = await sendMessage({ type: "save-settings", settings: next });
+    if (!response?.ok) throw new Error(response?.error || uiText(settings.locale, "saveFailed"));
     settings = response.settings;
-  } else {
+  } catch (error) {
     settings = previous;
-    showToast(response?.error || uiText(settings.locale, "saveFailed"));
+    showToast(error instanceof Error ? error.message : String(error));
   }
   render();
 }
@@ -136,19 +142,25 @@ async function handleThemeChange(value: string): Promise<void> {
 async function handleAction(action: string): Promise<void> {
   if (action === "save") {
     const next = collectForm();
-    const response = await sendMessage({ type: "save-settings", settings: next });
-    if (response?.ok) {
+    try {
+      const response = await sendMessage({ type: "save-settings", settings: next });
+      if (!response?.ok) throw new Error(response?.error || uiText(settings.locale, "saveFailed"));
       settings = response.settings;
       showToast(uiText(settings.locale, "saved"));
-    } else {
-      showToast(response?.error || uiText(settings.locale, "saveFailed"));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error));
     }
   }
 
   if (action === "reset") {
-    settings = DEFAULT_SETTINGS;
-    await sendMessage({ type: "save-settings", settings });
-    showToast(uiText(settings.locale, "resetDone"));
+    try {
+      const response = await sendMessage({ type: "save-settings", settings: DEFAULT_SETTINGS });
+      if (!response?.ok) throw new Error(response?.error || uiText(settings.locale, "saveFailed"));
+      settings = response.settings;
+      showToast(uiText(settings.locale, "resetDone"));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error));
+    }
   }
 
   if (action === "close") {
@@ -162,8 +174,8 @@ function collectForm(): DiagnosticSettings {
   const locale = (document.querySelector<HTMLSelectElement>("#locale")?.value ?? DEFAULT_SETTINGS.locale) as DiagnosticSettings["locale"];
   const uiTheme = normalizeUiTheme(document.querySelector<HTMLInputElement>('input[name="uiTheme"]:checked')?.value ?? settings.uiTheme);
   const collectResponseBody = document.querySelector<HTMLInputElement>("#collectResponseBody")?.checked ?? false;
-  const maxResponseLength = Number(document.querySelector<HTMLInputElement>("#maxResponseLength")?.value || DEFAULT_SETTINGS.maxResponseLength);
-  const slowRequestThreshold = Number(document.querySelector<HTMLInputElement>("#slowRequestThreshold")?.value || DEFAULT_SETTINGS.slowRequestThreshold);
+  const maxResponseLength = clampNumber(document.querySelector<HTMLInputElement>("#maxResponseLength")?.value, 256, 10000, settings.maxResponseLength);
+  const slowRequestThreshold = clampNumber(document.querySelector<HTMLInputElement>("#slowRequestThreshold")?.value, 300, 20000, settings.slowRequestThreshold);
   const extraRedactionKeys = (document.querySelector<HTMLTextAreaElement>("#extraRedactionKeys")?.value ?? "")
     .split(/\n+/)
     .map((item) => item.trim())
@@ -189,8 +201,15 @@ function applyTheme(theme: DiagnosticSettings["uiTheme"]): void {
 }
 
 function sendMessage(message: any): Promise<any> {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (response) => resolve(response));
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(response);
+    });
   });
 }
 
@@ -208,4 +227,10 @@ function escapeHtml(value: string): string {
     const map: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
     return map[char];
   });
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
 }

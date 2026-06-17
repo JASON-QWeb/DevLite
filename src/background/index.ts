@@ -15,6 +15,7 @@ import type {
 } from "../shared/types";
 
 const responseBodyCaptureTabs = new Set<number>();
+const CONTENT_SCRIPT_ID = "devlite-content";
 const MAIN_WORLD_SCRIPT_ID = "devlite-main-world-injected";
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -24,10 +25,12 @@ chrome.runtime.onInstalled.addListener(() => {
     }
   });
   void registerMainWorldScript();
+  void pruneExpiredSessions().catch((error) => console.warn("[DevLite] prune sessions failed", error));
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void registerMainWorldScript();
+  void pruneExpiredSessions().catch((error) => console.warn("[DevLite] prune sessions failed", error));
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -36,17 +39,31 @@ chrome.action.onClicked.addListener((tab) => {
   });
 });
 
+chrome.tabs.onRemoved.addListener((tabId) => {
+  responseBodyCaptureTabs.delete(tabId);
+  void sessionStore.delete(tabId).catch((error) => console.warn("[DevLite] delete closed tab session failed", error));
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "loading") {
+    responseBodyCaptureTabs.delete(tabId);
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handleMessage(message, sender)
-    .then(sendResponse)
+    .then((response) => safeSendResponse(sendResponse, response))
     .catch((error) => {
       console.error("[DevLite] background error", error);
-      sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      safeSendResponse(sendResponse, { ok: false, error: error instanceof Error ? error.message : String(error) });
     });
   return true;
 });
 
 async function handleMessage(message: any, sender: chrome.runtime.MessageSender): Promise<any> {
+  if (!message || typeof message !== "object" || typeof message.type !== "string") {
+    return { ok: false, error: "无效消息" };
+  }
   const type = message?.type;
 
   if (type === "get-settings") {
@@ -212,6 +229,13 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     return { ok: true };
   }
 
+  if (type === "clear-network-events") {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    await clearNetworkEvents(tabId);
+    return { ok: true };
+  }
+
   if (type === "generate-report") {
     const tabId = await getSessionTabId(sender);
     const session = await requireSession(tabId);
@@ -244,7 +268,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 function createSession(tabId: number, page: PageContext): DiagnosticSession {
   const now = Date.now();
   return {
-    id: `session-${tabId}-${now}`,
+    id: `session-${tabId}-${randomId()}`,
     tabId,
     active: true,
     page: { ...page, startedAt: now },
@@ -276,9 +300,11 @@ async function upsertEvent(tabId: number, event: DiagnosticEvent): Promise<void>
 
 async function upsertEvents(tabId: number, events: DiagnosticEvent[]): Promise<void> {
   if (events.length === 0) return;
-  await sessionStore.update(tabId, (session) => {
-    if (!session) return undefined;
-    session.events.push(...events);
+	  await sessionStore.update(tabId, (session) => {
+	    if (!session) return undefined;
+	    for (const event of events) {
+	      session.events.push(event);
+	    }
     if (session.events.length > 500) {
       session.events.splice(0, session.events.length - 500);
     }
@@ -322,6 +348,15 @@ async function deleteStyleChange(tabId: number, id: string): Promise<void> {
   });
 }
 
+async function clearNetworkEvents(tabId: number): Promise<void> {
+  await sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    session.events = session.events.filter((event) => event.type !== "network");
+    session.updatedAt = Date.now();
+    return session;
+  });
+}
+
 async function requireSession(tabId: number): Promise<DiagnosticSession> {
   const session = await sessionStore.get(tabId);
   if (!session) {
@@ -340,11 +375,22 @@ async function getSessionTabId(sender: chrome.runtime.MessageSender): Promise<nu
 }
 
 async function ensurePageScripts(tabId: number): Promise<void> {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ["content.js"]
-  });
+  if (!(await isContentScriptReady(tabId))) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"]
+    });
+  }
   await ensureInjectedScript(tabId);
+}
+
+async function isContentScriptReady(tabId: number): Promise<boolean> {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: "devlite-ping" });
+    return response?.ok === true;
+  } catch {
+    return false;
+  }
 }
 
 async function ensureInjectedScript(tabId: number): Promise<void> {
@@ -368,19 +414,32 @@ async function openPagePanel(tab: chrome.tabs.Tab): Promise<void> {
 async function registerMainWorldScript(): Promise<void> {
   if (!chrome.scripting.registerContentScripts) return;
   try {
-    const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [MAIN_WORLD_SCRIPT_ID] });
-    if (existing.length > 0) return;
-    await chrome.scripting.registerContentScripts([
-      {
+    const existing = new Set(
+      (await chrome.scripting.getRegisteredContentScripts({ ids: [CONTENT_SCRIPT_ID, MAIN_WORLD_SCRIPT_ID] })).map((script) => script.id)
+    );
+    const scripts: chrome.scripting.RegisteredContentScript[] = [];
+    if (!existing.has(CONTENT_SCRIPT_ID)) {
+      scripts.push({
+        id: CONTENT_SCRIPT_ID,
+        matches: ["http://*/*", "https://*/*"],
+        js: ["content.js"],
+        runAt: "document_idle"
+      });
+    }
+    if (!existing.has(MAIN_WORLD_SCRIPT_ID)) {
+      scripts.push({
         id: MAIN_WORLD_SCRIPT_ID,
         matches: ["http://*/*", "https://*/*"],
         js: ["injected.js"],
         runAt: "document_start",
         world: "MAIN"
-      }
-    ]);
+      });
+    }
+    if (scripts.length > 0) {
+      await chrome.scripting.registerContentScripts(scripts);
+    }
   } catch (error) {
-    console.warn("[DevLite] register MAIN world script failed", error);
+    console.warn("[DevLite] register content scripts failed", error);
   }
 }
 
@@ -420,7 +479,9 @@ async function getTabSettings(tabId: number): Promise<DiagnosticSettings> {
 }
 
 async function saveSettings(settings: DiagnosticSettings): Promise<void> {
-  await chrome.storage.local.set({ [SETTINGS_KEY]: mergeSettings(settings) });
+  const merged = mergeSettings(settings);
+  await chrome.storage.local.set({ [SETTINGS_KEY]: merged });
+  await pruneExpiredSessions(merged).catch((error) => console.warn("[DevLite] prune sessions failed", error));
 }
 
 function mergeSettings(input?: Partial<DiagnosticSettings>): DiagnosticSettings {
@@ -428,9 +489,33 @@ function mergeSettings(input?: Partial<DiagnosticSettings>): DiagnosticSettings 
     locale: input?.locale ?? DEFAULT_SETTINGS.locale,
     uiTheme: normalizeUiTheme(input?.uiTheme),
     collectResponseBody: input?.collectResponseBody ?? DEFAULT_SETTINGS.collectResponseBody,
-    maxResponseLength: input?.maxResponseLength ?? DEFAULT_SETTINGS.maxResponseLength,
-    slowRequestThreshold: input?.slowRequestThreshold ?? DEFAULT_SETTINGS.slowRequestThreshold,
-    retainHours: input?.retainHours ?? DEFAULT_SETTINGS.retainHours,
+    maxResponseLength: clampNumber(input?.maxResponseLength, 256, 10000, DEFAULT_SETTINGS.maxResponseLength),
+    slowRequestThreshold: clampNumber(input?.slowRequestThreshold, 300, 20000, DEFAULT_SETTINGS.slowRequestThreshold),
+    retainHours: clampNumber(input?.retainHours, 1, 24 * 30, DEFAULT_SETTINGS.retainHours),
     extraRedactionKeys: input?.extraRedactionKeys ?? DEFAULT_SETTINGS.extraRedactionKeys
   };
+}
+
+function safeSendResponse(sendResponse: (response?: any) => void, response: any): void {
+  try {
+    sendResponse(response);
+  } catch (error) {
+    console.warn("[DevLite] sendResponse failed", error);
+  }
+}
+
+async function pruneExpiredSessions(settings?: DiagnosticSettings): Promise<void> {
+  const retainHours = settings?.retainHours ?? (await getSettings()).retainHours;
+  const cutoff = Date.now() - retainHours * 60 * 60 * 1000;
+  await sessionStore.prune(cutoff);
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
+}
+
+function randomId(): string {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

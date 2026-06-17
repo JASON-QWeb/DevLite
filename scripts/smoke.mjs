@@ -1,8 +1,8 @@
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 
-const root = process.cwd();
+const root = resolve(import.meta.dirname, "..");
 const dist = join(root, "dist");
 
 const requiredFiles = [
@@ -29,7 +29,7 @@ const manifest = JSON.parse(await readFile(join(dist, "manifest.json"), "utf8"))
 assert(manifest.manifest_version === 3, "manifest_version must be 3");
 assert(manifest.name === "DevLite", "extension name must be DevLite");
 assert(
-  manifest.description === "简易版检查模式，实时修改页面元素，查阅数据获取，诊断页面问题并直接生成prompt复制给agent进行修复",
+  manifest.description === "直接在浏览器中诊断页面、记录改动，并生成 Agent 修复任务。",
   "extension description mismatch"
 );
 assert(manifest.background?.service_worker === "background.js", "background service worker path mismatch");

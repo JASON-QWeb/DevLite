@@ -1,6 +1,8 @@
 node_modules/
 dist/
 demo
-easybug.zip
+*.zip
 .DS_Store
 *.log
+output
+.playwright-cli

@@ -78,10 +78,10 @@ export function recordTextAfter(change: StyleChange, element: HTMLElement): void
   change.updatedAt = Date.now();
 }
 
-export function undoStyleChange(change: StyleChange, element: HTMLElement): void {
+export function undoStyleChange(change: StyleChange, element: HTMLElement): HTMLElement | null {
   if (change.domBefore !== undefined) {
     element.outerHTML = change.domBefore;
-    return;
+    return resolveRestoredElement(change.selector);
   }
   for (const prop of Object.keys(change.after)) {
     element.style.setProperty(prop, change.before[prop] ?? "");
@@ -90,5 +90,15 @@ export function undoStyleChange(change: StyleChange, element: HTMLElement): void
     element.innerHTML = change.htmlBefore;
   } else if (change.textBefore !== undefined) {
     element.textContent = change.textBefore;
+  }
+  return element;
+}
+
+function resolveRestoredElement(selector: string): HTMLElement | null {
+  try {
+    const restored = document.querySelector(selector);
+    return restored instanceof HTMLElement ? restored : null;
+  } catch {
+    return null;
   }
 }

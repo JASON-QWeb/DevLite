@@ -37,15 +37,31 @@ export class StyleEditorPositionController {
     const offsetY = event.clientY - rect.top;
     editor.setPointerCapture(pointerId);
     editor.classList.add("dragging");
+    let frameId: number | null = null;
+    let pendingPosition = {
+      left: rect.left,
+      top: rect.top
+    };
+    const flushPosition = () => {
+      frameId = null;
+      this.apply(editor, pendingPosition);
+    };
 
     const onMove = (moveEvent: PointerEvent) => {
       const editorRect = editor.getBoundingClientRect();
       const next = clampFloatingPosition(moveEvent.clientX - offsetX, moveEvent.clientY - offsetY, editorRect.width, editorRect.height);
       this.position = { ...next, manual: true };
-      this.apply(editor, next);
+      pendingPosition = next;
+      if (frameId === null) {
+        frameId = window.requestAnimationFrame(flushPosition);
+      }
     };
 
     const onUp = () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+        flushPosition();
+      }
       if (editor.hasPointerCapture(pointerId)) {
         editor.releasePointerCapture(pointerId);
       }

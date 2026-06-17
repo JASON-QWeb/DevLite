@@ -8,6 +8,7 @@ type InlineTextEditState = {
   onInput: () => void;
   onBlur: () => void;
   onKeydown: (event: KeyboardEvent) => void;
+  onPaste: (event: ClipboardEvent) => void;
 };
 
 type InlineTextEditorOptions = {
@@ -62,6 +63,12 @@ export class InlineTextEditor {
           this.stop();
           this.options.onEscape();
         }
+      },
+      onPaste: (event: ClipboardEvent) => {
+        const text = event.clipboardData?.getData("text/plain");
+        if (text === undefined) return;
+        event.preventDefault();
+        document.execCommand("insertText", false, text);
       }
     };
 
@@ -71,6 +78,7 @@ export class InlineTextEditor {
     element.addEventListener("input", state.onInput);
     element.addEventListener("blur", state.onBlur);
     element.addEventListener("keydown", state.onKeydown);
+    element.addEventListener("paste", state.onPaste);
     focusEditableElement(element);
     this.options.toast(this.options.t("inlineEditHint"));
   }
@@ -81,6 +89,7 @@ export class InlineTextEditor {
     state.element.removeEventListener("input", state.onInput);
     state.element.removeEventListener("blur", state.onBlur);
     state.element.removeEventListener("keydown", state.onKeydown);
+    state.element.removeEventListener("paste", state.onPaste);
     if (state.previousContentEditable === null) {
       state.element.removeAttribute("contenteditable");
     } else {

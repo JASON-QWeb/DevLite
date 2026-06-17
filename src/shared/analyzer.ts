@@ -98,7 +98,12 @@ function buildNetworkFindings(events: DiagnosticEvent[], locale: UiLocale): Anal
   const grouped = new Map<string, DiagnosticEvent[]>();
   for (const event of events) {
     const key = `${event.status ?? "ERR"} ${event.method ?? "GET"} ${event.url ?? event.source ?? "unknown"}`;
-    grouped.set(key, [...(grouped.get(key) ?? []), event]);
+    const group = grouped.get(key);
+    if (group) {
+      group.push(event);
+    } else {
+      grouped.set(key, [event]);
+    }
   }
 
   return [...grouped.entries()].slice(0, 8).map(([key, group]) => {
@@ -120,7 +125,12 @@ function buildJsFindings(events: DiagnosticEvent[], locale: UiLocale): AnalysisF
   const grouped = new Map<string, DiagnosticEvent[]>();
   for (const event of events) {
     const key = normalizeErrorMessage(event.message);
-    grouped.set(key, [...(grouped.get(key) ?? []), event]);
+    const group = grouped.get(key);
+    if (group) {
+      group.push(event);
+    } else {
+      grouped.set(key, [event]);
+    }
   }
 
   return [...grouped.entries()].slice(0, 8).map(([message, group]) => ({

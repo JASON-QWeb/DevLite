@@ -30,7 +30,9 @@ const app = document.querySelector<HTMLDivElement>("#app");
 void init();
 
 async function init(): Promise<void> {
-  await refresh();
+  await refresh().catch((error) => {
+    showToast(error instanceof Error ? error.message : String(error));
+  });
   render();
 }
 
@@ -50,6 +52,7 @@ function render(): void {
   const settings = state.settings ?? DEFAULT_SETTINGS;
   const t = createTranslator(settings?.locale);
   applyTheme(settings.uiTheme);
+  document.documentElement.lang = settings.locale === "en" ? "en" : "zh-CN";
 
   app.innerHTML = `
     <main class="app">
@@ -256,12 +259,13 @@ async function handleThemeChange(value: string): Promise<void> {
   };
   state.settings = next;
   applyTheme(next.uiTheme);
-  const response = await sendMessage({ type: "save-settings", settings: next });
-  if (response?.ok) {
+  try {
+    const response = await sendMessage({ type: "save-settings", settings: next });
+    if (!response?.ok) throw new Error(response?.error || uiText(current.locale, "saveFailed"));
     state.settings = response.settings;
-  } else {
+  } catch (error) {
     state.settings = current;
-    showToast(response?.error || uiText(current.locale, "saveFailed"));
+    showToast(error instanceof Error ? error.message : String(error));
   }
   render();
 }
@@ -343,8 +347,8 @@ function collectSettingsForm(): DiagnosticSettings {
   const locale = (document.querySelector<HTMLSelectElement>("#locale")?.value ?? current.locale) as DiagnosticSettings["locale"];
   const uiTheme = normalizeUiTheme(document.querySelector<HTMLInputElement>('input[name="uiTheme"]:checked')?.value ?? current.uiTheme);
   const collectResponseBody = document.querySelector<HTMLInputElement>("#collectResponseBody")?.checked ?? false;
-  const maxResponseLength = Number(document.querySelector<HTMLInputElement>("#maxResponseLength")?.value || current.maxResponseLength);
-  const slowRequestThreshold = Number(document.querySelector<HTMLInputElement>("#slowRequestThreshold")?.value || current.slowRequestThreshold);
+  const maxResponseLength = clampNumber(document.querySelector<HTMLInputElement>("#maxResponseLength")?.value, 256, 10000, current.maxResponseLength);
+  const slowRequestThreshold = clampNumber(document.querySelector<HTMLInputElement>("#slowRequestThreshold")?.value, 300, 20000, current.slowRequestThreshold);
   const extraRedactionKeys = (document.querySelector<HTMLTextAreaElement>("#extraRedactionKeys")?.value ?? "")
     .split(/\n+/)
     .map((item) => item.trim())
@@ -392,8 +396,15 @@ async function copyExport(format: ExportFormat): Promise<void> {
 }
 
 function sendMessage(message: any): Promise<any> {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(message, (response) => resolve(response));
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(response);
+    });
   });
 }
 
@@ -415,4 +426,10 @@ function escapeHtml(value: string): string {
     const map: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
     return map[char];
   });
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
 }

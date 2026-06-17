@@ -36,13 +36,21 @@ export class DiagnosticEventBatcher {
     const events = this.queue.splice(0, this.queue.length);
     this.sendEvents(events);
   }
+
+  removeWhere(predicate: (event: LiveDiagnosticEvent) => boolean): void {
+    this.queue = this.queue.filter((event) => !predicate(event));
+    if (this.queue.length === 0 && this.flushTimer !== null) {
+      window.clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+  }
 }
 
 export class DiagnosticEventStore {
   private events: LiveDiagnosticEvent[] = [];
 
   get all(): LiveDiagnosticEvent[] {
-    return this.events;
+    return this.events.slice();
   }
 
   remember(event: LiveDiagnosticEvent): void {
@@ -53,7 +61,9 @@ export class DiagnosticEventStore {
     } else {
       this.events.push(event);
     }
-    this.events = this.events.sort((a, b) => a.timestamp - b.timestamp).slice(-220);
+    if (this.events.length > 220) {
+      this.events.splice(0, this.events.length - 220);
+    }
   }
 
   merge(events: LiveDiagnosticEvent[]): void {
@@ -71,11 +81,15 @@ export class DiagnosticEventStore {
   }
 
   getNetworkEvents(): LiveDiagnosticEvent[] {
-    return this.events.filter((event) => event.type === "network").sort((a, b) => b.timestamp - a.timestamp);
+    return this.events.filter((event) => event.type === "network").reverse();
+  }
+
+  clearNetworkEvents(): void {
+    this.events = this.events.filter((event) => event.type !== "network");
   }
 
   getConsoleLogEvents(): LiveDiagnosticEvent[] {
-    return this.events.filter((event) => event.type === "console-log").sort((a, b) => b.timestamp - a.timestamp);
+    return this.events.filter((event) => event.type === "console-log").reverse();
   }
 
   group(events: LiveDiagnosticEvent[], options: DiagnosticGroupOptions): DiagnosticGroup[] {

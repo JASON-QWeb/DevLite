@@ -40,7 +40,7 @@ export function detailRow(label: string, value: string): string {
 }
 
 export function formatMetadataValue(value: unknown): string {
-  if (!value) return "";
+  if (value === null || value === undefined || value === "") return "";
   if (typeof value === "string") return value;
   try {
     return JSON.stringify(value, null, 2);

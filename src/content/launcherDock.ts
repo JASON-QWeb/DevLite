@@ -1,5 +1,6 @@
 import type { ContentTextKey } from "./i18n";
 import { LOGO_URL } from "./panelConfig";
+import { escapeHtml } from "./utils";
 import { launcherIcon } from "./views/icons";
 
 type LauncherText = (key: ContentTextKey) => string;
@@ -141,13 +142,17 @@ export class LauncherDockController {
 }
 
 function launcherMarkup(t: LauncherText): string {
+  const launcherActions = escapeHtml(t("launcherActions"));
+  const quickSelect = escapeHtml(t("quickSelect"));
+  const openPanel = escapeHtml(t("openPanel"));
+  const launcherTitle = escapeHtml(t("launcherTitle"));
   return `
       <div class="launcher-hit-area" aria-hidden="true"></div>
-      <div class="launcher-actions" aria-label="${t("launcherActions")}">
-        <button class="launcher-action" type="button" data-launcher-action="select" title="${t("quickSelect")}" aria-label="${t("quickSelect")}">${launcherIcon("select")}</button>
-        <button class="launcher-action" type="button" data-launcher-action="panel" title="${t("openPanel")}" aria-label="${t("openPanel")}">${launcherIcon("panel")}</button>
+      <div class="launcher-actions" aria-label="${launcherActions}">
+        <button class="launcher-action" type="button" data-launcher-action="select" title="${quickSelect}" aria-label="${quickSelect}">${launcherIcon("select")}</button>
+        <button class="launcher-action" type="button" data-launcher-action="panel" title="${openPanel}" aria-label="${openPanel}">${launcherIcon("panel")}</button>
       </div>
-      <button class="devlite-launcher" type="button" title="${t("launcherTitle")}" aria-label="${t("launcherTitle")}">
+      <button class="devlite-launcher" type="button" title="${launcherTitle}" aria-label="${launcherTitle}">
         <img src="${LOGO_URL}" alt="" />
       </button>
     `;

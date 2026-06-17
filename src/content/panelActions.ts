@@ -32,7 +32,7 @@ type PanelActionContext = {
   t: (key: ContentTextKey) => string;
   toast: (message: string) => void;
   toggleLocale: () => Promise<void>;
-  undoCurrentChange: () => void;
+  undoCurrentChange: () => Promise<void>;
 };
 
 export async function handlePanelAction(action: string, context: PanelActionContext): Promise<void> {
@@ -165,6 +165,6 @@ export async function handlePanelAction(action: string, context: PanelActionCont
 
   if (action === "undo") {
     context.stopInlineTextEdit();
-    context.undoCurrentChange();
+    await context.undoCurrentChange();
   }
 }

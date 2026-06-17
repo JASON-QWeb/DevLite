@@ -1,5 +1,7 @@
 import { formatBytes } from "./utils";
 
+const MAX_IMAGE_FILE_BYTES = 5 * 1024 * 1024;
+
 type ImageFileInputOptions = {
   input: HTMLInputElement | null;
   onError: () => void;
@@ -13,6 +15,10 @@ export function bindImageFileInput(options: ImageFileInputOptions): void {
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
+    if (file.size > MAX_IMAGE_FILE_BYTES) {
+      options.onError();
+      return;
+    }
     const reader = new FileReader();
     reader.addEventListener("load", () => {
       const dataUrl = typeof reader.result === "string" ? reader.result : "";

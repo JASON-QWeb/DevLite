@@ -1,16 +1,18 @@
-import { spawn } from "node:child_process";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 
 const root = resolve(import.meta.dirname, "..");
 const distDir = join(root, "dist");
 const demoDir = join(root, "demo/devlite-qa");
-const artifactsDir = "/tmp/devlite-qa";
-const chromePath = findChromeExecutable();
+const artifactsDir = join(tmpdir(), "devlite-qa");
+const chromeCacheDir = join(tmpdir(), "devlite-browsers/chrome");
+const execFileAsync = promisify(execFile);
+const chromePath = await findChromeExecutable();
 const replacementImagePath = join(artifactsDir, "replacement-image.svg");
 
 class CdpSession {
@@ -164,7 +166,7 @@ try {
       "--disable-default-apps",
       "--disable-popup-blocking",
       "--window-size=1440,1000",
-      "about:blank"
+      demoUrl
     ],
     { stdio: ["ignore", "pipe", "pipe"] }
   );
@@ -173,22 +175,21 @@ try {
 
   await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "Chrome DevTools");
   browser = await CdpSession.fromVersion(cdpPort);
-  const extensionId = await waitForExtensionId(browser);
+  const extensionId = await waitForExtensionId(browser, profileDir, extensionDir);
   record("extension loads in temporary Chrome profile", true, extensionId);
-  const targetId = await browser.createTarget(demoUrl);
-  const target = await waitForTarget(cdpPort, (item) => item.id === targetId, "demo page target");
+  const target = await waitForTarget(cdpPort, (item) => item.type === "page" && item.url.startsWith(demoUrl), "demo page target");
   page = await CdpSession.connect(target.webSocketDebuggerUrl);
   await page.send("Runtime.enable");
   await page.send("Page.enable");
   await page.send("DOM.enable");
   await waitForEval(page, "document.readyState === 'complete'", "demo page loaded");
 
-  await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-dock')", "DevLite launcher exists");
+  await ensureLauncher(page, demoUrl);
   record("right-side launcher exists on local service page", true);
 
   await shadowClick(page, ".devlite-launcher");
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel opens");
-  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('采集中')", "capture starts");
+  await waitForCaptureStart(cdpPort, page, extensionId);
   record("panel opens and starts page capture", true);
 
   await shadowClick(page, ".locale-button");
@@ -253,7 +254,7 @@ try {
 
   await shadowClick(page, 'button[data-tab="element"]');
   await shadowClick(page, 'button[data-action="quick-select"]');
-  await clickCenter(page, '[data-testid="editable-card"]');
+  await clickRelative(page, '[data-testid="editable-card"]', 0.88, 0.12);
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.style-editor-popover:not([hidden])')", "style editor appears");
   await evaluate(page, `
     (() => {
@@ -267,7 +268,7 @@ try {
       return true;
     })()
   `);
-  await waitForEval(page, "document.querySelector('[data-testid=\"editable-card\"]').style.color === 'rgb(179, 38, 30)' || document.querySelector('[data-testid=\"editable-card\"]').style.color === '#b3261e'", "style edit applied");
+  await waitForStyleEditApplied(page);
   record("style editor applies CSS changes", true);
 
   await doubleClickCenter(page, ".body-copy");
@@ -318,7 +319,7 @@ try {
   await extensionPage.send("Runtime.enable");
   await waitForEval(extensionPage, "document.body.innerText.includes('DevLite')", "popup renders");
   record("popup page renders with current session state", true);
-  await browser.send("Target.activateTarget", { targetId });
+  await browser.send("Target.activateTarget", { targetId: target.id });
   const reportResponse = await evaluate(extensionPage, `
     new Promise((resolve) => chrome.runtime.sendMessage({ type: "generate-report" }, resolve))
   `);
@@ -346,7 +347,7 @@ try {
     new Promise((resolve) => chrome.runtime.sendMessage({ type: "stop-diagnosis" }, resolve))
   `);
   assert(stopResponse?.ok, "stop diagnosis succeeds");
-  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('待采集')", "content panel shows stopped state");
+  await waitForCaptureStopped(cdpPort, extensionId);
   record("stop diagnosis updates content panel state", true);
 
   await writeFile(join(artifactsDir, "browser-results.json"), JSON.stringify({ demoUrl, results }, null, 2));
@@ -377,7 +378,17 @@ function assert(condition, message) {
 }
 
 function readClipboard() {
-  return execFileSync("pbpaste", { encoding: "utf8" });
+  if (process.platform === "darwin") {
+    return execFileSync("pbpaste", { encoding: "utf8" });
+  }
+  if (process.platform === "win32") {
+    return execFileSync("powershell.exe", ["-NoProfile", "-Command", "Get-Clipboard"], { encoding: "utf8" });
+  }
+  try {
+    return execFileSync("wl-paste", ["--no-newline"], { encoding: "utf8" });
+  } catch {
+    return execFileSync("xclip", ["-selection", "clipboard", "-out"], { encoding: "utf8" });
+  }
 }
 
 async function shadowClick(session, selector) {
@@ -427,6 +438,29 @@ async function doubleClickCenter(session, selector) {
   await mouseClick(session, point.x, point.y, 2);
 }
 
+async function clickRelative(session, selector, xRatio, yRatio) {
+  const point = await evaluate(
+    session,
+    `
+      (() => {
+        const node = document.querySelector(${JSON.stringify(selector)});
+        if (!node) return null;
+        const previousScrollBehavior = document.documentElement.style.scrollBehavior;
+        document.documentElement.style.scrollBehavior = "auto";
+        node.scrollIntoView({ block: "center", inline: "center" });
+        document.documentElement.style.scrollBehavior = previousScrollBehavior;
+        const rect = node.getBoundingClientRect();
+        return {
+          x: Math.round(rect.left + rect.width * ${JSON.stringify(xRatio)}),
+          y: Math.round(rect.top + rect.height * ${JSON.stringify(yRatio)})
+        };
+      })()
+    `
+  );
+  assert(point, `element not found: ${selector}`);
+  await mouseClick(session, point.x, point.y, 1);
+}
+
 async function elementCenter(session, selector) {
   const point = await evaluate(
     session,
@@ -434,6 +468,10 @@ async function elementCenter(session, selector) {
       (() => {
         const node = document.querySelector(${JSON.stringify(selector)});
         if (!node) return null;
+        const previousScrollBehavior = document.documentElement.style.scrollBehavior;
+        document.documentElement.style.scrollBehavior = "auto";
+        node.scrollIntoView({ block: "center", inline: "center" });
+        document.documentElement.style.scrollBehavior = previousScrollBehavior;
         const rect = node.getBoundingClientRect();
         return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
       })()
@@ -469,18 +507,193 @@ async function evaluate(session, expression) {
 
 async function findExtensionId(session) {
   const result = await session.send("Target.getTargets");
-  const target = result.targetInfos.find((item) => /chrome-extension:\/\/[^/]+\/(?:background|popup|options)\.js|chrome-extension:\/\/[^/]+\/background\.js/.test(item.url));
+  const target = result.targetInfos.find(
+    (item) => item.type === "service_worker" && /chrome-extension:\/\/[^/]+\/background\.js$/.test(item.url)
+  ) ?? result.targetInfos.find((item) => /chrome-extension:\/\/[^/]+\/(?:popup|options)\.html$/.test(item.url));
   return target?.url.match(/^chrome-extension:\/\/([^/]+)\//)?.[1] || "";
 }
 
-async function waitForExtensionId(session) {
+async function ensureLauncher(pageSession, pageUrl) {
+  const hasLauncher = "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-dock')";
+  const autoInjected = await waitForEval(pageSession, hasLauncher, "DevLite launcher auto injection", 3000).then(
+    () => true,
+    () => false
+  );
+  if (autoInjected) return;
+  await pageSession.send("Page.reload", { ignoreCache: true });
+  await waitForEval(
+    pageSession,
+    `location.href.startsWith(${JSON.stringify(pageUrl)}) && document.readyState === "complete"`,
+    "demo page reloads after extension startup",
+    10000
+  );
+  await waitForEval(pageSession, hasLauncher, "DevLite launcher exists after reload", 10000);
+}
+
+async function waitForCaptureStart(cdpPort, pageSession, extensionId) {
+  const started = await waitFor(
+    async () => {
+      const state = await readBackgroundCaptureState(cdpPort, extensionId);
+      return state?.sessionActive ? state : null;
+    },
+    "background capture session starts",
+    8000
+  ).then(
+    () => true,
+    () => false
+  );
+  if (started) return;
+
+  const diagnostics = await collectCaptureDiagnostics(cdpPort, pageSession, extensionId);
+  throw new Error(`capture did not start: ${JSON.stringify(diagnostics, null, 2)}`);
+}
+
+async function waitForCaptureStopped(cdpPort, extensionId) {
+  await waitFor(
+    async () => {
+      const state = await readBackgroundCaptureState(cdpPort, extensionId);
+      return state?.session && !state.sessionActive ? state : null;
+    },
+    "background capture session stops",
+    8000
+  );
+}
+
+async function readBackgroundCaptureState(cdpPort, extensionId) {
+  const workerTarget = (await listTargets(cdpPort)).find(
+    (item) => item.type === "service_worker" && item.url.startsWith(`chrome-extension://${extensionId}/`)
+  );
+  if (!workerTarget?.webSocketDebuggerUrl) return null;
+  const worker = await CdpSession.connect(workerTarget.webSocketDebuggerUrl);
+  try {
+    await worker.send("Runtime.enable");
+    return await evaluate(
+      worker,
+      `
+        (async () => {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const tab = tabs[0] || null;
+          const storage = chrome.storage.session || chrome.storage.local;
+          const data = await storage.get("devlite:sessions");
+          const session = tab?.id ? data["devlite:sessions"]?.[String(tab.id)] || null : null;
+          return {
+            tab: tab ? { id: tab.id, url: tab.url, title: tab.title } : null,
+            sessionActive: session?.active === true,
+            session
+          };
+        })()
+      `
+    );
+  } finally {
+    await worker.close().catch(() => null);
+  }
+}
+
+async function collectCaptureDiagnostics(cdpPort, pageSession, extensionId) {
+  const panel = await evaluate(
+    pageSession,
+    `
+      (() => {
+        const root = document.querySelector("#devlite-overlay-root")?.shadowRoot;
+        return {
+          hasRoot: Boolean(root),
+          hasDock: Boolean(root?.querySelector(".devlite-dock")),
+          hasPanel: Boolean(root?.querySelector(".devlite-panel:not([hidden])")),
+          text: root?.textContent?.replace(/\\s+/g, " ").trim().slice(0, 600) || ""
+        };
+      })()
+    `
+  ).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+  const workerTarget = (await listTargets(cdpPort)).find(
+    (item) => item.type === "service_worker" && item.url.startsWith(`chrome-extension://${extensionId}/`)
+  );
+  if (!workerTarget?.webSocketDebuggerUrl) return { panel, worker: null };
+  const worker = await CdpSession.connect(workerTarget.webSocketDebuggerUrl);
+  try {
+    await worker.send("Runtime.enable");
+    const workerState = await evaluate(
+      worker,
+      `
+        (async () => {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const tab = tabs[0] || null;
+          const storage = chrome.storage.session || chrome.storage.local;
+          const data = await storage.get("devlite:sessions");
+          const session = tab?.id ? data["devlite:sessions"]?.[String(tab.id)] || null : null;
+          const ping = tab?.id ? await chrome.tabs.sendMessage(tab.id, { type: "devlite-ping" }).catch((error) => ({
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+          })) : null;
+          return {
+            manifest: chrome.runtime.getManifest(),
+            tab: tab ? { id: tab.id, url: tab.url, title: tab.title } : null,
+            session,
+            ping,
+            registeredScripts: chrome.scripting.getRegisteredContentScripts
+              ? await chrome.scripting.getRegisteredContentScripts().catch((error) => ({ error: error.message }))
+              : "unavailable"
+          };
+        })()
+      `
+    ).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+    return { panel, worker: workerState };
+  } finally {
+    await worker.close().catch(() => null);
+  }
+}
+
+async function waitForStyleEditApplied(pageSession) {
+  const applied = await waitForEval(
+    pageSession,
+    "document.querySelector('[data-testid=\"editable-card\"]').style.color === 'rgb(179, 38, 30)' || document.querySelector('[data-testid=\"editable-card\"]').style.color === '#b3261e'",
+    "style edit applied",
+    8000
+  ).then(
+    () => true,
+    () => false
+  );
+  if (applied) return;
+  const diagnostics = await evaluate(
+    pageSession,
+    `
+      (() => {
+        const root = document.querySelector("#devlite-overlay-root")?.shadowRoot;
+        const editor = root?.querySelector(".style-editor-popover");
+        const inputs = Array.from(editor?.querySelectorAll("[data-prop]") ?? []).map((input) => ({
+          prop: input.dataset.prop,
+          value: input.value
+        }));
+        const card = document.querySelector('[data-testid="editable-card"]');
+        const body = document.querySelector(".body-copy");
+        const button = document.querySelector("#state-button");
+        const title = card?.querySelector("h3");
+        return {
+          editorTitle: editor?.querySelector(".style-editor-head strong")?.textContent || "",
+          inputs,
+          cardStyle: card?.getAttribute("style") || "",
+          cardColor: card?.style.color || "",
+          bodyStyle: body?.getAttribute("style") || "",
+          bodyColor: body?.style.color || "",
+          buttonStyle: button?.getAttribute("style") || "",
+          buttonColor: button?.style.color || "",
+          titleStyle: title?.getAttribute("style") || "",
+          titleColor: title?.style.color || ""
+        };
+      })()
+    `
+  );
+  throw new Error(`style edit was not applied to editable card: ${JSON.stringify(diagnostics, null, 2)}`);
+}
+
+async function waitForExtensionId(session, profileDir, extensionDir) {
   try {
     return await waitFor(async () => {
-      const extensionId = await findExtensionId(session);
+      const extensionId = findExtensionIdFromProfile(profileDir, extensionDir) || (await findExtensionId(session));
       return extensionId || null;
-    }, "extension service worker target", 10000);
+    }, "DevLite extension registration", 10000);
   } catch (error) {
     const result = await session.send("Target.getTargets").catch(() => ({ targetInfos: [] }));
+    const profileExtensions = listProfileExtensions(profileDir);
     console.error(
       `[chrome-targets] ${JSON.stringify(
         result.targetInfos.map((target) => ({ type: target.type, url: target.url, title: target.title })),
@@ -488,7 +701,48 @@ async function waitForExtensionId(session) {
         2
       )}`
     );
+    console.error(`[profile-extensions] ${JSON.stringify(profileExtensions, null, 2)}`);
     throw error;
+  }
+}
+
+function findExtensionIdFromProfile(profileDir, extensionDir) {
+  const preferencesPath = join(profileDir, "Default", "Preferences");
+  if (!existsSync(preferencesPath)) return "";
+  try {
+    const preferences = JSON.parse(readFileSync(preferencesPath, "utf8"));
+    const settings = preferences.extensions?.settings ?? {};
+    const expectedPath = resolve(extensionDir);
+    for (const [id, extension] of Object.entries(settings)) {
+      if (
+        extension &&
+        typeof extension === "object" &&
+        resolve(String(extension.path ?? "")) === expectedPath &&
+        extension.manifest?.name === "DevLite"
+      ) {
+        return id;
+      }
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function listProfileExtensions(profileDir) {
+  const preferencesPath = join(profileDir, "Default", "Preferences");
+  if (!existsSync(preferencesPath)) return [];
+  try {
+    const preferences = JSON.parse(readFileSync(preferencesPath, "utf8"));
+    const settings = preferences.extensions?.settings ?? {};
+    return Object.entries(settings).map(([id, extension]) => ({
+      id,
+      name: extension?.manifest?.name,
+      path: extension?.path,
+      state: extension?.state
+    }));
+  } catch {
+    return [];
   }
 }
 
@@ -541,27 +795,77 @@ function freePort() {
   });
 }
 
-function findChromeExecutable() {
-  const candidates = [
-    process.env.CHROME_BIN,
-    ...findChromeForTestingExecutables("/tmp/devlite-browsers/chrome"),
-    "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-  ];
-  return candidates.find((path) => path && existsSync(path));
+async function findChromeExecutable() {
+  if (process.env.CHROME_BIN) {
+    return existsSync(process.env.CHROME_BIN) ? process.env.CHROME_BIN : "";
+  }
+
+  const chromeForTesting = [
+    ...findChromeForTestingExecutables(chromeCacheDir),
+    "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+  ].find((path) => path && existsSync(path));
+  if (chromeForTesting) return chromeForTesting;
+
+  return installChromeForTesting(chromeCacheDir);
 }
 
 function findChromeForTestingExecutables(baseDir) {
   if (!existsSync(baseDir)) return [];
+  const platform = chromeForTestingPlatform();
   const candidates = [];
   for (const buildDir of safeReadDir(baseDir)) {
-    const buildPath = join(baseDir, buildDir);
-    candidates.push(
-      join(buildPath, "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
-      join(buildPath, "chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
-    );
+    candidates.push(chromeForTestingExecutable(baseDir, buildDir, platform));
   }
   return candidates;
+}
+
+async function installChromeForTesting(baseDir) {
+  const platform = chromeForTestingPlatform();
+  const manifest = await fetch("https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json").then(
+    (response) => {
+      if (!response.ok) throw new Error(`Chrome for Testing manifest fetch failed: ${response.status}`);
+      return response.json();
+    }
+  );
+  const stable = manifest.channels?.Stable;
+  const download = stable?.downloads?.chrome?.find((item) => item.platform === platform);
+  if (!stable?.version || !download?.url) {
+    throw new Error(`Chrome for Testing download not found for ${platform}`);
+  }
+
+  const executable = chromeForTestingExecutable(baseDir, stable.version, platform);
+  if (existsSync(executable)) return executable;
+
+  await mkdir(baseDir, { recursive: true });
+  const archivePath = join(baseDir, `chrome-${stable.version}-${platform}.zip`);
+  const archive = await fetch(download.url).then(async (response) => {
+    if (!response.ok) throw new Error(`Chrome for Testing download failed: ${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
+  });
+  await writeFile(archivePath, archive);
+  await execFileAsync("unzip", ["-q", "-o", archivePath, "-d", join(baseDir, stable.version)]);
+
+  if (!existsSync(executable)) {
+    throw new Error(`Chrome for Testing executable not found after install: ${executable}`);
+  }
+  return executable;
+}
+
+function chromeForTestingPlatform() {
+  if (process.platform === "darwin") return process.arch === "arm64" ? "mac-arm64" : "mac-x64";
+  if (process.platform === "linux") return "linux64";
+  if (process.platform === "win32") return process.arch === "x64" ? "win64" : "win32";
+  throw new Error(`Unsupported platform for Chrome for Testing: ${process.platform}/${process.arch}`);
+}
+
+function chromeForTestingExecutable(baseDir, version, platform) {
+  if (platform === "mac-arm64" || platform === "mac-x64") {
+    return join(baseDir, version, `chrome-${platform}/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`);
+  }
+  if (platform === "linux64") {
+    return join(baseDir, version, "chrome-linux64/chrome");
+  }
+  return join(baseDir, version, `chrome-${platform}/chrome.exe`);
 }
 
 function safeReadDir(path) {

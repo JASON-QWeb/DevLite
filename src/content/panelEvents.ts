@@ -3,9 +3,11 @@ import type { DiagnosticFilter, NetworkDetailTab, OverlayTab } from "./types";
 type PanelEventsOptions = {
   panel: HTMLElement | null;
   onAction: (action: string, source?: HTMLElement) => Promise<void> | void;
+  onError: (error: unknown) => void;
   onDiagnosticFilter: (filter: DiagnosticFilter) => void;
   onNetworkDetail: (tab: NetworkDetailTab) => void;
   onNetworkEvent: (id: string | null) => void;
+  onNetworkListResize: (event: PointerEvent) => void;
   onStartDrag: (event: PointerEvent) => void;
   onStartResize: (event: PointerEvent) => void;
   onStyleInput: (prop: string, value: string) => void;
@@ -22,6 +24,7 @@ export function bindPanelEvents(options: PanelEventsOptions): void {
   });
 
   panel.querySelector<HTMLElement>("[data-panel-resize]")?.addEventListener("pointerdown", options.onStartResize);
+  panel.querySelector<HTMLElement>("[data-network-splitter]")?.addEventListener("pointerdown", options.onNetworkListResize);
 
   panel.querySelectorAll<HTMLButtonElement>("button[data-tab]").forEach((button) => {
     button.addEventListener("click", (event) => {
@@ -84,7 +87,11 @@ export function bindPanelEvents(options: PanelEventsOptions): void {
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
-      await options.onAction(button.dataset.action ?? "", button);
+      try {
+        await options.onAction(button.dataset.action ?? "", button);
+      } catch (error) {
+        options.onError(error);
+      }
     });
   });
 }

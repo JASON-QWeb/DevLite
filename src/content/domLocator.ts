@@ -137,9 +137,12 @@ function compactElementSelector(element: HTMLElement): string {
 
 function collectMatchedCssRules(element: HTMLElement): MatchedCssRule[] {
   const matches: MatchedCssRule[] = [];
+  let visitedRules = 0;
   const visitRules = (rules: CSSRuleList, source: string, condition?: string) => {
     for (const rule of Array.from(rules)) {
       if (matches.length >= 16) return;
+      if (visitedRules >= 2500) return;
+      visitedRules += 1;
       if (rule instanceof CSSStyleRule) {
         if (safeMatches(element, rule.selectorText)) {
           matches.push({

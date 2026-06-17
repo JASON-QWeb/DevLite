@@ -46,7 +46,7 @@ export function redactText(value: unknown, settings?: DiagnosticSettings): strin
     .replace(PHONE_RE, "[REDACTED_PHONE]")
     .replace(BEARER_RE, "Bearer [REDACTED_TOKEN]")
     .replace(TOKEN_RE, "$1[REDACTED]")
-    .replace(CARD_RE, "[REDACTED_CARD]");
+    .replace(CARD_RE, (match) => (isLikelyCardNumber(match) ? "[REDACTED_CARD]" : match));
 
   if (text.length > maxLength) {
     return `${text.slice(0, maxLength)}\n...[TRUNCATED ${text.length - maxLength} chars]`;
@@ -56,7 +56,7 @@ export function redactText(value: unknown, settings?: DiagnosticSettings): strin
 }
 
 export function redactObject<T>(value: T, settings?: DiagnosticSettings): T {
-  const keys = sensitiveKeys(settings);
+  const keys = sensitiveKeys(settings).map(normalizeKey);
 
   function walk(input: unknown): unknown {
     if (Array.isArray(input)) {
@@ -66,8 +66,7 @@ export function redactObject<T>(value: T, settings?: DiagnosticSettings): T {
     if (input && typeof input === "object") {
       const out: Record<string, unknown> = {};
       for (const [key, child] of Object.entries(input)) {
-        const normalized = key.toLowerCase().replace(/[-_\s]/g, "");
-        if (keys.some((sensitive) => normalized.includes(sensitive.replace(/[-_\s]/g, "")))) {
+        if (keys.includes(normalizeKey(key))) {
           out[key] = "[REDACTED]";
         } else {
           out[key] = walk(child);
@@ -90,10 +89,10 @@ export function sanitizeEvent(event: DiagnosticEvent, settings: DiagnosticSettin
   const redacted = redactObject(event, settings);
   return {
     ...redacted,
-    message: redactText(redacted.message, settings),
-    stack: redacted.stack ? redactText(redacted.stack, settings) : undefined,
-    requestBody: redacted.requestBody ? redactText(redacted.requestBody, settings) : undefined,
-    responseBody: settings.collectResponseBody && redacted.responseBody ? redactText(redacted.responseBody, settings) : undefined
+    message: stringValue(redacted.message),
+    stack: redacted.stack ? stringValue(redacted.stack) : undefined,
+    requestBody: redacted.requestBody ? stringValue(redacted.requestBody) : undefined,
+    responseBody: settings.collectResponseBody && redacted.responseBody ? stringValue(redacted.responseBody) : undefined
   };
 }
 
@@ -131,4 +130,29 @@ export function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : safeStringify(value);
+}
+
+function isLikelyCardNumber(value: string): boolean {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < 13 || digits.length > 19) return false;
+  let sum = 0;
+  let shouldDouble = false;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    let digit = Number(digits[index]);
+    if (shouldDouble) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+    shouldDouble = !shouldDouble;
+  }
+  return sum % 10 === 0;
 }

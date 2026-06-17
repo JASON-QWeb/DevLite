@@ -1,6 +1,7 @@
 type StyleEditorEventsOptions = {
   editor: HTMLElement | null;
   onAction: (action: string) => Promise<void> | void;
+  onError: (error: unknown) => void;
   onStartDrag: (event: PointerEvent) => void;
   onStyleInput: (prop: string, value: string) => void;
 };
@@ -24,7 +25,11 @@ export function bindStyleEditorEvents(options: StyleEditorEventsOptions): void {
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
-      await options.onAction(button.dataset.styleAction ?? "");
+      try {
+        await options.onAction(button.dataset.styleAction ?? "");
+      } catch (error) {
+        options.onError(error);
+      }
     });
   });
 }

@@ -1,6 +1,7 @@
+const BLOCKED_EDIT_TAGS = new Set(["SCRIPT", "STYLE", "LINK", "META", "IFRAME", "CANVAS", "SVG", "IMG", "VIDEO", "AUDIO", "OBJECT"]);
+
 export function canEditTextContent(element: HTMLElement, hasEditedText = false): boolean {
-  const blockedTags = new Set(["SCRIPT", "STYLE", "LINK", "META", "IFRAME", "CANVAS", "SVG", "IMG", "VIDEO", "AUDIO", "OBJECT"]);
-  if (blockedTags.has(element.tagName)) return false;
+  if (BLOCKED_EDIT_TAGS.has(element.tagName)) return false;
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return false;
   if (element.closest("[contenteditable='false']")) return false;
   return editableTextValue(element).trim().length > 0 || hasEditedText;

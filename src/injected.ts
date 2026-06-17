@@ -6,6 +6,7 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     return;
   }
   win.__DEVLITE_PAGE_INSTALLED__ = true;
+  const pageMessageTargetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
 
   let active = false;
   let bufferEarlyEvents = true;
@@ -25,7 +26,7 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
   const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
 
   window.addEventListener("message", (event) => {
-    if (event.source !== window) return;
+    if (!isTrustedControlMessage(event)) return;
     const data = event.data;
     if (!data || data.channel !== CONTROL_CHANNEL) return;
     if (data.type === "start") {
@@ -84,15 +85,14 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     originalConsoleError(...args);
   };
 
-  console.log = (...args: unknown[]) => {
-    emit({
-      type: "console-log",
-      severity: "info",
-      message: args.map(serialize).join(" "),
-      stack: new Error("console.log").stack,
-      metadata: {
-        consoleMethod: "log"
-      }
+	  console.log = (...args: unknown[]) => {
+	    emit({
+	      type: "console-log",
+	      severity: "info",
+	      message: args.map(serialize).join(" "),
+	      metadata: {
+	        consoleMethod: "log"
+	      }
     });
     originalConsoleLog(...args);
   };
@@ -187,7 +187,10 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     meta.requestBody = summarizeBody(body);
     (xhr as any).__devlite = meta;
 
+    let finalized = false;
     const finalize = (kind: "loadend" | "error" | "timeout" | "abort") => {
+      if (finalized) return;
+      finalized = true;
       const duration = Math.round(performance.now() - meta.startedAt);
       const status = xhr.status || undefined;
       const responseText = settings.collectResponseBody ? summarizeXhrResponse(xhr) : undefined;
@@ -249,8 +252,12 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
         channel: PAGE_CHANNEL,
         event
       },
-      "*"
+      pageMessageTargetOrigin
     );
+  }
+
+  function isTrustedControlMessage(event: MessageEvent): boolean {
+    return event.source === window && (pageMessageTargetOrigin === "*" || event.origin === window.location.origin);
   }
 
   function getPerformanceSnapshot(): Record<string, unknown> {

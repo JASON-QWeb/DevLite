@@ -57,18 +57,19 @@ export function renderStyleEditorView({ element, change, canEditText, t }: Style
 function inputRow(prop: string, label: string, value: string, type = "text"): string {
   return `
       <label class="row">
-        <span>${label}</span>
-        <input data-prop="${prop}" type="${type}" value="${escapeHtml(value)}" />
+        <span>${escapeHtml(label)}</span>
+        <input data-prop="${escapeHtml(prop)}" type="${escapeHtml(type)}" value="${escapeHtml(value)}" />
       </label>
     `;
 }
 
 function selectRow(prop: string, label: string, value: string, options: string[]): string {
+  const allOptions = options.includes(value) ? options : [value, ...options];
   return `
       <label class="row">
-        <span>${label}</span>
-        <select data-prop="${prop}">
-          ${options.map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`).join("")}
+        <span>${escapeHtml(label)}</span>
+        <select data-prop="${escapeHtml(prop)}">
+          ${allOptions.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
         </select>
       </label>
     `;

@@ -26,6 +26,24 @@ class SessionStore {
     });
   }
 
+  async delete(tabId: number): Promise<void> {
+    await this.mutate((sessions) => {
+      sessions.delete(tabId);
+      return undefined;
+    });
+  }
+
+  async prune(cutoffTimestamp: number): Promise<void> {
+    await this.mutate((sessions) => {
+      for (const [tabId, session] of sessions) {
+        if ((session.updatedAt || session.createdAt || 0) < cutoffTimestamp) {
+          sessions.delete(tabId);
+        }
+      }
+      return undefined;
+    });
+  }
+
   async update(
     tabId: number,
     updater: (session: DiagnosticSession | undefined) => DiagnosticSession | undefined
@@ -44,9 +62,10 @@ class SessionStore {
   private async mutate<T>(mutator: (sessions: Map<number, DiagnosticSession>) => T): Promise<T> {
     let result!: T;
     const run = this.writeQueue.catch(() => undefined).then(async () => {
-      const sessions = await this.load();
+      const sessions = cloneSessions(await this.load());
       result = mutator(sessions);
       await this.save(sessions);
+      this.cache = sessions;
     });
     this.writeQueue = run.then(
       () => undefined,
@@ -94,3 +113,11 @@ class SessionStore {
 }
 
 export const sessionStore = new SessionStore();
+
+function cloneSessions(sessions: Map<number, DiagnosticSession>): Map<number, DiagnosticSession> {
+  const cloned = new Map<number, DiagnosticSession>();
+  for (const [tabId, session] of sessions) {
+    cloned.set(tabId, JSON.parse(JSON.stringify(session)) as DiagnosticSession);
+  }
+  return cloned;
+}

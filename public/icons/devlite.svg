@@ -1,3 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="DevLite logo">
-  <image href="devlite-128.png" width="128" height="128" preserveAspectRatio="xMidYMid meet"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="DevLite logo">
+  <defs>
+    <linearGradient id="bg" x1="32" y1="24" x2="224" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f8fcff"/>
+      <stop offset="0.56" stop-color="#eaf6ff"/>
+      <stop offset="1" stop-color="#d7eefc"/>
+    </linearGradient>
+    <linearGradient id="card" x1="76" y1="72" x2="184" y2="176" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f3faff"/>
+    </linearGradient>
+    <linearGradient id="imageBlock" x1="86" y1="96" x2="124" y2="140" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0e66ad"/>
+      <stop offset="1" stop-color="#42b8d9"/>
+    </linearGradient>
+    <linearGradient id="cursorFill" x1="132" y1="132" x2="190" y2="218" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.46" stop-color="#cbd6df"/>
+      <stop offset="1" stop-color="#8798a8"/>
+    </linearGradient>
+    <filter id="softShadow" x="-24%" y="-24%" width="148%" height="154%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#123b63" flood-opacity="0.12"/>
+    </filter>
+    <filter id="cursorShadow" x="-35%" y="-35%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="4" flood-color="#17324d" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <rect x="16" y="16" width="224" height="224" rx="60" fill="url(#bg)"/>
+  <path d="M48 208C72 224 111 229 151 218C190 208 219 181 240 142V240H16V211C25 206 36 204 48 208Z" fill="#c9e8fb" opacity="0.34"/>
+
+  <g filter="url(#softShadow)">
+    <path d="M64 76V56h36M156 56h36v20" fill="none" stroke="#0a4d8f" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M192 160v36h-36M100 196H64v-36" fill="none" stroke="#0a4d8f" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="68" y="84" width="120" height="100" rx="24" fill="url(#card)" opacity="0.92"/>
+    <rect x="86" y="110" width="36" height="36" rx="8" fill="url(#imageBlock)"/>
+    <circle cx="96" cy="120" r="4" fill="#eaf6ff" opacity="0.95"/>
+    <path d="M88 142L101 128L110 136L122 119" fill="none" stroke="#eaf6ff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M134 110H170M134 128H158" fill="none" stroke="#0a4d8f" stroke-width="10" stroke-linecap="round"/>
+    <rect x="86" y="156" width="88" height="18" rx="9" fill="#42b8d9"/>
+    <path d="M108 165H151" fill="none" stroke="#eaf6ff" stroke-width="4" stroke-linecap="round" opacity="0.82"/>
+  </g>
+
+  <g filter="url(#cursorShadow)">
+    <path d="M138 138L194 162L168 172L186 208L168 216L151 180L130 200L138 138Z" fill="url(#cursorFill)" stroke="#31475c" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M151 156L174 166" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity="0.72"/>
+  </g>
 </svg>
