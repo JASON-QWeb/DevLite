@@ -21,7 +21,7 @@ type PanelShellContext = {
 };
 
 export function renderPanelShell(context: PanelShellContext): string {
-  const { activeTab, captureActive, counts, tabBody, t, uiLocale } = context;
+  const { activeTab, counts, tabBody, t, uiLocale } = context;
   return `
       <div class="panel-shell">
         <aside class="panel-sidebar">
@@ -29,7 +29,6 @@ export function renderPanelShell(context: PanelShellContext): string {
             <img src="${LOGO_URL}" alt="" />
             <div>
               <strong>DevLite</strong>
-              <span>${captureActive ? t("capturing") : t("idle")}</span>
             </div>
           </div>
           <nav class="panel-nav" aria-label="${t("features")}">
@@ -52,10 +51,11 @@ export function renderPanelShell(context: PanelShellContext): string {
             </div>
             <button data-action="close" class="icon-button">${t("close")}</button>
           </div>
-          <div class="panel-content">
+          <div class="panel-content" data-panel-tab="${activeTab}">
             ${tabBody}
           </div>
         </section>
+        <div class="panel-resize-handle" data-panel-resize aria-hidden="true"></div>
       </div>
     `;
 }

@@ -218,7 +218,6 @@ button:hover {
   cursor: pointer;
 }
 
-.theme-option.selected,
 .theme-option:has(input:checked) {
   border-color: var(--dl-primary);
   background: var(--dl-primarySoft);

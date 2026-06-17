@@ -59,7 +59,7 @@ export function renderSettingsTabView({ settings, t }: SettingsTabContext): stri
 function panelThemeOption(theme: UiTheme, label: string, current: UiTheme): string {
   const tokens = PANEL_THEMES[theme];
   return `
-      <label class="theme-option ${theme === current ? "selected" : ""}">
+      <label class="theme-option">
         <input type="radio" name="uiTheme" value="${theme}" ${theme === current ? "checked" : ""} />
         <span class="theme-swatch" style="--swatch-bg:${tokens.bg};--swatch-surface:${tokens.surface};--swatch-primary:${tokens.primary};--swatch-border:${tokens.border};">
           <i></i><b></b>

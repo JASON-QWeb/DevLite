@@ -2,7 +2,6 @@ import {
   detailRow,
   formatMetadataValue,
   formatNetworkStatus,
-  hasResponseBody,
   networkStatusClass
 } from "../networkDetails";
 import { escapeHtml } from "../utils";
@@ -33,35 +32,41 @@ export function renderNetworkTabView(context: NetworkTabContext): string {
 
   const failed = events.filter((event) => event.severity === "error" || (typeof event.status === "number" && event.status >= 400)).length;
   const slow = events.filter((event) => typeof event.duration === "number" && event.duration >= slowThreshold).length;
-  const responseCount = events.filter(hasResponseBody).length;
 
   return `
-      <div class="toolbar network-toolbar">
-        <button data-action="copy-all-responses" ${responseCount === 0 ? "disabled" : ""}>${t("copyAllResponses")}</button>
-      </div>
-      <div class="network-summary">
-        <div><strong>${events.length}</strong><span>${t("latestRequests")}</span></div>
-        <div><strong>${failed}</strong><span>${t("failed")}</span></div>
-        <div><strong>${slow}</strong><span>${t("slow")}</span></div>
-      </div>
-      <div class="network-workspace">
-        <div class="network-list" role="list">
-          ${events.map((event) => renderNetworkListItem(event, selected?.id === event.id, context)).join("")}
+      <div class="network-panel">
+        <div class="toolbar network-toolbar">
+          <button data-action="copy-selected-network" ${selected ? "" : "disabled"}>${t("copySelectedRequest")}</button>
         </div>
-        <section class="network-detail">
-          ${selected ? renderNetworkDetail(selected, context) : `<div class="empty compact">${t("selectRequest")}</div>`}
-        </section>
+        <div class="network-summary">
+          <div><strong>${events.length}</strong><span>${t("latestRequests")}</span></div>
+          <div><strong>${failed}</strong><span>${t("failed")}</span></div>
+          <div><strong>${slow}</strong><span>${t("slow")}</span></div>
+        </div>
+        <div class="network-workspace">
+          <div class="network-list" role="list">
+            ${events.map((event) => renderNetworkListItem(event, selected?.id === event.id, context)).join("")}
+          </div>
+          <section class="network-detail">
+            ${selected ? renderNetworkDetail(selected, context) : `<div class="empty compact">${t("selectRequest")}</div>`}
+          </section>
+        </div>
       </div>
     `;
 }
 
 function renderNetworkListItem(event: LiveDiagnosticEvent, selected: boolean, context: NetworkTabContext): string {
   const statusClass = networkStatusClass(event);
+  const status = typeof event.status === "number" ? String(event.status) : event.severity;
+  const duration = typeof event.duration === "number" ? `${event.duration}ms` : "-";
   return `
-      <button type="button" class="network-row ${selected ? "selected" : ""}" data-network-id="${escapeHtml(event.id)}" role="listitem">
-        <span class="network-method">${escapeHtml(event.method || "GET")}</span>
+      <button type="button" class="network-row ${selected ? "selected" : ""}" data-network-id="${escapeHtml(event.id)}" role="listitem" aria-pressed="${selected}">
+        <span class="network-method-stack">
+          <span class="network-method">${escapeHtml(event.method || "GET")}</span>
+          <span class="network-duration">${escapeHtml(duration)}</span>
+        </span>
         <span class="network-url">${escapeHtml(context.formatUrl(event.url || ""))}</span>
-        <span class="network-status ${statusClass}">${escapeHtml(formatNetworkStatus(event))}</span>
+        <span class="network-status ${statusClass}">${escapeHtml(status)}</span>
         <span class="network-hint">${escapeHtml(context.summarizeNetworkData(event))}</span>
       </button>
     `;
@@ -95,10 +100,12 @@ function renderNetworkDetailBody(event: LiveDiagnosticEvent, context: NetworkTab
     return context.renderPayloadPanel(event.responseBody, context.t("responseAutoCollecting"));
   }
   if (context.detailTab === "request") {
+    const requestHeaders = formatMetadataValue(event.metadata?.requestHeaders);
     return `
         <div class="detail-grid">
           ${detailRow("Method", event.method || "GET")}
           ${detailRow("URL", event.url || "")}
+          ${detailRow("Request headers", requestHeaders || context.t("none"))}
           ${detailRow("Request body", event.requestBody || context.t("none"))}
         </div>
       `;

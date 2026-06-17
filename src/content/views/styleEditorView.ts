@@ -36,7 +36,7 @@ export function renderStyleEditorView({ element, change, canEditText, t }: Style
   return `
       <div class="style-editor-head">
         <strong>${escapeHtml(change.elementLabel)}</strong>
-        <button type="button" data-style-action="close" class="icon-button">${t("close")}</button>
+        <button type="button" data-style-action="back-panel" class="icon-button">${t("backToPanel")}</button>
       </div>
       <div class="rows">${basicRows}</div>
       <details class="style-editor-details">

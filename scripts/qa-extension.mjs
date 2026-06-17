@@ -11,6 +11,7 @@ const distDir = join(root, "dist");
 const demoDir = join(root, "demo/devlite-qa");
 const artifactsDir = "/tmp/devlite-qa";
 const chromePath = findChromeExecutable();
+const replacementImagePath = join(artifactsDir, "replacement-image.svg");
 
 class CdpSession {
   static async fromVersion(port) {
@@ -31,16 +32,22 @@ class CdpSession {
     this.ws = ws;
     this.nextId = 1;
     this.pending = new Map();
+    this.eventWaiters = new Map();
     ws.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
-      if (!message.id) return;
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
-      } else {
-        pending.resolve(message.result);
+      if (message.id) {
+        const pending = this.pending.get(message.id);
+        if (!pending) return;
+        this.pending.delete(message.id);
+        if (message.error) {
+          pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
+        } else {
+          pending.resolve(message.result);
+        }
+        return;
+      }
+      if (message.method) {
+        this.resolveEventWaiters(message.method, message.params ?? {});
       }
     });
   }
@@ -59,6 +66,40 @@ class CdpSession {
     return response.targetId;
   }
 
+  waitForEvent(method, predicate = () => true, timeout = 8000) {
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        predicate,
+        resolve,
+        timer: setTimeout(() => {
+          const waiters = this.eventWaiters.get(method) ?? [];
+          this.eventWaiters.set(
+            method,
+            waiters.filter((item) => item !== waiter)
+          );
+          reject(new Error(`Timed out waiting for CDP event ${method}`));
+        }, timeout)
+      };
+      const waiters = this.eventWaiters.get(method) ?? [];
+      waiters.push(waiter);
+      this.eventWaiters.set(method, waiters);
+    });
+  }
+
+  resolveEventWaiters(method, params) {
+    const waiters = this.eventWaiters.get(method) ?? [];
+    const remaining = [];
+    for (const waiter of waiters) {
+      if (waiter.predicate(params)) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(params);
+      } else {
+        remaining.push(waiter);
+      }
+    }
+    this.eventWaiters.set(method, remaining);
+  }
+
   close() {
     this.ws.close();
     return Promise.resolve();
@@ -74,6 +115,15 @@ if (!existsSync(join(distDir, "manifest.json"))) {
 }
 
 await mkdir(artifactsDir, { recursive: true });
+await writeFile(
+  replacementImagePath,
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400">
+  <rect width="640" height="400" fill="#ffe7d1"/>
+  <path d="M84 308c70-104 154-156 252-156s170 52 220 156" fill="#d97757"/>
+  <circle cx="320" cy="142" r="76" fill="#b3261e"/>
+  <text x="320" y="350" text-anchor="middle" fill="#141413" font-family="Arial, sans-serif" font-size="30" font-weight="700">Replaced by QA</text>
+</svg>`
+);
 
 const demoPort = await freePort();
 const cdpPort = await freePort();
@@ -130,6 +180,7 @@ try {
   page = await CdpSession.connect(target.webSocketDebuggerUrl);
   await page.send("Runtime.enable");
   await page.send("Page.enable");
+  await page.send("DOM.enable");
   await waitForEval(page, "document.readyState === 'complete'", "demo page loaded");
 
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-dock')", "DevLite launcher exists");
@@ -147,15 +198,16 @@ try {
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('性能诊断')", "Chinese locale restored");
   record("content panel switches back to Chinese", true);
 
-  await shadowClick(page, 'button[data-action="options"]');
-  const optionsTarget = await waitForTarget(cdpPort, (item) => /chrome-extension:\/\/[^/]+\/options\.html/.test(item.url), "options page target");
-  record("config icon opens options page", true, optionsTarget.url);
+  await shadowClick(page, 'button[data-action="show-settings"]');
+  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('诊断配置')", "settings tab visible");
+  record("content panel settings tab opens", true);
 
   await evaluate(page, `
     (() => {
-      for (const id of ["fetch-ok", "fetch-error", "fetch-slow", "fetch-large", "xhr-ok"]) {
+      for (const id of ["fetch-ok", "fetch-post", "fetch-error", "fetch-slow", "fetch-large", "xhr-ok"]) {
         document.getElementById(id).click();
       }
+      setTimeout(() => document.getElementById("console-error").click(), 10);
       setTimeout(() => document.getElementById("throw-error").click(), 20);
       setTimeout(() => document.getElementById("reject-promise").click(), 40);
       setTimeout(() => document.getElementById("long-task").click(), 80);
@@ -165,28 +217,31 @@ try {
   await delay(3000);
 
   await shadowClick(page, 'button[data-tab="network"]');
-  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelectorAll('.network-row').length >= 5", "network rows captured");
+  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelectorAll('.network-row').length >= 6", "network rows captured");
   record("network panel captures fetch and XHR rows", true);
 
-  await shadowClick(page, 'button[data-action="enable-response-body"]');
-  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('重新触发请求')", "response body enabled toast");
   await evaluate(page, `document.getElementById("fetch-ok").click(); true;`);
   await delay(800);
   await shadowClick(page, 'button[data-tab="network"]');
-  await shadowClick(page, ".network-row");
+  await shadowClickText(page, ".network-row", "/api/profile");
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Avery Stone')", "response preview contains JSON body");
   await shadowClick(page, 'button[data-network-detail="response"]');
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Avery Stone')", "response tab contains body");
+  await shadowClick(page, 'button[data-action="copy-selected-network"]');
+  const copiedNetwork = readClipboard();
+  assert(copiedNetwork.includes("GET") && copiedNetwork.includes("/api/profile") && copiedNetwork.includes("Avery Stone"), "selected GET request copies response JSON");
+  await shadowClickText(page, ".network-row", "/api/save");
   await shadowClick(page, 'button[data-network-detail="request"]');
-  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Request body')", "request tab visible");
+  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Draft QA record')", "request tab contains POST body");
   await shadowClick(page, 'button[data-network-detail="headers"]');
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Response headers')", "headers tab visible");
-  record("network detail tabs preview response request headers work", true);
+  record("network detail tabs and selected request copy work", true);
 
   await shadowClick(page, 'button[data-tab="diagnostics"]');
+  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Demo console.error')", "console.error visible");
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Demo JS error')", "JS error visible");
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Demo unhandled rejection')", "promise rejection visible");
-  record("diagnostics panel shows JS and Promise failures", true);
+  record("diagnostics panel shows console JS and Promise failures", true);
 
   await shadowClick(page, 'button[data-tab="performance"]');
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('DOMContentLoaded')", "performance metrics visible");
@@ -231,14 +286,31 @@ try {
   await shadowClick(page, ".devlite-launcher");
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel reopens after inline edit");
   await shadowClick(page, 'button[data-tab="element"]');
+  await shadowClick(page, 'button[data-action="quick-select"]');
+  await clickCenter(page, '[data-testid="replaceable-image"]');
+  await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.style-editor-popover:not([hidden])')", "style editor appears for image");
+  await page.send("Page.setInterceptFileChooserDialog", { enabled: true });
+  const fileChooser = page.waitForEvent("Page.fileChooserOpened", (params) => Boolean(params.backendNodeId), 5000);
+  await shadowClick(page, '[data-style-action="replace-image"]');
+  const fileChooserEvent = await fileChooser;
+  await page.send("DOM.setFileInputFiles", { files: [replacementImagePath], backendNodeId: fileChooserEvent.backendNodeId });
+  await page.send("Page.setInterceptFileChooserDialog", { enabled: false });
+  await waitForEval(page, "document.querySelector('[data-testid=\"replaceable-image\"]')?.src.startsWith('data:image/svg+xml')", "image source replaced");
+  record("image replacement applies selected file", true);
+
+  await shadowClick(page, ".devlite-launcher");
+  await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel reopens after image replacement");
+  await shadowClick(page, 'button[data-tab="element"]');
   await shadowClick(page, 'button[data-action="copy-prompt"]');
   await delay(300);
   const editPrompt = readClipboard();
-  assert(editPrompt.includes("changes"), "edit prompt contains changes");
+  const parsedPrompt = JSON.parse(editPrompt);
+  assert(Array.isArray(parsedPrompt.changes) && parsedPrompt.changes.length >= 3, "edit prompt contains multiple selected changes");
   assert(editPrompt.includes("Updated by DevLite QA prompt export"), "edit prompt contains text change");
   assert(editPrompt.includes("font-size") || editPrompt.includes("color"), "edit prompt contains style change");
+  assert(editPrompt.includes("inline image data") || editPrompt.includes("Replaced by QA") || editPrompt.includes("替换图片"), "edit prompt contains image replacement");
   await writeFile(join(artifactsDir, "edit-prompt.json"), editPrompt);
-  record("full edit prompt copies usable structured JSON", true, join(artifactsDir, "edit-prompt.json"));
+  record("full edit prompt copies multiple modifications as structured JSON", true, join(artifactsDir, "edit-prompt.json"));
 
   const popupTargetId = await browser.createTarget(`chrome-extension://${extensionId}/popup.html`);
   const popupTarget = await waitForTarget(cdpPort, (item) => item.id === popupTargetId, "popup target");
@@ -267,7 +339,7 @@ try {
   const promptExport = await evaluate(extensionPage, `
     new Promise((resolve) => chrome.runtime.sendMessage({ type: "generate-export", format: "prompt" }, resolve))
   `);
-  assert(promptExport?.ok && promptExport.text.includes("changes") && promptExport.text.includes("Updated by DevLite QA prompt export"), "repair prompt export succeeds");
+  assert(promptExport?.ok && promptExport.text.includes("changes") && promptExport.text.includes("Updated by DevLite QA prompt export") && promptExport.text.includes("inline image data"), "repair prompt export succeeds");
   record("popup/runtime exports markdown json and repair prompt", true);
 
   const stopResponse = await evaluate(extensionPage, `
@@ -322,6 +394,24 @@ async function shadowClick(session, selector) {
     `
   );
   assert(ok, `shadow click failed: ${selector}`);
+  await delay(120);
+}
+
+async function shadowClickText(session, selector, text) {
+  const ok = await evaluate(
+    session,
+    `
+      (() => {
+        const root = document.querySelector("#devlite-overlay-root")?.shadowRoot;
+        const nodes = Array.from(root?.querySelectorAll(${JSON.stringify(selector)}) ?? []);
+        const node = nodes.find((item) => item.textContent.includes(${JSON.stringify(text)}));
+        if (!node) return false;
+        node.click();
+        return true;
+      })()
+    `
+  );
+  assert(ok, `shadow text click failed: ${selector} includes ${text}`);
   await delay(120);
 }
 

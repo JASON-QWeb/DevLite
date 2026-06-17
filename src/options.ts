@@ -26,7 +26,7 @@ function render(): void {
     <main class="page">
       <header class="hero">
         <div class="hero-brand">
-          <img class="hero-logo" src="/icons/devlite-logo.png" alt="" />
+          <img class="hero-logo" src="/icons/devlite-ui-256.png" alt="" />
           <div>
             <h1>${t("optionsTitle")}</h1>
             <p>${t("optionsSubtitle")}</p>
@@ -94,7 +94,7 @@ function render(): void {
 function themeOption(theme: DiagnosticSettings["uiTheme"], label: string, current: DiagnosticSettings["uiTheme"]): string {
   const tokens = UI_THEMES[theme].tokens;
   return `
-    <label class="theme-option ${theme === current ? "selected" : ""}">
+    <label class="theme-option">
       <input type="radio" name="uiTheme" value="${theme}" ${theme === current ? "checked" : ""} />
       <span class="theme-swatch" style="--swatch-bg:${tokens.bg};--swatch-surface:${tokens.surface};--swatch-primary:${tokens.primary};--swatch-border:${tokens.border};">
         <i></i><b></b>
@@ -108,6 +108,29 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-action]").forEach((node) => {
     node.addEventListener("click", () => void handleAction(node.dataset.action ?? ""));
   });
+  document.querySelectorAll<HTMLInputElement>('input[name="uiTheme"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) void handleThemeChange(input.value);
+    });
+  });
+}
+
+async function handleThemeChange(value: string): Promise<void> {
+  const previous = settings;
+  const next = {
+    ...collectForm(),
+    uiTheme: normalizeUiTheme(value)
+  };
+  settings = next;
+  applyTheme(settings.uiTheme);
+  const response = await sendMessage({ type: "save-settings", settings: next });
+  if (response?.ok) {
+    settings = response.settings;
+  } else {
+    settings = previous;
+    showToast(response?.error || uiText(settings.locale, "saveFailed"));
+  }
+  render();
 }
 
 async function handleAction(action: string): Promise<void> {

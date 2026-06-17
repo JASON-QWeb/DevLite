@@ -1,6 +1,6 @@
 node_modules/
 dist/
-demo/
+demo
 easybug.zip
 .DS_Store
 *.log

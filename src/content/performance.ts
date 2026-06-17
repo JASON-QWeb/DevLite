@@ -1,5 +1,6 @@
 import { formatBytes } from "./utils";
 import type { LiveDiagnosticEvent, PerformanceInsights, PerformanceIssue, UiLocale } from "./types";
+import type { PageContext } from "../shared/types";
 
 type PerformanceText = {
   domReadyTime: string;
@@ -12,7 +13,7 @@ type PerformanceText = {
 type PerformanceContext = {
   locale: UiLocale;
   slowThreshold: number;
-  pageContext: Record<string, unknown>;
+  pageContext: PageContext;
   allEvents: LiveDiagnosticEvent[];
   networkEvents: LiveDiagnosticEvent[];
   text: PerformanceText;
@@ -128,8 +129,8 @@ export function buildPerformancePrompt(context: PerformanceContext): string {
     {
       task:
         context.locale === "en"
-          ? "Use this DevLite performance diagnosis to locate and fix lag, slow loading, or large resource issues on the current page."
-          : "请根据 DevLite 性能诊断结果定位并修复当前页面的卡顿、慢加载或大资源问题。",
+          ? "Use this performance diagnosis to locate and fix lag, slow loading, or large resource issues on the current page URL in the current project."
+          : "请根据以下性能诊断结果，定位并修复当前项目中当前页面 URL 对应页面的卡顿、慢加载或大资源问题。",
       page: context.pageContext,
       metrics: insights.metrics,
       issues: insights.issues,

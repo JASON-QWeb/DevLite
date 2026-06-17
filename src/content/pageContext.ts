@@ -1,6 +1,7 @@
 import { truncate } from "./utils";
+import type { PageContext } from "../shared/types";
 
-export function getPageContext(): Record<string, unknown> {
+export function getPageContext(): PageContext {
   return {
     url: location.href,
     title: document.title,

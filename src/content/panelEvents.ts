@@ -2,14 +2,16 @@ import type { DiagnosticFilter, NetworkDetailTab, OverlayTab } from "./types";
 
 type PanelEventsOptions = {
   panel: HTMLElement | null;
-  onAction: (action: string) => Promise<void> | void;
+  onAction: (action: string, source?: HTMLElement) => Promise<void> | void;
   onDiagnosticFilter: (filter: DiagnosticFilter) => void;
   onNetworkDetail: (tab: NetworkDetailTab) => void;
   onNetworkEvent: (id: string | null) => void;
   onStartDrag: (event: PointerEvent) => void;
+  onStartResize: (event: PointerEvent) => void;
   onStyleInput: (prop: string, value: string) => void;
   onTab: (tab: OverlayTab) => void;
   onTextInput: (value: string) => void;
+  onThemeChange: (theme: string) => void;
 };
 
 export function bindPanelEvents(options: PanelEventsOptions): void {
@@ -18,6 +20,8 @@ export function bindPanelEvents(options: PanelEventsOptions): void {
   panel.querySelectorAll<HTMLElement>(".panel-header, .panel-sidebar").forEach((dragArea) => {
     dragArea.addEventListener("pointerdown", options.onStartDrag);
   });
+
+  panel.querySelector<HTMLElement>("[data-panel-resize]")?.addEventListener("pointerdown", options.onStartResize);
 
   panel.querySelectorAll<HTMLButtonElement>("button[data-tab]").forEach((button) => {
     button.addEventListener("click", (event) => {
@@ -70,11 +74,17 @@ export function bindPanelEvents(options: PanelEventsOptions): void {
     textarea.addEventListener("change", () => options.onTextInput(textarea.value));
   });
 
+  panel.querySelectorAll<HTMLInputElement>('input[name="uiTheme"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) options.onThemeChange(input.value);
+    });
+  });
+
   panel.querySelectorAll<HTMLButtonElement>("button[data-action]").forEach((button) => {
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
-      await options.onAction(button.dataset.action ?? "");
+      await options.onAction(button.dataset.action ?? "", button);
     });
   });
 }

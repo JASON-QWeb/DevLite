@@ -40,6 +40,9 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
         metadata: getPerformanceSnapshot()
       });
     }
+    if (data.type === "settings") {
+      settings = { ...settings, ...(data.settings ?? {}) };
+    }
     if (data.type === "stop") {
       active = false;
       bufferEarlyEvents = false;
@@ -99,7 +102,8 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     const request = input instanceof Request ? input : null;
     const url = request?.url ?? String(input);
     const method = init?.method ?? request?.method ?? "GET";
-    const requestBody = summarizeBody(init?.body);
+    const requestBody = await summarizeFetchRequestBody(request, init);
+    const requestHeaders = collectFetchRequestHeaders(request, init);
 
     try {
       const response = await originalFetch(input, init);
@@ -118,6 +122,7 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
           ok: response.ok,
           redirected: response.redirected,
           contentType: response.headers.get("content-type") ?? "",
+          requestHeaders,
           responseHeaders: headersToObject(response.headers)
         }
       };
@@ -149,6 +154,7 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
         requestBody,
         metadata: {
           source: "fetch",
+          requestHeaders,
           error: serialize(error)
         }
       });
@@ -184,7 +190,7 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     const finalize = (kind: "loadend" | "error" | "timeout" | "abort") => {
       const duration = Math.round(performance.now() - meta.startedAt);
       const status = xhr.status || undefined;
-      const responseText = settings.collectResponseBody && typeof xhr.responseText === "string" ? truncate(xhr.responseText, settings.maxResponseLength) : undefined;
+      const responseText = settings.collectResponseBody ? summarizeXhrResponse(xhr) : undefined;
       emit({
         type: "network",
         severity: kind !== "loadend" || (status && status >= 400) ? "error" : duration >= settings.slowRequestThreshold ? "warning" : "info",
@@ -272,6 +278,50 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
       return `[ArrayBuffer ${body.byteLength} bytes]`;
     }
     return `[${Object.prototype.toString.call(body)}]`;
+  }
+
+  async function summarizeFetchRequestBody(request: Request | null, init?: RequestInit): Promise<string | undefined> {
+    const initBody = summarizeBody(init?.body);
+    if (initBody || !request) return initBody;
+    if (request.method === "GET" || request.method === "HEAD") return undefined;
+    try {
+      const body = await request.clone().text();
+      return body ? truncate(body, settings.maxResponseLength) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function summarizeXhrResponse(xhr: XMLHttpRequest): string | undefined {
+    try {
+      if (xhr.responseType && xhr.responseType !== "text") {
+        const response = xhr.response;
+        if (typeof response === "string") return truncate(response, settings.maxResponseLength);
+        if (response instanceof Blob) return `[Blob ${response.type || "unknown"} ${response.size} bytes]`;
+        if (response instanceof ArrayBuffer) return `[ArrayBuffer ${response.byteLength} bytes]`;
+        if (response !== undefined && response !== null) return truncate(JSON.stringify(response), settings.maxResponseLength);
+        return undefined;
+      }
+      return typeof xhr.responseText === "string" ? truncate(xhr.responseText, settings.maxResponseLength) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function collectFetchRequestHeaders(request: Request | null, init?: RequestInit): Record<string, string> {
+    return {
+      ...(request ? headersToObject(request.headers) : {}),
+      ...headersInputToObject(init?.headers)
+    };
+  }
+
+  function headersInputToObject(headers?: HeadersInit): Record<string, string> {
+    if (!headers) return {};
+    try {
+      return headersToObject(new Headers(headers));
+    } catch {
+      return {};
+    }
   }
 
   function stringifyReason(reason: unknown): string {

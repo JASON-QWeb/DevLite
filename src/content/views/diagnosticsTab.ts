@@ -55,7 +55,7 @@ function renderDiagnosticArchive(events: LiveDiagnosticEvent[], context: Diagnos
 function renderDiagnosticGroup(group: DiagnosticGroup, index: number, context: DiagnosticsTabContext): string {
   const source = group.source || group.events.find((event) => event.source || event.url)?.source || group.events.find((event) => event.source || event.url)?.url || "";
   return `
-      <details class="issue diagnostic-group ${group.severity}" ${index < 4 ? "open" : ""}>
+      <details class="issue diagnostic-group ${group.severity}" data-state-key="diagnostic:${escapeHtml(group.key)}" ${index < 4 ? "open" : ""}>
         <summary class="issue-summary">
           <span>
             <strong>${escapeHtml(context.eventTypeLabel(group.events[0]))}</strong>
@@ -91,14 +91,19 @@ function renderConsoleLogList(events: LiveDiagnosticEvent[], context: Diagnostic
           .slice(0, 60)
           .map(
             (event) => `
-              <article class="issue console-log">
-                <div class="issue-head">
-                  <strong>console.log</strong>
-                  <span>${context.formatTime(event.timestamp)}</span>
+              <details class="issue console-log" data-state-key="console-log:${escapeHtml(event.id)}">
+                <summary class="console-log-summary">
+                  <span>
+                    <strong>console.log</strong>
+                    <small>${escapeHtml(truncate(event.message, 140))}</small>
+                  </span>
+                  <em>${context.formatTime(event.timestamp)}</em>
+                </summary>
+                <div class="console-log-body">
+                  <p>${escapeHtml(event.message)}</p>
+                  ${event.stack ? `<pre>${escapeHtml(truncate(event.stack, 360))}</pre>` : ""}
                 </div>
-                <p>${escapeHtml(event.message)}</p>
-                ${event.stack ? `<pre>${escapeHtml(truncate(event.stack, 360))}</pre>` : ""}
-              </article>
+              </details>
             `
           )
           .join("")}

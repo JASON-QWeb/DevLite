@@ -1,6 +1,6 @@
 import { copyText } from "./clipboard";
 import { editableTextValue } from "./editableText";
-import { buildAllErrorsText, buildAllResponsesText } from "./exportText";
+import { buildAllErrorsText, buildNetworkEventText } from "./exportText";
 import type { ContentTextKey } from "./i18n";
 import { DEFAULT_PANEL_SETTINGS } from "./panelConfig";
 import { collectPanelSettingsForm } from "./settings";
@@ -15,10 +15,10 @@ type PanelActionContext = {
   ensureResponseBodyCapture: (showToast?: boolean) => Promise<void>;
   eventTypeLabel: (event: LiveDiagnosticEvent) => string;
   getCurrentChange: () => StyleChange | null;
-  getNetworkEvents: () => LiveDiagnosticEvent[];
   getPanel: () => ParentNode | null;
   getPendingStyleSync: () => Promise<any> | null;
   getProblemEvents: () => LiveDiagnosticEvent[];
+  getSelectedNetworkEvent: () => LiveDiagnosticEvent | null;
   getSelectedElement: () => HTMLElement | null;
   getSettings: () => Required<PanelSettings>;
   renderPanel: () => void;
@@ -129,14 +129,14 @@ export async function handlePanelAction(action: string, context: PanelActionCont
     return;
   }
 
-  if (action === "copy-all-responses") {
-    const text = buildAllResponsesText(context.getNetworkEvents());
-    if (!text) {
-      toast(t("noResponsesToCopy"));
+  if (action === "copy-selected-network") {
+    const selectedNetworkEvent = context.getSelectedNetworkEvent();
+    if (!selectedNetworkEvent) {
+      toast(t("noRequestToCopy"));
       return;
     }
-    await copyText(text);
-    toast(t("responsesCopied"));
+    await copyText(buildNetworkEventText(selectedNetworkEvent));
+    toast(t("requestCopied"));
     return;
   }
 

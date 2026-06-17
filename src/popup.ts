@@ -55,7 +55,7 @@ function render(): void {
     <main class="app">
       <header class="topbar">
         <div class="brand">
-          <img class="brand-logo" src="/icons/devlite-logo.png" alt="" />
+          <img class="brand-logo" src="/icons/devlite-ui-256.png" alt="" />
           <div>
             <h1>DevLite</h1>
             <span>${t("subtitle")}</span>
@@ -185,7 +185,7 @@ function renderSettings(settings: DiagnosticSettings, t: ReturnType<typeof creat
 function themeOption(theme: DiagnosticSettings["uiTheme"], label: string, current: DiagnosticSettings["uiTheme"]): string {
   const tokens = UI_THEMES[theme].tokens;
   return `
-    <label class="theme-option ${theme === current ? "selected" : ""}">
+    <label class="theme-option">
       <input type="radio" name="uiTheme" value="${theme}" ${theme === current ? "checked" : ""} />
       <span class="theme-swatch" style="--swatch-bg:${tokens.bg};--swatch-surface:${tokens.surface};--swatch-primary:${tokens.primary};--swatch-border:${tokens.border};">
         <i></i><b></b>
@@ -241,6 +241,29 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-export]").forEach((node) => {
     node.addEventListener("click", () => void copyExport(node.dataset.export as ExportFormat));
   });
+  document.querySelectorAll<HTMLInputElement>('input[name="uiTheme"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) void handleThemeChange(input.value);
+    });
+  });
+}
+
+async function handleThemeChange(value: string): Promise<void> {
+  const current = state.settings ?? DEFAULT_SETTINGS;
+  const next = {
+    ...collectSettingsForm(),
+    uiTheme: normalizeUiTheme(value)
+  };
+  state.settings = next;
+  applyTheme(next.uiTheme);
+  const response = await sendMessage({ type: "save-settings", settings: next });
+  if (response?.ok) {
+    state.settings = response.settings;
+  } else {
+    state.settings = current;
+    showToast(response?.error || uiText(current.locale, "saveFailed"));
+  }
+  render();
 }
 
 async function handleAction(action: string): Promise<void> {

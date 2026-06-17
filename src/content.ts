@@ -37,7 +37,7 @@ import {
   getPerformanceInsights as getPerformanceInsightsData
 } from "./content/performance";
 import { PerformanceMonitor } from "./content/performanceMonitor";
-import { mergePanelSettings, normalizeLocale, normalizeTheme } from "./content/settings";
+import { collectPanelSettingsForm, mergePanelSettings, normalizeLocale, normalizeTheme } from "./content/settings";
 import { bindStyleEditorEvents } from "./content/styleEditorEvents";
 import { StyleEditorPositionController } from "./content/styleEditorPosition";
 import {
@@ -53,6 +53,7 @@ import { renderPerformanceTabView } from "./content/views/performanceTab";
 import { renderSettingsTabView } from "./content/views/settingsTab";
 import { renderStyleEditorView } from "./content/views/styleEditorView";
 import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
+import { generateRepairPromptForChanges } from "./shared/exporters";
 import type {
   DiagnosticFilter,
   DiagnosticGroup,
@@ -64,6 +65,18 @@ import type {
   StyleChange,
   UiLocale
 } from "./content/types";
+
+type PanelUiState = {
+  details: Record<string, boolean>;
+  scroll: Array<{
+    selector: string;
+    index: number;
+    left: number;
+    top: number;
+  }>;
+};
+
+const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-detail", ".payload-preview", ".payload-raw", "pre"];
 
 (() => {
   const isolatedWindow = window as any;
@@ -86,6 +99,8 @@ import type {
   let panel: HTMLDivElement | null = null;
   let panelOpen = false;
   let activePanelTab: OverlayTab = "element";
+  let renderedPanelTab: OverlayTab | null = null;
+  let panelRenderVersion = 0;
   let networkDetailTab: NetworkDetailTab = "preview";
   let diagnosticFilter: DiagnosticFilter = "issues";
   let selectedNetworkEventId: string | null = null;
@@ -385,6 +400,7 @@ import type {
   function hidePanel(): void {
     if (!panel) return;
     panelOpen = false;
+    renderedPanelTab = null;
     stopPanelRefresh();
     panel.hidden = true;
     panel.innerHTML = "";
@@ -433,6 +449,8 @@ import type {
     panel.hidden = false;
     panelPositionController.apply(panel);
 
+    const renderVersion = ++panelRenderVersion;
+    const uiState = renderedPanelTab === activePanelTab ? capturePanelUiState(panel) : null;
     const tabBody = renderActivePanelTab();
 
     panel.innerHTML = renderPanelShell({
@@ -451,37 +469,7 @@ import type {
     });
     bindPanelEvents({
       panel,
-      onAction: (action) =>
-        handlePanelAction(action, {
-          applyStyle,
-          buildPerformancePrompt,
-          closePanel,
-          ensureCapture,
-          ensureResponseBodyCapture,
-          eventTypeLabel,
-          getCurrentChange: () => currentChange,
-          getNetworkEvents,
-          getPanel: () => panel,
-          getPendingStyleSync: () => styleChangeSyncPromise,
-          getProblemEvents,
-          getSelectedElement: () => selectedElement,
-          getSettings: mergedPanelSettings,
-          renderPanel,
-          savePanelSettings,
-          sendRuntime,
-          showSettings: () => {
-            activePanelTab = "settings";
-            renderPanel();
-          },
-          startInlineTextEdit,
-          startInspector,
-          stopInlineTextEdit,
-          stopInspector,
-          t,
-          toast,
-          toggleLocale,
-          undoCurrentChange
-        }),
+      onAction: handlePanelScopedAction,
       onDiagnosticFilter: (filter) => {
         diagnosticFilter = filter;
         renderPanel();
@@ -495,14 +483,69 @@ import type {
         renderPanel();
       },
       onStartDrag: (event) => panelPositionController.startDrag(panel, event),
+      onStartResize: (event) => panelPositionController.startResize(panel, event),
       onStyleInput: applyStyle,
       onTab: (tab) => {
         activePanelTab = tab;
         renderPanel();
       },
-      onTextInput: applyTextContent
+      onTextInput: applyTextContent,
+      onThemeChange: (theme) => void applyPanelThemeSelection(theme)
     });
+    renderedPanelTab = activePanelTab;
     panelPositionController.apply(panel);
+    if (uiState) {
+      restorePanelUiState(panel, uiState);
+      window.requestAnimationFrame(() => {
+        if (renderVersion === panelRenderVersion) restorePanelUiState(panel, uiState);
+      });
+    }
+  }
+
+  async function handlePanelScopedAction(action: string, source?: HTMLElement): Promise<void> {
+    if (action === "copy-selected-style-prompt") {
+      await copySelectedStylePrompt();
+      return;
+    }
+    if (action === "copy-record-prompt") {
+      await copyStylePromptById(source?.dataset.changeId ?? "");
+      return;
+    }
+    if (action === "undo-style-record") {
+      await undoStyleChangeById(source?.dataset.changeId ?? "");
+      return;
+    }
+
+    await handlePanelAction(action, {
+      applyStyle,
+      buildPerformancePrompt,
+      closePanel,
+      ensureCapture,
+      ensureResponseBodyCapture,
+      eventTypeLabel,
+      getCurrentChange: () => currentChange,
+      getPanel: () => panel,
+      getPendingStyleSync: () => styleChangeSyncPromise,
+      getProblemEvents,
+      getSelectedNetworkEvent: getSelectedNetworkEventForAction,
+      getSelectedElement: () => selectedElement,
+      getSettings: mergedPanelSettings,
+      renderPanel,
+      savePanelSettings,
+      sendRuntime,
+      showSettings: () => {
+        activePanelTab = "settings";
+        renderPanel();
+      },
+      startInlineTextEdit,
+      startInspector,
+      stopInlineTextEdit,
+      stopInspector,
+      t,
+      toast,
+      toggleLocale,
+      undoCurrentChange
+    });
   }
 
   function renderActivePanelTab(): string {
@@ -532,6 +575,78 @@ import type {
     return getRecordedStyleChanges(sessionSnapshot?.styleChanges, currentChange);
   }
 
+  async function copySelectedStylePrompt(): Promise<void> {
+    const selectedIds = new Set(
+      Array.from(panel?.querySelectorAll<HTMLInputElement>("input[data-style-record-select]:checked") ?? []).map((input) => input.value)
+    );
+    if (selectedIds.size === 0) {
+      toast(t("noSelectedElements"));
+      return;
+    }
+    const selectedChanges = getStyleChangeRecords().filter((change) => selectedIds.has(change.id));
+    if (selectedChanges.length === 0) {
+      toast(t("noSelectedElements"));
+      return;
+    }
+    await copyText(generateRepairPromptForChanges(selectedChanges, uiLocale, getPageContext()));
+    toast(t("selectedPromptCopied"));
+  }
+
+  async function copyStylePromptById(id: string): Promise<void> {
+    const change = getStyleChangeRecords().find((item) => item.id === id);
+    if (!change) {
+      toast(t("noSelectedElements"));
+      return;
+    }
+    await copyText(generateRepairPromptForChanges([change], uiLocale, getPageContext()));
+    toast(t("recordPromptCopied"));
+  }
+
+  async function undoStyleChangeById(id: string): Promise<void> {
+    const change = getStyleChangeRecords().find((item) => item.id === id);
+    if (!change) return;
+    const element = resolveStyleChangeElement(change);
+    if (!element) {
+      toast(t("elementRestoreFailed"));
+      return;
+    }
+
+    stopInlineTextEdit();
+    undoStyleChange(change, element);
+    await sendRuntime({ type: "style-change-delete", id: change.id });
+    removeLocalStyleChange(change.id);
+    if (currentChange?.id === change.id || selectedElement === element) {
+      currentChange = null;
+      selectedElement = null;
+      hideHighlighter();
+      hideStyleEditor();
+    }
+    renderPanel();
+    toast(t("elementRestored"));
+  }
+
+  function resolveStyleChangeElement(change: StyleChange): HTMLElement | null {
+    if (currentChange?.id === change.id && selectedElement) return selectedElement;
+    try {
+      const element = document.querySelector(change.selector);
+      return element instanceof HTMLElement ? element : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function removeLocalStyleChange(id: string): void {
+    if (sessionSnapshot) {
+      sessionSnapshot = {
+        ...sessionSnapshot,
+        styleChanges: (sessionSnapshot.styleChanges ?? []).filter((change) => change.id !== id)
+      };
+    }
+    if (currentChange?.id === id) {
+      currentChange = null;
+    }
+  }
+
   function renderStyleEditor(): void {
     ensureOverlay();
     if (!styleEditor || !selectedElement || !currentChange) return;
@@ -552,9 +667,10 @@ import type {
   }
 
   async function handleStyleEditorAction(action: string): Promise<void> {
-    if (action === "close") {
+    if (action === "back-panel") {
       hideStyleEditor();
       hideHighlighter();
+      openPanel("element");
       return;
     }
     if (action === "copy-element") {
@@ -658,9 +774,27 @@ import type {
   }
 
   function getSelectedNetworkEvent(events: LiveDiagnosticEvent[]): LiveDiagnosticEvent | null {
-    const next = pickSelectedNetworkEvent(events, selectedNetworkEventId);
+    const selected = pickSelectedNetworkEvent(events, selectedNetworkEventId);
+    const next = selected ? findFreshNetworkEventWithPayload(events, selected) ?? selected : null;
     selectedNetworkEventId = next?.id ?? null;
     return next;
+  }
+
+  function getSelectedNetworkEventForAction(): LiveDiagnosticEvent | null {
+    return getSelectedNetworkEvent(getNetworkEvents().slice(0, 20));
+  }
+
+  function findFreshNetworkEventWithPayload(events: LiveDiagnosticEvent[], selected: LiveDiagnosticEvent): LiveDiagnosticEvent | null {
+    const needsRequestBody = !selected.requestBody;
+    const needsResponseBody = !selected.responseBody;
+    if (!needsRequestBody && !needsResponseBody) return null;
+    return (
+      events.find((event) => {
+        if (event.id === selected.id || event.timestamp <= selected.timestamp) return false;
+        if ((event.method || "GET") !== (selected.method || "GET") || event.url !== selected.url) return false;
+        return (needsRequestBody && !!event.requestBody) || (needsResponseBody && !!event.responseBody);
+      }) ?? null
+    );
   }
 
   function renderPerformanceTab(): string {
@@ -690,10 +824,44 @@ import type {
     sessionSettings = mergePanelSettings(saved.settings ?? { ...currentSettings, locale: nextLocale });
     uiLocale = normalizeLocale(sessionSettings.locale);
     applyOverlayTheme();
-    window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
+    syncInjectedSettings();
     if (panelOpen) renderPanel();
     if (styleEditor && !styleEditor.hidden) renderStyleEditor();
     toast(uiLocale === "en" ? t("switchedEn") : t("switchedZh"));
+  }
+
+  async function applyPanelThemeSelection(theme: string): Promise<void> {
+    const currentSettings = mergedPanelSettings();
+    const nextTheme = normalizeTheme(theme);
+    if (nextTheme === currentSettings.uiTheme) return;
+
+    const nextSettings = {
+      ...collectPanelSettingsForm(panel, currentSettings),
+      uiTheme: nextTheme
+    };
+    sessionSettings = mergePanelSettings(nextSettings);
+    applyOverlayTheme();
+    syncInjectedSettings();
+    if (panelOpen) renderPanel();
+
+    const response = await sendRuntime({ type: "save-settings", settings: nextSettings });
+    if (!response?.ok) {
+      sessionSettings = currentSettings;
+      applyOverlayTheme();
+      syncInjectedSettings();
+      if (panelOpen) renderPanel();
+      toast(response?.error || t("saveFailed"));
+      return;
+    }
+
+    sessionSettings = mergePanelSettings(response.settings ?? nextSettings);
+    uiLocale = normalizeLocale(sessionSettings.locale);
+    applyOverlayTheme();
+    syncInjectedSettings();
+    syncLauncherLabels();
+    if (panelOpen) renderPanel();
+    if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+    toast(t("settingsSaved"));
   }
 
   async function savePanelSettings(next: PanelSettings, successMessage = t("settingsSaved")): Promise<void> {
@@ -705,7 +873,7 @@ import type {
     sessionSettings = response.settings ?? mergePanelSettings(next);
     uiLocale = normalizeLocale(sessionSettings.locale);
     applyOverlayTheme();
-    window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
+    syncInjectedSettings();
     syncLauncherLabels();
     if (panelOpen) renderPanel();
     if (styleEditor && !styleEditor.hidden) renderStyleEditor();
@@ -842,12 +1010,15 @@ import type {
   }
 
   async function ensureResponseBodyCapture(showToast = false): Promise<void> {
-    if (sessionSettings.collectResponseBody) return;
+    if (sessionSettings.collectResponseBody) {
+      syncInjectedSettings();
+      return;
+    }
     const response = await sendRuntime({ type: "enable-tab-response-body" });
     if (response?.ok) {
       sessionSettings = mergePanelSettings(response.settings ?? { ...sessionSettings, collectResponseBody: true });
       applyOverlayTheme();
-      window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
+      syncInjectedSettings();
       if (panelOpen) schedulePanelRender();
       if (showToast) toast(t("responseBodyEnabled"));
       return;
@@ -858,11 +1029,19 @@ import type {
   async function refreshSessionSnapshot(): Promise<void> {
     const response = await sendRuntime({ type: "get-tab-session" });
     if (!response?.ok) return;
-    sessionSettings = mergePanelSettings(response.settings ?? sessionSettings);
+    const previousSettings = sessionSettings;
+    const nextSettings = mergePanelSettings(response.settings ?? sessionSettings);
+    const shouldSyncSettings =
+      captureActive &&
+      (previousSettings.collectResponseBody !== nextSettings.collectResponseBody ||
+        previousSettings.maxResponseLength !== nextSettings.maxResponseLength ||
+        previousSettings.slowRequestThreshold !== nextSettings.slowRequestThreshold);
+    sessionSettings = nextSettings;
     uiLocale = normalizeLocale(sessionSettings.locale);
     applyOverlayTheme();
     sessionSnapshot = response.session ?? null;
     mergeSessionEvents(sessionSnapshot?.events ?? []);
+    if (shouldSyncSettings) syncInjectedSettings();
   }
 
   function closePanel(): void {
@@ -991,6 +1170,47 @@ import type {
     node.textContent = message;
     shadow.appendChild(node);
     window.setTimeout(() => node.remove(), 1800);
+  }
+
+  function syncInjectedSettings(): void {
+    if (!captureActive) return;
+    window.postMessage({ channel: CONTROL_CHANNEL, type: "settings", settings: sessionSettings }, "*");
+  }
+
+  function capturePanelUiState(root: ParentNode | null): PanelUiState {
+    const state: PanelUiState = { details: {}, scroll: [] };
+    if (!root) return state;
+    PANEL_SCROLL_SELECTORS.forEach((selector) => {
+      root.querySelectorAll<HTMLElement>(selector).forEach((element, index) => {
+        if (element.scrollTop === 0 && element.scrollLeft === 0) return;
+        state.scroll.push({
+          selector,
+          index,
+          left: element.scrollLeft,
+          top: element.scrollTop
+        });
+      });
+    });
+    root.querySelectorAll<HTMLDetailsElement>("details[data-state-key]").forEach((details) => {
+      const key = details.dataset.stateKey;
+      if (key) state.details[key] = details.open;
+    });
+    return state;
+  }
+
+  function restorePanelUiState(root: ParentNode | null, state: PanelUiState): void {
+    if (!root) return;
+    state.scroll.forEach((item) => {
+      const element = root.querySelectorAll<HTMLElement>(item.selector).item(item.index);
+      if (!element) return;
+      element.scrollLeft = item.left;
+      element.scrollTop = item.top;
+    });
+    root.querySelectorAll<HTMLDetailsElement>("details[data-state-key]").forEach((details) => {
+      const key = details.dataset.stateKey;
+      if (!key || !(key in state.details)) return;
+      details.open = state.details[key];
+    });
   }
 
 })();

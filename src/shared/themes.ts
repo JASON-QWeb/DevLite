@@ -102,25 +102,25 @@ export const UI_THEMES: Record<UiTheme, UiThemeDefinition> = {
   cartoon: {
     id: "cartoon",
     tokens: {
-      bg: "#FFF7E8",
+      bg: "#F7FBF2",
       surface: "#FFFFFF",
-      surface2: "#FFEBC7",
-      sidebar: "#FFE5B4",
-      border: "#F3C98B",
-      borderStrong: "#E7A94F",
-      text: "#2D2433",
-      textMuted: "#7A6472",
-      primary: "#FF7A59",
-      primaryHover: "#F05D3B",
-      primarySoft: "#FFE0D7",
-      onPrimary: "#2D2433",
-      danger: "#FF5C8A",
-      warning: "#FFD166",
-      success: "#6BCB77",
-      codeText: "#B64D35",
-      toastBg: "#2D2433",
-      shadow: "rgba(92, 58, 31, 0.18)",
-      focus: "rgba(255, 122, 89, 0.34)"
+      surface2: "#EEF6E4",
+      sidebar: "#E8F3DC",
+      border: "#D7E6CA",
+      borderStrong: "#B8D2A5",
+      text: "#172017",
+      textMuted: "#65735F",
+      primary: "#5F9352",
+      primaryHover: "#4C7841",
+      primarySoft: "#DDEED5",
+      onPrimary: "#FFFFFF",
+      danger: "#C85650",
+      warning: "#B9832B",
+      success: "#4F8A66",
+      codeText: "#496F3E",
+      toastBg: "#172017",
+      shadow: "rgba(35, 58, 30, 0.16)",
+      focus: "rgba(95, 147, 82, 0.32)"
     }
   }
 };

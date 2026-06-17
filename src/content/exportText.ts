@@ -1,21 +1,34 @@
-import { hasResponseBody } from "./networkDetails";
 import type { LiveDiagnosticEvent } from "./types";
 
-export function buildAllResponsesText(events: LiveDiagnosticEvent[]): string {
-  const responseEvents = events.filter(hasResponseBody);
-  if (responseEvents.length === 0) return "";
-  return responseEvents
-    .map((event, index) => {
-      return [
-        `#${index + 1} ${event.method ?? "GET"} ${event.url ?? ""}`,
-        `Status: ${typeof event.status === "number" ? event.status : event.severity}`,
-        `Duration: ${typeof event.duration === "number" ? `${event.duration}ms` : "-"}`,
-        `Time: ${new Date(event.timestamp).toISOString()}`,
-        "",
-        event.responseBody ?? ""
-      ].join("\n");
-    })
-    .join("\n\n---\n\n");
+export function buildNetworkEventText(event: LiveDiagnosticEvent): string {
+  return [
+    `${event.method ?? "GET"} ${event.url ?? ""}`,
+    `Status: ${typeof event.status === "number" ? event.status : event.severity}`,
+    `Duration: ${typeof event.duration === "number" ? `${event.duration}ms` : "-"}`,
+    `Time: ${new Date(event.timestamp).toISOString()}`,
+    "",
+    "[Request headers]",
+    formatUnknown(event.metadata?.requestHeaders) || "-",
+    "",
+    "[Request body]",
+    event.requestBody || "-",
+    "",
+    "[Response headers]",
+    formatUnknown(event.metadata?.responseHeaders) || "-",
+    "",
+    "[Response body]",
+    event.responseBody || "-"
+  ].join("\n");
+}
+
+function formatUnknown(value: unknown): string {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 export function buildAllErrorsText(events: LiveDiagnosticEvent[], eventTypeLabel: (event: LiveDiagnosticEvent) => string): string {

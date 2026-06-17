@@ -16,6 +16,7 @@ export function renderElementTabView(context: ElementTabContext): string {
       <div class="toolbar">
         <button data-action="quick-select" class="primary">${inspectorActive ? t("selecting") : t("selectElement")}</button>
         ${inspectorActive ? `<button data-action="stop-select">${t("stopSelecting")}</button>` : ""}
+        <button data-action="copy-selected-style-prompt" ${records.length === 0 ? "disabled" : ""}>${t("copySelectedPrompt")}</button>
         <button data-action="copy-prompt" class="primary">${t("copyFullPrompt")}</button>
       </div>
       ${
@@ -41,11 +42,18 @@ function renderStyleChangeRecord(change: StyleChange, index: number, context: El
   return `
       <article class="style-record">
         <div class="style-record-head">
-          <strong>${index + 1}. ${escapeHtml(change.elementLabel)}</strong>
+          <label class="style-record-select">
+            <input type="checkbox" data-style-record-select value="${escapeHtml(change.id)}" checked />
+            <strong title="${escapeHtml(change.elementLabel)}">${index + 1}. ${escapeHtml(change.elementLabel)}</strong>
+          </label>
           <span>${context.formatTime(change.updatedAt)}</span>
         </div>
-        <code>${escapeHtml(change.selector)}</code>
+        <code class="style-record-selector" title="${escapeHtml(change.selector)}">${escapeHtml(change.selector)}</code>
         <p>${escapeHtml(summarizeStyleChange(change, context))}</p>
+        <div class="style-record-actions">
+          <button type="button" data-action="copy-record-prompt" data-change-id="${escapeHtml(change.id)}">${context.t("copyRecordPrompt")}</button>
+          <button type="button" data-action="undo-style-record" data-change-id="${escapeHtml(change.id)}">${context.t("restoreElement")}</button>
+        </div>
       </article>
     `;
 }
