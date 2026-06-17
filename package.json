@@ -8,6 +8,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "smoke": "npm run build && node scripts/smoke.mjs",
+    "qa:extension": "npm run build && node scripts/qa-extension.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "zip": "npm run build && cd dist && zip -r ../devlite.zip ."
   },

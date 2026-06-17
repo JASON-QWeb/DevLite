@@ -49,6 +49,12 @@ Build the extension:
 npm run build
 ```
 
+Run the real-browser extension regression test:
+
+```bash
+npm run qa:extension
+```
+
 Package a zip:
 
 ```bash

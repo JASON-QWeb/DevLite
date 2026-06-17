@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DevLite QA Demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">DevLite QA Surface</p>
+          <h1 id="hero-title">Revenue Console</h1>
+          <p id="hero-copy">Use this page to test visual edits, network capture, performance diagnosis, and prompt export.</p>
+        </div>
+        <div class="score-card" data-testid="summary-card">
+          <span>Health score</span>
+          <strong>92</strong>
+          <small>Updated just now</small>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel editable-target" data-testid="editable-card">
+          <h2>Pipeline quality</h2>
+          <p class="body-copy">Double click this paragraph after selecting the card to test inline HTML text editing.</p>
+          <button id="state-button">Review account</button>
+        </article>
+
+        <article class="panel">
+          <h2>Network controls</h2>
+          <div class="actions">
+            <button id="fetch-ok">Fetch profile</button>
+            <button id="fetch-error">Fetch 500</button>
+            <button id="fetch-slow">Fetch slow</button>
+            <button id="fetch-large">Fetch large</button>
+            <button id="xhr-ok">XHR metrics</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>Diagnostics controls</h2>
+          <div class="actions">
+            <button id="throw-error">Throw JS error</button>
+            <button id="reject-promise">Reject promise</button>
+            <button id="long-task">Run long task</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="output">
+        <h2>Response preview</h2>
+        <pre id="output">No request yet.</pre>
+      </section>
+
+      <img class="missing-resource" src="/missing-demo-image.png" alt="Intentional missing resource for DevLite test" />
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

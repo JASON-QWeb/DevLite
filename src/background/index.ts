@@ -182,9 +182,8 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   }
 
   if (type === "generate-report") {
-    const tab = await getActiveTab();
-    if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
-    const session = await requireSession(tab.id);
+    const tabId = await getSessionTabId(sender);
+    const session = await requireSession(tabId);
     const settings = await getSettings();
     const safeSession = sanitizeSession(session, settings);
     return {
@@ -196,18 +195,16 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   }
 
   if (type === "generate-export") {
-    const tab = await getActiveTab();
-    if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
-    const session = await requireSession(tab.id);
+    const tabId = await getSessionTabId(sender);
+    const session = await requireSession(tabId);
     const settings = await getSettings();
     const safeSession = sanitizeSession(session, settings);
     return { ok: true, text: generateExport(safeSession, settings, message.format as ExportFormat) };
   }
 
   if (type === "run-ai-analysis") {
-    const tab = await getActiveTab();
-    if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
-    const session = await requireSession(tab.id);
+    const tabId = await getSessionTabId(sender);
+    const session = await requireSession(tabId);
     const settings = await getSettings();
     const safeSession = sanitizeSession(session, settings);
     const result = await runAiAnalysis(safeSession, settings);
@@ -296,6 +293,15 @@ async function requireSession(tabId: number): Promise<DiagnosticSession> {
     throw new Error("当前页面还没有诊断数据，请先开始诊断或使用元素选择器。");
   }
   return session;
+}
+
+async function getSessionTabId(sender: chrome.runtime.MessageSender): Promise<number> {
+  if (typeof sender.tab?.id === "number" && /^https?:\/\//.test(sender.tab.url ?? "")) {
+    return sender.tab.id;
+  }
+  const tab = await getActiveTab();
+  if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
+  return tab.id;
 }
 
 async function ensurePageScripts(tabId: number): Promise<void> {
