@@ -100,7 +100,8 @@
           source: "fetch",
           ok: response.ok,
           redirected: response.redirected,
-          contentType: response.headers.get("content-type") ?? ""
+          contentType: response.headers.get("content-type") ?? "",
+          responseHeaders: headersToObject(response.headers)
         }
       };
 
@@ -183,7 +184,9 @@
         metadata: {
           source: "xhr",
           event: kind,
-          responseType: xhr.responseType
+          responseType: xhr.responseType,
+          requestHeaders: meta.headers,
+          responseHeaders: parseHeaderText(xhr.getAllResponseHeaders())
         }
       });
     };
@@ -250,6 +253,28 @@
     } catch {
       return String(value);
     }
+  }
+
+  function headersToObject(headers: Headers): Record<string, string> {
+    const result: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      result[key] = value;
+    });
+    return result;
+  }
+
+  function parseHeaderText(value: string): Record<string, string> {
+    const result: Record<string, string> = {};
+    value
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .forEach((line) => {
+        const index = line.indexOf(":");
+        if (index <= 0) return;
+        result[line.slice(0, index).trim().toLowerCase()] = line.slice(index + 1).trim();
+      });
+    return result;
   }
 
   function truncate(value: string, max: number): string {

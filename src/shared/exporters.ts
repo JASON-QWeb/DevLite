@@ -1,5 +1,5 @@
 import { generateMarkdownReport } from "./report";
-import type { DiagnosticSettings, DiagnosticSession, ExportFormat } from "./types";
+import type { DiagnosticSettings, DiagnosticSession, ExportFormat, UiLocale } from "./types";
 
 export function generateExport(session: DiagnosticSession, settings: DiagnosticSettings, format: ExportFormat): string {
   if (format === "json") {
@@ -10,12 +10,16 @@ export function generateExport(session: DiagnosticSession, settings: DiagnosticS
     return generateMarkdownReport(session, settings);
   }
 
-  return generateAiPrompt(session);
+  return generateAiPrompt(session, settings.locale);
 }
 
-export function generateAiPrompt(session: DiagnosticSession): string {
+export function generateAiPrompt(session: DiagnosticSession, locale: UiLocale = "zh"): string {
   return JSON.stringify(
     {
+      task:
+        locale === "en"
+          ? "Implement the following DevLite page edits in the source code. Locate the target components with selectors, DOM paths, text snippets, attributes, and matched CSS rules. Preserve the existing tech stack and code style."
+          : "请将以下 DevLite 页面临时修改落实到源码中。根据 selector、DOM 路径、文本片段、属性和命中的 CSS 规则定位目标组件，并保持现有技术栈和代码风格。",
       changes: session.styleChanges.map((change, index) => ({
         index: index + 1,
         target: {

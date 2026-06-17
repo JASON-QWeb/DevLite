@@ -190,7 +190,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     return {
       ok: true,
       report: generateMarkdownReport(safeSession, settings),
-      analysis: analyzeSession(safeSession, settings.slowRequestThreshold),
+      analysis: analyzeSession(safeSession, settings.slowRequestThreshold, settings.locale),
       session: safeSession
     };
   }

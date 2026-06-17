@@ -1,67 +1,69 @@
 import { analyzeSession } from "./analyzer";
-import type { DiagnosticSettings, DiagnosticSession } from "./types";
+import type { DiagnosticSettings, DiagnosticSession, UiLocale } from "./types";
 
 export function generateMarkdownReport(session: DiagnosticSession, settings: DiagnosticSettings): string {
-  const analysis = analyzeSession(session, settings.slowRequestThreshold);
+  const locale = settings.locale;
+  const analysis = analyzeSession(session, settings.slowRequestThreshold, locale);
   const page = session.page;
   const lines: string[] = [];
+  const l = (zh: string, en: string) => (locale === "en" ? en : zh);
 
-  lines.push("# DevLite 页面诊断报告");
+  lines.push(locale === "en" ? "# DevLite Page Diagnostics Report" : "# DevLite 页面诊断报告");
   lines.push("");
-  lines.push("## 问题摘要");
+  lines.push(locale === "en" ? "## Issue Summary" : "## 问题摘要");
   lines.push(analysis.summary);
   lines.push("");
 
-  lines.push("## 页面信息");
+  lines.push(locale === "en" ? "## Page Info" : "## 页面信息");
   lines.push(`- URL: ${page.url}`);
-  lines.push(`- 标题: ${page.title || "无标题"}`);
-  lines.push(`- 浏览器: ${page.userAgent}`);
-  lines.push(`- 语言: ${page.language}`);
-  lines.push(`- 视口: ${page.viewport.width} x ${page.viewport.height}, DPR ${page.viewport.devicePixelRatio}`);
-  lines.push(`- 开始时间: ${new Date(page.startedAt).toLocaleString("zh-CN")}`);
+  lines.push(`- ${l("标题", "Title")}: ${page.title || l("无标题", "Untitled")}`);
+  lines.push(`- ${l("浏览器", "Browser")}: ${page.userAgent}`);
+  lines.push(`- ${l("语言", "Language")}: ${page.language}`);
+  lines.push(`- ${l("视口", "Viewport")}: ${page.viewport.width} x ${page.viewport.height}, DPR ${page.viewport.devicePixelRatio}`);
+  lines.push(`- ${l("开始时间", "Started at")}: ${formatDate(page.startedAt, locale)}`);
   if (page.endedAt) {
-    lines.push(`- 结束时间: ${new Date(page.endedAt).toLocaleString("zh-CN")}`);
+    lines.push(`- ${l("结束时间", "Ended at")}: ${formatDate(page.endedAt, locale)}`);
   }
   lines.push("");
 
-  lines.push("## 本地规则分析");
+  lines.push(locale === "en" ? "## Local Rule Analysis" : "## 本地规则分析");
   if (analysis.findings.length === 0) {
-    lines.push("未发现明显错误。");
+    lines.push(l("未发现明显错误。", "No obvious issues were detected."));
   } else {
     analysis.findings.forEach((finding, index) => {
       lines.push(`### ${index + 1}. ${finding.title}`);
-      lines.push(`- 级别: ${finding.severity}`);
-      lines.push(`- 说明: ${finding.detail}`);
-      lines.push(`- 建议: ${finding.suggestion}`);
+      lines.push(`- ${l("级别", "Severity")}: ${finding.severity}`);
+      lines.push(`- ${l("说明", "Detail")}: ${finding.detail}`);
+      lines.push(`- ${l("建议", "Suggestion")}: ${finding.suggestion}`);
       if (finding.evidence.length > 0) {
-        lines.push("- 证据:");
+        lines.push(`- ${l("证据", "Evidence")}:`);
         finding.evidence.forEach((item) => lines.push(`  - ${truncate(item, 500)}`));
       }
       lines.push("");
     });
   }
 
-  lines.push("## 事件统计");
-  lines.push(`- JS 错误: ${analysis.counters.jsErrors}`);
-  lines.push(`- Promise 异常: ${analysis.counters.promiseErrors}`);
+  lines.push(locale === "en" ? "## Event Counters" : "## 事件统计");
+  lines.push(`- ${l("JS 错误", "JS errors")}: ${analysis.counters.jsErrors}`);
+  lines.push(`- ${l("Promise 异常", "Promise rejections")}: ${analysis.counters.promiseErrors}`);
   lines.push(`- console.error: ${analysis.counters.consoleErrors}`);
-  lines.push(`- 失败请求: ${analysis.counters.failedRequests}`);
-  lines.push(`- 慢请求: ${analysis.counters.slowRequests}`);
-  lines.push(`- 资源加载失败: ${analysis.counters.resourceErrors}`);
-  lines.push(`- 样式修改: ${analysis.counters.styleChanges}`);
+  lines.push(`- ${l("失败请求", "Failed requests")}: ${analysis.counters.failedRequests}`);
+  lines.push(`- ${l("慢请求", "Slow requests")}: ${analysis.counters.slowRequests}`);
+  lines.push(`- ${l("资源加载失败", "Resource load failures")}: ${analysis.counters.resourceErrors}`);
+  lines.push(`- ${l("样式修改", "Style edits")}: ${analysis.counters.styleChanges}`);
   lines.push("");
 
   if (session.events.length > 0) {
-    lines.push("## 错误和请求明细");
+    lines.push(locale === "en" ? "## Error And Request Details" : "## 错误和请求明细");
     session.events.slice(0, 80).forEach((event, index) => {
       lines.push(`### ${index + 1}. ${event.type} / ${event.severity}`);
-      lines.push(`- 时间: ${new Date(event.timestamp).toLocaleString("zh-CN")}`);
-      lines.push(`- 信息: ${truncate(event.message, 800)}`);
+      lines.push(`- ${l("时间", "Time")}: ${formatDate(event.timestamp, locale)}`);
+      lines.push(`- ${l("信息", "Message")}: ${truncate(event.message, 800)}`);
       if (event.method || event.url) {
-        lines.push(`- 请求: ${event.method ?? "GET"} ${event.url ?? ""}`);
+        lines.push(`- ${l("请求", "Request")}: ${event.method ?? "GET"} ${event.url ?? ""}`);
       }
-      if (event.status) lines.push(`- 状态码: ${event.status}`);
-      if (event.duration) lines.push(`- 耗时: ${event.duration}ms`);
+      if (event.status) lines.push(`- ${l("状态码", "Status")}: ${event.status}`);
+      if (event.duration) lines.push(`- ${l("耗时", "Duration")}: ${event.duration}ms`);
       if (event.stack) {
         lines.push("");
         lines.push("```text");
@@ -79,22 +81,22 @@ export function generateMarkdownReport(session: DiagnosticSession, settings: Dia
   }
 
   if (session.styleChanges.length > 0) {
-    lines.push("## 页面修改");
+    lines.push(locale === "en" ? "## Page Edits" : "## 页面修改");
     session.styleChanges.forEach((change, index) => {
       const hasStyleChanges = Object.values(change.after).some(Boolean);
       const hasTextChange = change.textAfter !== undefined && change.textAfter !== (change.textBefore ?? "");
       lines.push(`### ${index + 1}. ${change.elementLabel}`);
       lines.push(`- Selector: \`${change.selector}\``);
-      lines.push(`- 文本: ${change.textSnippet || "无文本"}`);
+      lines.push(`- ${l("文本", "Text")}: ${change.textSnippet || l("无文本", "No text")}`);
 
       if (hasTextChange) {
         lines.push("");
-        lines.push("文字修改前:");
+        lines.push(l("文字修改前:", "Text before:"));
         lines.push("```text");
         lines.push(truncate(change.textBefore ?? "", 1200));
         lines.push("```");
         lines.push("");
-        lines.push("文字修改后:");
+        lines.push(l("文字修改后:", "Text after:"));
         lines.push("```text");
         lines.push(truncate(change.textAfter ?? "", 1200));
         lines.push("```");
@@ -102,32 +104,40 @@ export function generateMarkdownReport(session: DiagnosticSession, settings: Dia
 
       if (hasStyleChanges) {
         lines.push("");
-        lines.push("样式修改前:");
+        lines.push(l("样式修改前:", "Styles before:"));
         lines.push("```css");
-        lines.push(cssBlock(change.before));
+        lines.push(cssBlock(change.before, locale));
         lines.push("```");
         lines.push("");
-        lines.push("样式修改后:");
+        lines.push(l("样式修改后:", "Styles after:"));
         lines.push("```css");
-        lines.push(cssBlock(change.after));
+        lines.push(cssBlock(change.after, locale));
         lines.push("```");
       }
       lines.push("");
     });
   }
 
-  lines.push("## 隐私说明");
-  lines.push("本报告由 DevLite 在当前页面本地生成。敏感字段已按内置规则脱敏，默认不包含 Cookie、Authorization 或完整页面 HTML。");
+  lines.push(locale === "en" ? "## Privacy Note" : "## 隐私说明");
+  lines.push(
+    locale === "en"
+      ? "This report was generated locally by DevLite on the current page. Sensitive fields are redacted by built-in rules and Cookie, Authorization, and full page HTML are not included by default."
+      : "本报告由 DevLite 在当前页面本地生成。敏感字段已按内置规则脱敏，默认不包含 Cookie、Authorization 或完整页面 HTML。"
+  );
 
   return lines.join("\n");
 }
 
-function cssBlock(styles: Record<string, string>): string {
+function cssBlock(styles: Record<string, string>, locale: UiLocale): string {
   const entries = Object.entries(styles);
   if (entries.length === 0) {
-    return "/* 无 */";
+    return locale === "en" ? "/* none */" : "/* 无 */";
   }
   return entries.map(([key, value]) => `${key}: ${value};`).join("\n");
+}
+
+function formatDate(timestamp: number, locale: UiLocale): string {
+  return new Date(timestamp).toLocaleString(locale === "en" ? "en-US" : "zh-CN");
 }
 
 function truncate(value: string, max: number): string {

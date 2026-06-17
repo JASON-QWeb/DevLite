@@ -18,6 +18,7 @@ By default, it does not call AI services or upload data. The lightweight right-s
 - Track page changes
 - Open a draggable always-on-top diagnostics panel from the right-side page icon
 - Keep the page icon available on regular HTTP/HTTPS pages while injecting collectors only after user action
+- Switch between Chinese and English UI, with reports and prompts following the selected language
 - Export AI Prompt, Markdown, or JSON
 - Optionally use the user's own OpenAI, DeepSeek, Anthropic, or Gemini API key
 

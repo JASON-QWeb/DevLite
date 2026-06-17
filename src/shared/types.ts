@@ -8,8 +8,10 @@ export type DiagnosticEventType =
   | "performance";
 
 export type Severity = "info" | "warning" | "error";
+export type UiLocale = "zh" | "en";
 
 export interface DiagnosticSettings {
+  locale: UiLocale;
   collectResponseBody: boolean;
   maxResponseLength: number;
   slowRequestThreshold: number;

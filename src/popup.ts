@@ -1,4 +1,5 @@
 import { analyzeSession } from "./shared/analyzer";
+import { createTranslator, uiText } from "./shared/i18n";
 import type { AnalysisResult, DiagnosticSession, DiagnosticSettings, ExportFormat } from "./shared/types";
 import "./ui/popup.css";
 
@@ -38,7 +39,7 @@ async function refresh(): Promise<void> {
   if (response?.ok) {
     state.session = response.session;
     state.settings = response.settings;
-    state.analysis = state.session && state.settings ? analyzeSession(state.session, state.settings.slowRequestThreshold) : null;
+    state.analysis = state.session && state.settings ? analyzeSession(state.session, state.settings.slowRequestThreshold, state.settings.locale) : null;
   }
 }
 
@@ -48,6 +49,7 @@ function render(): void {
   const analysis = state.analysis;
   const settings = state.settings;
   const aiReady = settings?.ai.mode === "user-key" && !!settings.ai.apiKey;
+  const t = createTranslator(settings?.locale);
 
   app.innerHTML = `
     <main class="app">
@@ -56,38 +58,38 @@ function render(): void {
           <img class="brand-logo" src="/icons/devlite-128.png" alt="" />
           <div>
             <h1>DevLite</h1>
-            <span>简易版检查模式</span>
+            <span>${t("subtitle")}</span>
           </div>
         </div>
-        <span class="status ${active ? "active" : ""}">${active ? "诊断中" : "未启动"}</span>
+        <span class="status ${active ? "active" : ""}">${active ? t("active") : t("inactive")}</span>
       </header>
 
       <section class="content">
         <div class="section">
           <div class="section-header">
-            <h2>操作</h2>
+            <h2>${t("actions")}</h2>
           </div>
           <div class="section-body actions">
             ${
               active
-                ? `<button class="danger" data-action="stop">停止诊断</button>`
-                : `<button class="primary" data-action="start">开始诊断</button>`
+                ? `<button class="danger" data-action="stop">${t("stopDiagnosis")}</button>`
+                : `<button class="primary" data-action="start">${t("startDiagnosis")}</button>`
             }
-            <button data-action="inspect">选择元素</button>
-            <button data-action="report">生成报告</button>
-            <button data-action="copy-report" ${state.report ? "" : "disabled"}>复制报告</button>
+            <button data-action="inspect">${t("inspect")}</button>
+            <button data-action="report">${t("generateReport")}</button>
+            <button data-action="copy-report" ${state.report ? "" : "disabled"}>${t("copyReport")}</button>
           </div>
           <div class="metrics">
             ${metric(analysis?.counters.jsErrors ?? 0, "JS")}
-            ${metric(analysis?.counters.failedRequests ?? 0, "请求")}
-            ${metric(analysis?.counters.resourceErrors ?? 0, "资源")}
-            ${metric(state.session?.styleChanges.length ?? 0, "样式")}
+            ${metric(analysis?.counters.failedRequests ?? 0, t("requests"))}
+            ${metric(analysis?.counters.resourceErrors ?? 0, t("resources"))}
+            ${metric(state.session?.styleChanges.length ?? 0, t("styles"))}
           </div>
         </div>
 
         <div class="section">
           <div class="section-header">
-            <h2>导出</h2>
+            <h2>${t("export")}</h2>
           </div>
           <div class="section-body exports">
             <button data-export="ai">AI Prompt</button>
@@ -98,24 +100,24 @@ function render(): void {
 
         <div class="section">
           <div class="section-header">
-            <h2>样式修改</h2>
+            <h2>${t("styleChanges")}</h2>
             <span>${state.session?.styleChanges.length ?? 0}</span>
           </div>
           <div class="section-body">
-            ${renderStyleChanges(state.session)}
+            ${renderStyleChanges(state.session, t("emptyStyleChanges"))}
           </div>
         </div>
 
         <div class="section">
           <div class="section-header">
-            <h2>AI 分析</h2>
-            <button class="ghost" data-action="options">设置</button>
+            <h2>${t("aiAnalysis")}</h2>
+            <button class="ghost" data-action="options">${t("settings")}</button>
           </div>
           <div class="section-body">
             ${
               aiReady
-                ? `<button class="primary" data-action="ai-preview">生成发送预览</button>`
-                : `<div class="empty">默认使用本地规则分析。需要 AI 时，在设置页配置自己的 API Key。</div>`
+                ? `<button class="primary" data-action="ai-preview">${t("generateAiPreview")}</button>`
+                : `<div class="empty">${t("localAiNote")}</div>`
             }
             ${state.aiPreview ? renderAiPreview() : ""}
             ${state.aiResult ? `<div class="ai-result">${escapeHtml(state.aiResult)}</div>` : ""}
@@ -125,7 +127,7 @@ function render(): void {
         ${
           state.report
             ? `<div class="section">
-                <div class="section-header"><h2>报告</h2></div>
+                <div class="section-header"><h2>${t("report")}</h2></div>
                 <div class="section-body">
                   <textarea readonly>${escapeHtml(state.report)}</textarea>
                 </div>
@@ -135,8 +137,8 @@ function render(): void {
       </section>
 
       <footer class="footer">
-        <button class="ghost" data-action="refresh">刷新状态</button>
-        <button class="ghost" data-action="options">打开设置</button>
+        <button class="ghost" data-action="refresh">${t("refreshStatus")}</button>
+        <button class="ghost" data-action="options">${t("openSettings")}</button>
       </footer>
     </main>
     ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
@@ -149,10 +151,10 @@ function metric(value: number, label: string): string {
   return `<div class="metric"><strong>${value}</strong><span>${label}</span></div>`;
 }
 
-function renderStyleChanges(session: DiagnosticSession | null): string {
+function renderStyleChanges(session: DiagnosticSession | null, emptyText: string): string {
   const changes = session?.styleChanges ?? [];
   if (changes.length === 0) {
-    return `<div class="empty">还没有 CSS 修改。点击「选择元素」后可实时调整页面样式。</div>`;
+    return `<div class="empty">${emptyText}</div>`;
   }
   return `
     <div class="list">
@@ -174,11 +176,12 @@ function renderStyleChanges(session: DiagnosticSession | null): string {
 }
 
 function renderAiPreview(): string {
+  const t = createTranslator(state.settings?.locale);
   return `
     <textarea readonly>${escapeHtml(state.aiPreview)}</textarea>
     <div class="preview-actions">
-      <button class="primary" data-action="ai-run">确认发送给 AI</button>
-      <button data-action="ai-cancel">取消</button>
+      <button class="primary" data-action="ai-run">${t("confirmSendAi")}</button>
+      <button data-action="ai-cancel">${t("cancel")}</button>
     </div>
   `;
 }
@@ -195,40 +198,41 @@ function bindEvents(): void {
 async function handleAction(action: string): Promise<void> {
   if (state.busy) return;
   state.busy = true;
+  const t = createTranslator(state.settings?.locale);
   try {
     if (action === "start") {
       const response = await sendMessage({ type: "start-diagnosis" });
-      if (!response?.ok) throw new Error(response?.error || "启动失败");
-      showToast("已开始诊断当前页面");
+      if (!response?.ok) throw new Error(response?.error || t("startFailed"));
+      showToast(t("started"));
     }
 
     if (action === "stop") {
       const response = await sendMessage({ type: "stop-diagnosis" });
-      if (!response?.ok) throw new Error(response?.error || "停止失败");
-      showToast("诊断已停止");
+      if (!response?.ok) throw new Error(response?.error || t("stopFailed"));
+      showToast(t("stopped"));
     }
 
     if (action === "inspect") {
       const response = await sendMessage({ type: "start-inspector" });
-      if (!response?.ok) throw new Error(response?.error || "无法启动元素选择器");
-      showToast("请在页面中点击元素");
+      if (!response?.ok) throw new Error(response?.error || t("inspectFailed"));
+      showToast(t("clickElement"));
       window.close();
     }
 
     if (action === "report") {
       await generateReport();
-      showToast("报告已生成");
+      showToast(t("reportGenerated"));
     }
 
     if (action === "copy-report") {
       if (!state.report) await generateReport();
       await copyText(state.report);
-      showToast("报告已复制");
+      showToast(t("reportCopied"));
     }
 
     if (action === "refresh") {
       await refresh();
-      showToast("状态已刷新");
+      showToast(t("refreshed"));
     }
 
     if (action === "options") {
@@ -237,13 +241,15 @@ async function handleAction(action: string): Promise<void> {
 
     if (action === "ai-preview") {
       const response = await sendMessage({ type: "generate-export", format: "ai" });
-      if (!response?.ok) throw new Error(response?.error || "生成预览失败");
+      if (!response?.ok) throw new Error(response?.error || t("previewFailed"));
       state.aiPreview = response.text;
       state.aiResult = "";
+      showToast(t("aiPreviewReady"));
     }
 
     if (action === "ai-cancel") {
       state.aiPreview = "";
+      showToast(t("aiCancelled"));
     }
 
     if (action === "ai-run") {
@@ -251,10 +257,10 @@ async function handleAction(action: string): Promise<void> {
         await requestAiPermission(state.settings.ai.provider);
       }
       const response = await sendMessage({ type: "run-ai-analysis" });
-      if (!response?.ok) throw new Error(response?.error || "AI 分析失败");
+      if (!response?.ok) throw new Error(response?.error || t("aiFailed"));
       state.aiResult = response.result.content;
       state.aiPreview = "";
-      showToast("AI 分析完成");
+      showToast(t("aiDone"));
     }
 
     await refresh();
@@ -268,18 +274,19 @@ async function handleAction(action: string): Promise<void> {
 
 async function generateReport(): Promise<void> {
   const response = await sendMessage({ type: "generate-report" });
-  if (!response?.ok) throw new Error(response?.error || "生成报告失败");
+  if (!response?.ok) throw new Error(response?.error || uiText(state.settings?.locale, "reportFailed"));
   state.report = response.report;
   state.analysis = response.analysis;
   state.session = response.session;
 }
 
 async function copyExport(format: ExportFormat): Promise<void> {
+  const t = createTranslator(state.settings?.locale);
   try {
     const response = await sendMessage({ type: "generate-export", format });
-    if (!response?.ok) throw new Error(response?.error || "导出失败");
+    if (!response?.ok) throw new Error(response?.error || t("exportFailed"));
     await copyText(response.text);
-    showToast(`${format} 已复制`);
+    showToast(`${format} ${t("copied")}`);
   } catch (error) {
     showToast(error instanceof Error ? error.message : String(error));
   } finally {
@@ -308,7 +315,7 @@ function requestAiPermission(provider: string): Promise<void> {
         return;
       }
       if (!granted) {
-        reject(new Error("未授权访问所选 AI 服务接口"));
+        reject(new Error(uiText(state.settings?.locale, "aiFailed")));
         return;
       }
       resolve();

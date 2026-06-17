@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS } from "./shared/defaults";
+import { createTranslator, uiText } from "./shared/i18n";
 import type { AiSettings, DiagnosticSettings } from "./shared/types";
 import "./ui/options.css";
 
@@ -18,56 +19,64 @@ async function init(): Promise<void> {
 
 function render(): void {
   if (!app) return;
+  const t = createTranslator(settings.locale);
   app.innerHTML = `
     <main class="page">
       <header class="hero">
         <div class="hero-brand">
           <img class="hero-logo" src="/icons/devlite-128.png" alt="" />
           <div>
-            <h1>DevLite 设置</h1>
-            <p>默认本地诊断。AI 只在用户配置 API Key 并确认发送后启用。</p>
+            <h1>${t("optionsTitle")}</h1>
+            <p>${t("optionsSubtitle")}</p>
           </div>
         </div>
-        <button data-action="reset">恢复默认</button>
+        <button data-action="reset">${t("resetDefaults")}</button>
       </header>
 
       <div class="grid">
         <section class="section">
-          <h2>诊断采集</h2>
+          <h2>${t("diagnosticCapture")}</h2>
           <div class="body">
+            <label class="field">
+              <span>${t("language")}</span>
+              <select id="locale">
+                <option value="zh" ${settings.locale === "zh" ? "selected" : ""}>中文</option>
+                <option value="en" ${settings.locale === "en" ? "selected" : ""}>English</option>
+              </select>
+            </label>
             <label class="inline">
               <input id="collectResponseBody" type="checkbox" ${settings.collectResponseBody ? "checked" : ""} />
-              <span>采集 response 摘要</span>
+              <span>${t("collectResponse")}</span>
             </label>
             <label class="field">
-              <span>response 最大长度</span>
+              <span>${t("responseMaxLength")}</span>
               <input id="maxResponseLength" type="number" min="256" max="10000" step="256" value="${settings.maxResponseLength}" />
-              <small>仅保存摘要，并会经过脱敏处理。</small>
+              <small>${t("responseNote")}</small>
             </label>
             <label class="field">
-              <span>慢请求阈值</span>
+              <span>${t("slowThreshold")}</span>
               <input id="slowRequestThreshold" type="number" min="300" max="20000" step="100" value="${settings.slowRequestThreshold}" />
             </label>
             <label class="field">
-              <span>额外脱敏字段</span>
+              <span>${t("extraRedaction")}</span>
               <textarea id="extraRedactionKeys">${escapeHtml(settings.extraRedactionKeys.join("\n"))}</textarea>
-              <small>每行一个字段名，例如 userId、sessionId、tenantSecret。</small>
+              <small>${t("extraRedactionNote")}</small>
             </label>
           </div>
         </section>
 
         <section class="section">
-          <h2>AI 模式</h2>
+          <h2>${t("aiMode")}</h2>
           <div class="body">
             <label class="field">
-              <span>模式</span>
+              <span>${t("mode")}</span>
               <select id="aiMode">
-                <option value="off" ${settings.ai.mode === "off" ? "selected" : ""}>关闭</option>
-                <option value="user-key" ${settings.ai.mode === "user-key" ? "selected" : ""}>用户 API Key</option>
+                <option value="off" ${settings.ai.mode === "off" ? "selected" : ""}>${t("off")}</option>
+                <option value="user-key" ${settings.ai.mode === "user-key" ? "selected" : ""}>${t("userKey")}</option>
               </select>
             </label>
             <label class="field">
-              <span>服务商</span>
+              <span>${t("provider")}</span>
               <select id="aiProvider">
                 ${providerOption("openai", "OpenAI")}
                 ${providerOption("deepseek", "DeepSeek")}
@@ -76,7 +85,7 @@ function render(): void {
               </select>
             </label>
             <label class="field">
-              <span>模型</span>
+              <span>${t("model")}</span>
               <input id="aiModel" value="${escapeHtml(settings.ai.model)}" />
             </label>
             <label class="field">
@@ -84,15 +93,15 @@ function render(): void {
               <input id="aiApiKey" type="password" autocomplete="off" value="${escapeHtml(settings.ai.apiKey)}" />
             </label>
             <div class="note">
-              API Key 只保存在浏览器本地。发送给 AI 前，popup 会展示即将发送的脱敏内容。
+              ${t("apiKeyNote")}
             </div>
           </div>
         </section>
       </div>
 
       <div class="actions">
-        <button class="primary" data-action="save">保存设置</button>
-        <button data-action="close">关闭</button>
+        <button class="primary" data-action="save">${t("saveSettings")}</button>
+        <button data-action="close">${t("close")}</button>
       </div>
     </main>
     ${toast ? `<div class="toast">${escapeHtml(toast)}</div>` : ""}
@@ -126,16 +135,16 @@ async function handleAction(action: string): Promise<void> {
     const response = await sendMessage({ type: "save-settings", settings: next });
     if (response?.ok) {
       settings = response.settings;
-      showToast("设置已保存");
+      showToast(uiText(settings.locale, "saved"));
     } else {
-      showToast(response?.error || "保存失败");
+      showToast(response?.error || uiText(settings.locale, "saveFailed"));
     }
   }
 
   if (action === "reset") {
     settings = DEFAULT_SETTINGS;
     await sendMessage({ type: "save-settings", settings });
-    showToast("已恢复默认设置");
+    showToast(uiText(settings.locale, "resetDone"));
   }
 
   if (action === "close") {
@@ -146,6 +155,7 @@ async function handleAction(action: string): Promise<void> {
 }
 
 function collectForm(): DiagnosticSettings {
+  const locale = (document.querySelector<HTMLSelectElement>("#locale")?.value ?? DEFAULT_SETTINGS.locale) as DiagnosticSettings["locale"];
   const collectResponseBody = document.querySelector<HTMLInputElement>("#collectResponseBody")?.checked ?? false;
   const maxResponseLength = Number(document.querySelector<HTMLInputElement>("#maxResponseLength")?.value || DEFAULT_SETTINGS.maxResponseLength);
   const slowRequestThreshold = Number(document.querySelector<HTMLInputElement>("#slowRequestThreshold")?.value || DEFAULT_SETTINGS.slowRequestThreshold);
@@ -160,6 +170,7 @@ function collectForm(): DiagnosticSettings {
 
   return {
     ...settings,
+    locale,
     collectResponseBody,
     maxResponseLength,
     slowRequestThreshold,
