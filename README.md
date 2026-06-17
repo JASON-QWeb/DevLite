@@ -98,12 +98,6 @@ npm install
 npm run build
 ```
 
-运行真实浏览器回归测试：
-
-```bash
-npm run qa:extension
-```
-
 打包 zip：
 
 ```bash
