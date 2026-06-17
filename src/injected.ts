@@ -16,6 +16,7 @@
 
   const originalFetch = window.fetch.bind(window);
   const originalConsoleError = console.error.bind(console);
+  const originalConsoleLog = console.log.bind(console);
   const originalOpen = XMLHttpRequest.prototype.open;
   const originalSend = XMLHttpRequest.prototype.send;
   const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
@@ -75,6 +76,21 @@
       });
     }
     originalConsoleError(...args);
+  };
+
+  console.log = (...args: unknown[]) => {
+    if (active) {
+      emit({
+        type: "console-log",
+        severity: "info",
+        message: args.map(serialize).join(" "),
+        stack: new Error("console.log").stack,
+        metadata: {
+          consoleMethod: "log"
+        }
+      });
+    }
+    originalConsoleLog(...args);
   };
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {

@@ -63,7 +63,13 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   type OverlayTab = "element" | "diagnostics" | "network" | "performance";
   type NetworkDetailTab = "preview" | "response" | "request" | "headers";
+  type DiagnosticFilter = "issues" | "logs";
   type UiLocale = ContentLocale;
+  type FloatingPosition = {
+    left: number;
+    top: number;
+    manual: boolean;
+  };
   type PerformanceIssue = {
     title: string;
     severity: "info" | "warning" | "error";
@@ -95,6 +101,16 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     requestBody?: string;
     responseBody?: string;
     metadata?: Record<string, unknown>;
+  };
+
+  type DiagnosticGroup = {
+    key: string;
+    severity: "info" | "warning" | "error";
+    message: string;
+    source: string;
+    count: number;
+    lastTimestamp: number;
+    events: LiveDiagnosticEvent[];
   };
 
   const PAGE_CHANNEL = "devlite:page";
@@ -139,6 +155,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   let panelOpen = false;
   let activePanelTab: OverlayTab = "element";
   let networkDetailTab: NetworkDetailTab = "preview";
+  let diagnosticFilter: DiagnosticFilter = "issues";
   let selectedNetworkEventId: string | null = null;
   let uiLocale: UiLocale = "zh";
   let captureStartPromise: Promise<void> | null = null;
@@ -150,6 +167,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
   let inlineTextEditState: InlineTextEditState | null = null;
   let performanceObserver: PerformanceObserver | null = null;
   let performanceSnapshotSent = false;
+  let styleEditorPosition: FloatingPosition | null = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void handleRuntimeMessage(message).then(sendResponse);
@@ -340,7 +358,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     panelOpen = true;
     renderPanel();
     startPanelRefresh();
-    void ensureCapture();
+    void ensureCapture().then(() => ensureResponseBodyCapture());
   }
 
   function ensureOverlay(): void {
@@ -405,6 +423,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function hideStyleEditor(): void {
     if (!styleEditor) return;
+    styleEditorPosition = null;
     styleEditor.hidden = true;
     styleEditor.innerHTML = "";
   }
@@ -430,6 +449,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function selectElement(element: HTMLElement): void {
     stopInlineTextEdit();
+    styleEditorPosition = null;
     selectedElement = element;
     updateHighlighter(element);
     const computed = getComputedStyle(element);
@@ -697,6 +717,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function bindStyleEditorEvents(): void {
     if (!styleEditor) return;
+    styleEditor.querySelector<HTMLElement>(".style-editor-head")?.addEventListener("pointerdown", startStyleEditorDrag);
     styleEditor.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-prop]").forEach((input) => {
       input.addEventListener("input", () => {
         const prop = input.dataset.prop;
@@ -741,37 +762,195 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     const editorRect = styleEditor.getBoundingClientRect();
     const width = editorRect.width || 300;
     const height = editorRect.height || 240;
-    let left = rect.right + 10;
-    if (left + width > window.innerWidth - 8) {
-      left = Math.max(8, rect.right - width);
-    }
-    let top = Math.max(8, rect.top);
-    if (top + height > window.innerHeight - 8) {
-      top = Math.max(8, window.innerHeight - height - 8);
-    }
-    styleEditor.style.left = `${Math.round(left)}px`;
-    styleEditor.style.top = `${Math.round(top)}px`;
+    const position = styleEditorPosition?.manual
+      ? clampFloatingPosition(styleEditorPosition.left, styleEditorPosition.top, width, height)
+      : pickStyleEditorPosition(rect, width, height);
+    styleEditorPosition = {
+      ...position,
+      manual: styleEditorPosition?.manual ?? false
+    };
+    applyStyleEditorPosition(position);
+  }
+
+  function startStyleEditorDrag(event: PointerEvent): void {
+    if (!styleEditor) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button,input,select,textarea,summary")) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const rect = styleEditor.getBoundingClientRect();
+    const pointerId = event.pointerId;
+    const offsetX = event.clientX - rect.left;
+    const offsetY = event.clientY - rect.top;
+    styleEditor.setPointerCapture(pointerId);
+    styleEditor.classList.add("dragging");
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const editorRect = styleEditor?.getBoundingClientRect();
+      if (!editorRect) return;
+      const next = clampFloatingPosition(moveEvent.clientX - offsetX, moveEvent.clientY - offsetY, editorRect.width, editorRect.height);
+      styleEditorPosition = { ...next, manual: true };
+      applyStyleEditorPosition(next);
+    };
+
+    const onUp = () => {
+      if (styleEditor?.hasPointerCapture(pointerId)) {
+        styleEditor.releasePointerCapture(pointerId);
+      }
+      styleEditor?.classList.remove("dragging");
+      styleEditor?.removeEventListener("pointermove", onMove);
+      styleEditor?.removeEventListener("pointerup", onUp);
+      styleEditor?.removeEventListener("pointercancel", onUp);
+    };
+
+    styleEditor.addEventListener("pointermove", onMove);
+    styleEditor.addEventListener("pointerup", onUp);
+    styleEditor.addEventListener("pointercancel", onUp);
+  }
+
+  function pickStyleEditorPosition(target: DOMRect, width: number, height: number): FloatingPosition {
+    const gap = 10;
+    const topAligned = clampValue(target.top, 8, maxFloatingTop(height));
+    const leftAligned = clampValue(target.left, 8, maxFloatingLeft(width));
+    const candidates = [
+      { left: target.right + gap, top: topAligned, priority: 0 },
+      { left: target.left - width - gap, top: topAligned, priority: 1 },
+      { left: leftAligned, top: target.bottom + gap, priority: 2 },
+      { left: leftAligned, top: target.top - height - gap, priority: 3 },
+      { left: window.innerWidth - width - 8, top: 8, priority: 4 },
+      { left: 8, top: 8, priority: 5 }
+    ].map((candidate) => {
+      const clamped = clampFloatingPosition(candidate.left, candidate.top, width, height);
+      return {
+        ...clamped,
+        priority: candidate.priority,
+        overlap: overlapArea(target, { left: clamped.left, top: clamped.top, right: clamped.left + width, bottom: clamped.top + height })
+      };
+    });
+
+    candidates.sort((a, b) => a.overlap - b.overlap || a.priority - b.priority);
+    return { left: candidates[0].left, top: candidates[0].top, manual: false };
+  }
+
+  function applyStyleEditorPosition(position: Pick<FloatingPosition, "left" | "top">): void {
+    if (!styleEditor) return;
+    styleEditor.style.left = `${Math.round(position.left)}px`;
+    styleEditor.style.top = `${Math.round(position.top)}px`;
+  }
+
+  function clampFloatingPosition(left: number, top: number, width: number, height: number): Pick<FloatingPosition, "left" | "top"> {
+    return {
+      left: clampValue(left, 8, maxFloatingLeft(width)),
+      top: clampValue(top, 8, maxFloatingTop(height))
+    };
+  }
+
+  function maxFloatingLeft(width: number): number {
+    return Math.max(8, window.innerWidth - Math.min(width, window.innerWidth - 16) - 8);
+  }
+
+  function maxFloatingTop(height: number): number {
+    return Math.max(8, window.innerHeight - Math.min(height, window.innerHeight - 16) - 8);
+  }
+
+  function clampValue(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function overlapArea(a: DOMRect, b: { left: number; top: number; right: number; bottom: number }): number {
+    const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+    const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    return width * height;
   }
 
   function renderDiagnosticsTab(): string {
-    const events = getProblemEvents().slice(0, 20);
-    if (events.length === 0) {
-      return `<div class="empty compact">${t("noPageErrors")}</div>`;
-    }
+    const issueEvents = getProblemEvents();
+    const logEvents = getConsoleLogEvents();
+    const activeEvents = diagnosticFilter === "logs" ? logEvents : issueEvents;
 
+    return `
+      <div class="toolbar diagnostic-toolbar">
+        <div class="filter-tabs" role="tablist" aria-label="${t("diagnostics")}">
+          ${diagnosticFilterButton("issues", t("issueArchive"), issueEvents.length)}
+          ${diagnosticFilterButton("logs", "console.log", logEvents.length)}
+        </div>
+        <button data-action="copy-all-errors" ${issueEvents.length === 0 ? "disabled" : ""}>${t("copyAllErrors")}</button>
+      </div>
+      ${
+        activeEvents.length === 0
+          ? `<div class="empty compact">${diagnosticFilter === "logs" ? t("noConsoleLogs") : t("noPageErrors")}</div>`
+          : diagnosticFilter === "logs"
+            ? renderConsoleLogList(logEvents)
+            : renderDiagnosticArchive(issueEvents)
+      }
+    `;
+  }
+
+  function diagnosticFilterButton(filter: DiagnosticFilter, label: string, count: number): string {
+    return `
+      <button type="button" data-diagnostic-filter="${filter}" class="${diagnosticFilter === filter ? "active" : ""}" role="tab" aria-selected="${diagnosticFilter === filter}">
+        <span>${escapeHtml(label)}</span>
+        ${count > 0 ? `<strong>${count > 99 ? "99+" : count}</strong>` : ""}
+      </button>
+    `;
+  }
+
+  function renderDiagnosticArchive(events: LiveDiagnosticEvent[]): string {
+    const groups = groupDiagnosticEvents(events).slice(0, 24);
+    return `
+      <div class="diagnostic-list">
+        ${groups.map((group, index) => renderDiagnosticGroup(group, index)).join("")}
+      </div>
+    `;
+  }
+
+  function renderDiagnosticGroup(group: DiagnosticGroup, index: number): string {
+    const source = group.source || group.events.find((event) => event.source || event.url)?.source || group.events.find((event) => event.source || event.url)?.url || "";
+    return `
+      <details class="issue diagnostic-group ${group.severity}" ${index < 4 ? "open" : ""}>
+        <summary class="issue-summary">
+          <span>
+            <strong>${escapeHtml(eventTypeLabel(group.events[0]))}</strong>
+            <small>${escapeHtml(truncate(group.message, 120))}</small>
+          </span>
+          <b>${group.count}</b>
+          <em>${formatTime(group.lastTimestamp)}</em>
+        </summary>
+        <p>${escapeHtml(group.message)}</p>
+        ${source ? `<code>${escapeHtml(source)}</code>` : ""}
+        <div class="issue-samples">
+          ${group.events
+            .slice(0, 4)
+            .map(
+              (event) => `
+                <div class="issue-sample">
+                  <span>${formatTime(event.timestamp)}</span>
+                  ${event.source || event.url ? `<code>${escapeHtml(event.source || event.url || "")}</code>` : ""}
+                  ${event.stack ? `<pre>${escapeHtml(truncate(event.stack, 360))}</pre>` : ""}
+                </div>
+              `
+            )
+            .join("")}
+        </div>
+      </details>
+    `;
+  }
+
+  function renderConsoleLogList(events: LiveDiagnosticEvent[]): string {
     return `
       <div class="diagnostic-list">
         ${events
+          .slice(0, 60)
           .map(
             (event) => `
-              <article class="issue ${event.severity}">
+              <article class="issue console-log">
                 <div class="issue-head">
-                  <strong>${escapeHtml(eventTypeLabel(event))}</strong>
+                  <strong>console.log</strong>
                   <span>${formatTime(event.timestamp)}</span>
                 </div>
                 <p>${escapeHtml(event.message)}</p>
-                ${event.source || event.url ? `<code>${escapeHtml(event.source || event.url || "")}</code>` : ""}
-                ${event.stack ? `<pre>${escapeHtml(truncate(event.stack, 520))}</pre>` : ""}
+                ${event.stack ? `<pre>${escapeHtml(truncate(event.stack, 360))}</pre>` : ""}
               </article>
             `
           )
@@ -788,9 +967,13 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
     const failed = events.filter((event) => event.severity === "error" || (typeof event.status === "number" && event.status >= 400)).length;
     const slow = events.filter((event) => typeof event.duration === "number" && event.duration >= Number(sessionSettings.slowRequestThreshold ?? 2000)).length;
+    const responseCount = events.filter(hasResponseBody).length;
     const selected = getSelectedNetworkEvent(events);
 
     return `
+      <div class="toolbar network-toolbar">
+        <button data-action="copy-all-responses" ${responseCount === 0 ? "disabled" : ""}>${t("copyAllResponses")}</button>
+      </div>
       <div class="network-summary">
         <div><strong>${events.length}</strong><span>${t("latestRequests")}</span></div>
         <div><strong>${failed}</strong><span>${t("failed")}</span></div>
@@ -851,7 +1034,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function renderNetworkDetailBody(event: LiveDiagnosticEvent): string {
     if (networkDetailTab === "response") {
-      return renderPayloadPanel(event.responseBody, t("noResponseBody"));
+      return renderPayloadPanel(event.responseBody, t("responseAutoCollecting"));
     }
     if (networkDetailTab === "request") {
       return `
@@ -882,7 +1065,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       ${
         body
           ? renderPayloadPanel(body, t("noResponseBody"))
-          : `<div class="empty compact">${t("responseNotCollected")}<button data-action="enable-response-body">${t("collectResponseBody")}</button></div>`
+          : `<div class="empty compact">${t("responseAutoCollecting")}</div>`
       }
     `;
   }
@@ -978,6 +1161,17 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         const tab = button.dataset.networkDetail as NetworkDetailTab | undefined;
         if (!tab) return;
         networkDetailTab = tab;
+        renderPanel();
+      });
+    });
+
+    panel.querySelectorAll<HTMLButtonElement>("button[data-diagnostic-filter]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const filter = button.dataset.diagnosticFilter as DiagnosticFilter | undefined;
+        if (!filter) return;
+        diagnosticFilter = filter;
         renderPanel();
       });
     });
@@ -1093,20 +1287,30 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       return;
     }
 
-    if (action === "enable-response-body") {
-      const response = await sendRuntime({ type: "get-settings" });
-      const nextSettings = {
-        ...(response?.settings ?? {}),
-        collectResponseBody: true
-      };
-      const saved = await sendRuntime({ type: "save-settings", settings: nextSettings });
-      if (saved?.ok) {
-        sessionSettings = saved.settings ?? nextSettings;
-        window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
-        toast(t("responseBodyEnabled"));
-      } else {
-        toast(saved?.error || t("enableFailed"));
+    if (action === "copy-all-responses") {
+      const text = buildAllResponsesText();
+      if (!text) {
+        toast(t("noResponsesToCopy"));
+        return;
       }
+      await copyText(text);
+      toast(t("responsesCopied"));
+      return;
+    }
+
+    if (action === "copy-all-errors") {
+      const text = buildAllErrorsText();
+      if (!text) {
+        toast(t("noErrorsToCopy"));
+        return;
+      }
+      await copyText(text);
+      toast(t("errorsCopied"));
+      return;
+    }
+
+    if (action === "enable-response-body") {
+      await ensureResponseBodyCapture(true);
       return;
     }
 
@@ -1336,6 +1540,19 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     return captureStartPromise;
   }
 
+  async function ensureResponseBodyCapture(showToast = false): Promise<void> {
+    if (sessionSettings.collectResponseBody) return;
+    const response = await sendRuntime({ type: "enable-tab-response-body" });
+    if (response?.ok) {
+      sessionSettings = response.settings ?? { ...sessionSettings, collectResponseBody: true };
+      window.postMessage({ channel: CONTROL_CHANNEL, type: "start", settings: sessionSettings }, "*");
+      if (panelOpen) schedulePanelRender();
+      if (showToast) toast(t("responseBodyEnabled"));
+      return;
+    }
+    if (showToast) toast(response?.error || t("enableFailed"));
+  }
+
   async function refreshSessionSnapshot(): Promise<void> {
     const response = await sendRuntime({ type: "get-tab-session" });
     if (!response?.ok) return;
@@ -1415,6 +1632,60 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
 
   function getNetworkEvents(): LiveDiagnosticEvent[] {
     return liveEvents.filter((event) => event.type === "network").sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  function getConsoleLogEvents(): LiveDiagnosticEvent[] {
+    return liveEvents.filter((event) => event.type === "console-log").sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  function groupDiagnosticEvents(events: LiveDiagnosticEvent[]): DiagnosticGroup[] {
+    const groups = new Map<string, DiagnosticGroup>();
+    for (const event of events) {
+      const key = diagnosticGroupKey(event);
+      const group = groups.get(key);
+      if (group) {
+        group.events.push(event);
+        group.count += 1;
+        group.lastTimestamp = Math.max(group.lastTimestamp, event.timestamp);
+        group.severity = maxSeverity(group.severity, event.severity);
+        continue;
+      }
+      groups.set(key, {
+        key,
+        severity: event.severity,
+        message: event.message || eventTypeLabel(event),
+        source: event.url || event.source || "",
+        count: 1,
+        lastTimestamp: event.timestamp,
+        events: [event]
+      });
+    }
+    return Array.from(groups.values()).sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.count - a.count || b.lastTimestamp - a.lastTimestamp);
+  }
+
+  function diagnosticGroupKey(event: LiveDiagnosticEvent): string {
+    const status = typeof event.status === "number" ? String(event.status) : "";
+    const source = event.url ? formatUrl(event.url) : event.source || "";
+    const message = normalizeDiagnosticMessage(event.message);
+    return [event.type, status, source, message].join("|");
+  }
+
+  function normalizeDiagnosticMessage(value: string): string {
+    return value
+      .replace(/https?:\/\/\S+/g, "{url}")
+      .replace(/\b\d{10,}\b/g, "{number}")
+      .replace(/\b[0-9a-f]{8,}\b/gi, "{hash}")
+      .slice(0, 180);
+  }
+
+  function maxSeverity(a: LiveDiagnosticEvent["severity"], b: LiveDiagnosticEvent["severity"]): LiveDiagnosticEvent["severity"] {
+    return severityRank(b) > severityRank(a) ? b : a;
+  }
+
+  function severityRank(severity: LiveDiagnosticEvent["severity"]): number {
+    if (severity === "error") return 3;
+    if (severity === "warning") return 2;
+    return 1;
   }
 
   function getPerformanceInsights(): PerformanceInsights {
@@ -1638,6 +1909,48 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
     );
   }
 
+  function buildAllResponsesText(): string {
+    const events = getNetworkEvents().filter(hasResponseBody);
+    if (events.length === 0) return "";
+    return events
+      .map((event, index) => {
+        return [
+          `#${index + 1} ${event.method ?? "GET"} ${event.url ?? ""}`,
+          `Status: ${typeof event.status === "number" ? event.status : event.severity}`,
+          `Duration: ${typeof event.duration === "number" ? `${event.duration}ms` : "-"}`,
+          `Time: ${new Date(event.timestamp).toISOString()}`,
+          "",
+          event.responseBody ?? ""
+        ].join("\n");
+      })
+      .join("\n\n---\n\n");
+  }
+
+  function buildAllErrorsText(): string {
+    const events = getProblemEvents();
+    if (events.length === 0) return "";
+    return events
+      .map((event, index) => {
+        return [
+          `#${index + 1} [${event.severity}] ${eventTypeLabel(event)}`,
+          `Time: ${new Date(event.timestamp).toISOString()}`,
+          event.url ? `URL: ${event.url}` : "",
+          event.source ? `Source: ${event.source}` : "",
+          typeof event.status === "number" ? `Status: ${event.status}` : "",
+          event.method ? `Method: ${event.method}` : "",
+          event.message ? `Message: ${event.message}` : "",
+          event.stack ? `Stack:\n${event.stack}` : ""
+        ]
+          .filter(Boolean)
+          .join("\n");
+      })
+      .join("\n\n---\n\n");
+  }
+
+  function hasResponseBody(event: LiveDiagnosticEvent): boolean {
+    return typeof event.responseBody === "string" && event.responseBody.length > 0;
+  }
+
   function resourceToPromptItem(resource: PerformanceResourceTiming): Record<string, unknown> {
     return {
       url: resource.name,
@@ -1665,6 +1978,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
       "js-error": t("jsError"),
       "unhandled-rejection": t("promiseRejection"),
       "console-error": "console.error",
+      "console-log": "console.log",
       network: t("requestIssue"),
       "resource-error": t("resourceFailure"),
       performance: t("performanceLabel")
@@ -2363,6 +2677,7 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .style-editor-popover[hidden] { display: none; }
+      .style-editor-popover.dragging { user-select: none; }
       .style-editor-head {
         position: sticky;
         top: 0;
@@ -2374,6 +2689,9 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         padding: 10px;
         border-bottom: 1px solid #e4e5df;
         background: #fbfbf8;
+        cursor: move;
+        touch-action: none;
+        user-select: none;
       }
       .style-editor-head strong {
         min-width: 0;
@@ -2797,11 +3115,46 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         display: grid;
         gap: 8px;
       }
+      .diagnostic-toolbar {
+        align-items: center;
+        justify-content: space-between;
+      }
+      .filter-tabs {
+        display: flex;
+        min-width: 0;
+        gap: 6px;
+      }
+      .filter-tabs button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .filter-tabs button.active {
+        border-color: #1f7a5c;
+        background: #f4f8f3;
+        color: #163d31;
+      }
+      .filter-tabs strong {
+        min-width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        background: #d34836;
+        color: #fff;
+        font-size: 11px;
+        line-height: 18px;
+        text-align: center;
+      }
       .issue {
         padding: 10px;
         border: 1px solid #e2e4dc;
         border-radius: 8px;
         background: #fff;
+      }
+      details.issue {
+        padding: 0;
+      }
+      details.issue[open] {
+        padding-bottom: 10px;
       }
       .issue.error {
         border-color: rgba(211,72,54,.38);
@@ -2824,11 +3177,75 @@ import { contentText, normalizeContentLocale, type ContentLocale, type ContentTe
         color: #697064;
         font-size: 12px;
       }
+      .issue-summary {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        align-items: center;
+        gap: 8px;
+        padding: 10px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .issue-summary::marker {
+        color: #697064;
+      }
+      .issue-summary span {
+        display: grid;
+        min-width: 0;
+        gap: 3px;
+      }
+      .issue-summary strong,
+      .issue-summary small {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .issue-summary strong {
+        color: #151713;
+      }
+      .issue-summary small,
+      .issue-summary em {
+        color: #697064;
+        font-size: 12px;
+        font-style: normal;
+      }
+      .issue-summary b {
+        min-width: 24px;
+        height: 20px;
+        border-radius: 5px;
+        background: #eef1ea;
+        color: #27483b;
+        font-size: 12px;
+        line-height: 20px;
+        text-align: center;
+      }
       .issue p {
         margin: 7px 0 0;
         color: #333a31;
         line-height: 1.45;
         overflow-wrap: anywhere;
+      }
+      .diagnostic-group > p,
+      .diagnostic-group > code,
+      .diagnostic-group > .issue-samples {
+        margin-left: 10px;
+        margin-right: 10px;
+      }
+      .issue-samples {
+        display: grid;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .issue-sample {
+        display: grid;
+        gap: 4px;
+        padding: 8px;
+        border-radius: 6px;
+        background: #f6f7f3;
+      }
+      .issue-sample span {
+        color: #697064;
+        font-size: 12px;
       }
       .issue code {
         min-width: 0;

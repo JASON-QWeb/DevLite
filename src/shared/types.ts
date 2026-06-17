@@ -2,6 +2,7 @@ export type DiagnosticEventType =
   | "js-error"
   | "unhandled-rejection"
   | "console-error"
+  | "console-log"
   | "network"
   | "resource-error"
   | "user-click"

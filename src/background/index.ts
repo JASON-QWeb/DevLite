@@ -13,6 +13,7 @@ import type {
 } from "../shared/types";
 
 const sessions = new Map<number, DiagnosticSession>();
+const responseBodyCaptureTabs = new Set<number>();
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(SETTINGS_KEY, (result) => {
@@ -53,13 +54,14 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "get-current-session") {
     const tab = await getActiveTab();
     const session = typeof tab.id === "number" ? sessions.get(tab.id) : undefined;
-    return { ok: true, session: session ?? null, settings: await getSettings() };
+    const settings = typeof tab.id === "number" ? await getTabSettings(tab.id) : await getSettings();
+    return { ok: true, session: session ?? null, settings };
   }
 
   if (type === "get-tab-session") {
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
-    return { ok: true, session: sessions.get(tabId) ?? null, settings: await getSettings() };
+    return { ok: true, session: sessions.get(tabId) ?? null, settings: await getTabSettings(tabId) };
   }
 
   if (type === "ensure-session") {
@@ -96,14 +98,21 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     };
     session.updatedAt = Date.now();
     sessions.set(tabId, session);
-    return { ok: true, session, settings: await getSettings() };
+    return { ok: true, session, settings: await getTabSettings(tabId) };
+  }
+
+  if (type === "enable-tab-response-body") {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    responseBodyCaptureTabs.add(tabId);
+    return { ok: true, settings: await getTabSettings(tabId) };
   }
 
   if (type === "start-diagnosis") {
     const tab = await getActiveTab();
     if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
     await ensurePageScripts(tab.id);
-    const settings = await getSettings();
+    const settings = await getTabSettings(tab.id);
     const session = createSession(tab.id, message.page ?? createFallbackPageContext(tab));
     sessions.set(tab.id, session);
     await chrome.tabs.sendMessage(tab.id, { type: "devlite-start-capture", sessionId: session.id, settings });
@@ -144,7 +153,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "diagnostic-event") {
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
-    const settings = await getSettings();
+    const settings = await getTabSettings(tabId);
     const event = sanitizeEvent(message.event as DiagnosticEvent, settings);
     upsertEvent(tabId, event);
     return { ok: true };
@@ -182,7 +191,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "generate-report") {
     const tabId = await getSessionTabId(sender);
     const session = await requireSession(tabId);
-    const settings = await getSettings();
+    const settings = await getTabSettings(tabId);
     const safeSession = sanitizeSession(session, settings);
     return {
       ok: true,
@@ -195,7 +204,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "generate-export") {
     const tabId = await getSessionTabId(sender);
     const session = await requireSession(tabId);
-    const settings = await getSettings();
+    const settings = await getTabSettings(tabId);
     const safeSession = sanitizeSession(session, settings);
     return { ok: true, text: generateExport(safeSession, settings, message.format as ExportFormat) };
   }
@@ -342,6 +351,16 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
 async function getSettings(): Promise<DiagnosticSettings> {
   const result = await chrome.storage.local.get(SETTINGS_KEY);
   return mergeSettings(result[SETTINGS_KEY]);
+}
+
+async function getTabSettings(tabId: number): Promise<DiagnosticSettings> {
+  const settings = await getSettings();
+  return responseBodyCaptureTabs.has(tabId)
+    ? {
+        ...settings,
+        collectResponseBody: true
+      }
+    : settings;
 }
 
 async function saveSettings(settings: DiagnosticSettings): Promise<void> {
