@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DevLite 文档</title>
+    <meta name="description" content="DevLite Chrome 扩展公开文档。" />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f5ef;
+        --panel: #ffffff;
+        --text: #171615;
+        --muted: #6f6a61;
+        --border: #e4ded2;
+        --accent: #bd5b3f;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+          sans-serif;
+        line-height: 1.7;
+      }
+
+      main {
+        width: min(840px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 72px 0;
+      }
+
+      .panel {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 40px;
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        font-size: clamp(32px, 6vw, 52px);
+        line-height: 1.05;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 0 0 24px;
+        color: var(--muted);
+      }
+
+      a {
+        color: var(--accent);
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .links {
+        display: grid;
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .link-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px 18px;
+        color: var(--text);
+      }
+
+      .link-item span {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      @media (max-width: 560px) {
+        main {
+          padding: 40px 0;
+        }
+
+        .panel {
+          padding: 28px 22px;
+        }
+
+        .link-item {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel" aria-labelledby="title">
+        <h1 id="title">DevLite 文档</h1>
+        <p>DevLite 是用于网页前端诊断、页面临时编辑记录和修复 Prompt 导出的 Chrome 扩展。</p>
+        <div class="links">
+          <a class="link-item" href="./privacy.html">
+            <strong>隐私政策</strong>
+            <span>Chrome Web Store 上架使用</span>
+          </a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

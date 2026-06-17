@@ -37,6 +37,6 @@
       "matches": ["http://*/*", "https://*/*"]
     }
   ],
-  "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
+  "permissions": ["scripting", "storage", "clipboardWrite"],
   "host_permissions": ["http://*/*", "https://*/*"]
 }
