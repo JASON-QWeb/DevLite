@@ -2,6 +2,7 @@
   "name": "devlite",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "A lightweight inspection-mode Chrome extension for live page edits, data lookup, diagnostics, and repair prompt export.",
   "scripts": {
@@ -10,6 +11,7 @@
     "smoke": "npm run build && node scripts/smoke.mjs",
     "qa": "npm run build && node scripts/qa-extension.mjs",
     "preview": "vite preview --host 127.0.0.1",
+    "readme:images": "npm run build && node scripts/generate-readme-covers.mjs",
     "store:images": "npm run build && node scripts/generate-store-images.mjs",
     "zip": "npm run build && rm -f devlite.zip && cd dist && zip -r ../devlite.zip ."
   },
