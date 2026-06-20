@@ -11,6 +11,31 @@ export type DiagnosticEventType =
 export type Severity = "info" | "warning" | "error";
 export type UiLocale = "zh" | "en";
 export type UiTheme = "claude" | "saas" | "dark" | "cartoon";
+export type StyleChangeVerificationStatus = "waiting" | "failed";
+export type StyleChangeArchiveReason = "verified" | "manual";
+
+export interface ImageEditMetadata {
+  mode: "crop";
+  source: {
+    name: string;
+    type: string;
+    size: number;
+    width: number;
+    height: number;
+  };
+  crop: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    aspectRatio: number | null;
+  };
+  output: {
+    width: number;
+    height: number;
+    type: string;
+  };
+}
 
 export interface DiagnosticSettings {
   locale: UiLocale;
@@ -73,8 +98,22 @@ export interface StyleChange {
   domBefore?: string;
   domAfter?: string;
   domAction?: string;
+  imageEdit?: ImageEditMetadata;
+  exportedAt?: number;
+  exportedPageLoadId?: string;
+  exportedMutationVersion?: number;
+  verificationStatus?: StyleChangeVerificationStatus;
+  lastVerifiedAt?: number;
+  lastVerifyReason?: string;
   updatedAt: number;
   note?: string;
+}
+
+export interface ArchivedStyleChange {
+  change: StyleChange;
+  archivedAt: number;
+  archiveReason: StyleChangeArchiveReason;
+  verificationReason?: string;
 }
 
 export interface ElementLocator {
@@ -111,6 +150,7 @@ export interface DiagnosticSession {
   page: PageContext;
   events: DiagnosticEvent[];
   styleChanges: StyleChange[];
+  archivedStyleChanges: ArchivedStyleChange[];
   createdAt: number;
   updatedAt: number;
 }

@@ -39,6 +39,14 @@ export function getStyleChangeRecords(sessionChanges: StyleChange[] | undefined,
   return Array.from(records.values()).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+export function getPromptableStyleChangeRecords(sessionChanges: StyleChange[] | undefined, currentChange: StyleChange | null): StyleChange[] {
+  return getStyleChangeRecords(sessionChanges, currentChange).filter((change) => !change.exportedAt);
+}
+
+export function getVerifyingStyleChangeRecords(sessionChanges: StyleChange[] | undefined, currentChange: StyleChange | null): StyleChange[] {
+  return getStyleChangeRecords(sessionChanges, currentChange).filter((change) => !!change.exportedAt);
+}
+
 export function hasRecordedChange(change: StyleChange): boolean {
   return Object.keys(change.after).length > 0 || change.textAfter !== undefined || change.htmlAfter !== undefined || change.domAfter !== undefined;
 }

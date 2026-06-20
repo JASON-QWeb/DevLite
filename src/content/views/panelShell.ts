@@ -1,7 +1,7 @@
 import type { ContentTextKey } from "../i18n";
 import { LOGO_URL } from "../panelConfig";
 import type { OverlayTab, UiLocale } from "../types";
-import { panelIcon } from "./icons";
+import { githubIcon, panelIcon } from "./icons";
 
 type PanelCounts = {
   changes: number;
@@ -38,6 +38,13 @@ export function renderPanelShell(context: PanelShellContext): string {
             ${navButton("performance", t("performance"), counts.performance, activeTab)}
           </nav>
           <div class="sidebar-spacer"></div>
+          <a
+            href="https://github.com/JASON-QWeb/DevLite"
+            data-action="open-source-page"
+            class="open-source-link"
+            title="${t("openSourceStarHint")}"
+            aria-label="${t("installCompanionSkill")}"
+          >${githubIcon()}<span>${t("installCompanionSkill")}</span></a>
           <div class="sidebar-tools">
             <button data-action="toggle-locale" class="locale-button" title="Language" aria-label="Language">${uiLocale === "en" ? "中" : "EN"}</button>
             <button data-action="show-settings" class="config-button icon-only ${activeTab === "settings" ? "active" : ""}" title="${t("settings")}" aria-label="${t("settings")}">${panelIcon("settings")}</button>

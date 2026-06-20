@@ -11,12 +11,15 @@ import type {
   DiagnosticSettings,
   ExportFormat,
   PageContext,
+  StyleChangeArchiveReason,
+  StyleChangeVerificationStatus,
   StyleChange
 } from "../shared/types";
 
 const responseBodyCaptureTabs = new Set<number>();
 const LEGACY_CONTENT_SCRIPT_ID = "devlite-content";
 const MAIN_WORLD_SCRIPT_ID = "devlite-main-world-injected";
+const OPEN_SOURCE_URL = "https://github.com/JASON-QWeb/DevLite";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(SETTINGS_KEY, (result) => {
@@ -42,6 +45,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === "loading") {
     responseBodyCaptureTabs.delete(tabId);
   }
+});
+
+chrome.action.onClicked.addListener((tab) => {
+  void openPagePanel(tab).catch((error) => console.warn("[DevLite] open panel from toolbar failed", error));
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -223,6 +230,31 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     return { ok: true };
   }
 
+  if (type === "style-changes-mark-exported") {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    await markStyleChangesExported(tabId, Array.isArray(message.ids) ? message.ids : [], {
+      pageLoadId: message.pageLoadId,
+      mutationVersion: message.mutationVersion,
+      reason: message.reason
+    });
+    return { ok: true };
+  }
+
+  if (type === "style-change-verification-update") {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    await updateStyleChangeVerification(tabId, message.id, message.status, message.reason);
+    return { ok: true };
+  }
+
+  if (type === "style-changes-archive") {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    await archiveStyleChanges(tabId, Array.isArray(message.ids) ? message.ids : [], message.reason, message.verificationReason);
+    return { ok: true };
+  }
+
   if (type === "clear-network-events") {
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
@@ -262,6 +294,11 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     return opened ? { ok: true } : { ok: false, error: "当前页面不支持打开 DevLite 面板" };
   }
 
+  if (type === "open-source-page") {
+    await chrome.tabs.create({ url: OPEN_SOURCE_URL });
+    return { ok: true };
+  }
+
   return { ok: false, error: `未知消息类型：${type}` };
 }
 
@@ -274,6 +311,7 @@ function createSession(tabId: number, page: PageContext): DiagnosticSession {
     page: { ...page, startedAt: now },
     events: [],
     styleChanges: [],
+    archivedStyleChanges: [],
     createdAt: now,
     updatedAt: now
   };
@@ -328,6 +366,8 @@ async function upsertStyleChange(tabId: number, change: StyleChange): Promise<vo
         },
         startedAt: Date.now()
       });
+    session.styleChanges ??= [];
+    session.archivedStyleChanges ??= [];
     const index = session.styleChanges.findIndex((item) => item.id === change.id);
     if (index >= 0) {
       session.styleChanges[index] = change;
@@ -342,8 +382,97 @@ async function upsertStyleChange(tabId: number, change: StyleChange): Promise<vo
 async function deleteStyleChange(tabId: number, id: string): Promise<void> {
   await sessionStore.update(tabId, (session) => {
     if (!session) return undefined;
+    session.styleChanges ??= [];
     session.styleChanges = session.styleChanges.filter((change) => change.id !== id);
     session.updatedAt = Date.now();
+    return session;
+  });
+}
+
+async function markStyleChangesExported(
+  tabId: number,
+  ids: string[],
+  metadata: { pageLoadId?: string; mutationVersion?: number; reason?: string }
+): Promise<void> {
+  if (ids.length === 0) return;
+  const idSet = new Set(ids);
+  const now = Date.now();
+  await sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    session.styleChanges ??= [];
+    session.archivedStyleChanges ??= [];
+    session.styleChanges = session.styleChanges.map((change) => {
+      if (!idSet.has(change.id)) return change;
+      return {
+        ...change,
+        exportedAt: change.exportedAt ?? now,
+        exportedPageLoadId: metadata.pageLoadId,
+        exportedMutationVersion: metadata.mutationVersion,
+        verificationStatus: "waiting",
+        lastVerifiedAt: now,
+        lastVerifyReason: metadata.reason || "Waiting for page refresh or hot update"
+      };
+    });
+    session.updatedAt = now;
+    return session;
+  });
+}
+
+async function updateStyleChangeVerification(
+  tabId: number,
+  id: string,
+  status: StyleChangeVerificationStatus,
+  reason: string
+): Promise<void> {
+  if (status !== "waiting" && status !== "failed") return;
+  await sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    session.styleChanges ??= [];
+    const index = session.styleChanges.findIndex((change) => change.id === id);
+    if (index < 0) return session;
+    session.styleChanges[index] = {
+      ...session.styleChanges[index],
+      verificationStatus: status,
+      lastVerifiedAt: Date.now(),
+      lastVerifyReason: reason
+    };
+    session.updatedAt = Date.now();
+    return session;
+  });
+}
+
+async function archiveStyleChanges(
+  tabId: number,
+  ids: string[],
+  reason: StyleChangeArchiveReason,
+  verificationReason?: string
+): Promise<void> {
+  if (ids.length === 0 || (reason !== "verified" && reason !== "manual")) return;
+  const idSet = new Set(ids);
+  const now = Date.now();
+  await sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    session.styleChanges ??= [];
+    session.archivedStyleChanges ??= [];
+    const archived = session.styleChanges.filter((change) => idSet.has(change.id));
+    if (archived.length === 0) return session;
+    session.styleChanges = session.styleChanges.filter((change) => !idSet.has(change.id));
+    const existing = new Set(session.archivedStyleChanges.map((item) => item.change.id));
+    for (const change of archived) {
+      if (existing.has(change.id)) continue;
+      session.archivedStyleChanges.push({
+        change: {
+          ...change,
+          verificationStatus: undefined,
+          lastVerifiedAt: now,
+          lastVerifyReason: verificationReason
+        },
+        archivedAt: now,
+        archiveReason: reason,
+        verificationReason
+      });
+    }
+    session.updatedAt = now;
     return session;
   });
 }

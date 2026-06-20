@@ -27,7 +27,7 @@ export class PanelPositionController {
   startDrag(panel: HTMLElement | null, event: PointerEvent, onEnd?: () => void): void {
     if (!panel) return;
     const target = event.target as HTMLElement | null;
-    if (target?.closest("button, input, select, textarea, summary, [data-panel-resize]")) return;
+    if (target?.closest("a, button, input, select, textarea, summary, [data-panel-resize]")) return;
     event.preventDefault();
     event.stopPropagation();
 

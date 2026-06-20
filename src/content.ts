@@ -3,7 +3,9 @@ import {
   applyStyleChange,
   createStyleChange,
   ensureTextChangeBaseline as ensureTextChangeRecordBaseline,
+  getPromptableStyleChangeRecords as getPromptableRecordedStyleChanges,
   getStyleChangeRecords as getRecordedStyleChanges,
+  getVerifyingStyleChangeRecords as getVerifyingRecordedStyleChanges,
   recordTextAfter as recordTextChangeAfter,
   undoStyleChange
 } from "./content/changeManager";
@@ -16,7 +18,8 @@ import {
 } from "./content/domLocator";
 import { DiagnosticEventBatcher, DiagnosticEventStore } from "./content/diagnosticEvents";
 import { canEditTextContent as canEditTextContentBase } from "./content/editableText";
-import { bindImageFileInput } from "./content/imageFileInput";
+import { ImageCropperController } from "./content/imageCropper";
+import { bindImageFileInput, type ImageFilePayload } from "./content/imageFileInput";
 import { applyIconReplacement, applyImageReplacement } from "./content/imageReplacement";
 import { InlineTextEditor } from "./content/inlineTextEditor";
 import { LauncherDockController } from "./content/launcherDock";
@@ -40,6 +43,7 @@ import { PerformanceMonitor } from "./content/performanceMonitor";
 import { collectPanelSettingsForm, mergePanelSettings, normalizeLocale, normalizeTheme } from "./content/settings";
 import { bindStyleEditorEvents } from "./content/styleEditorEvents";
 import { StyleEditorPositionController } from "./content/styleEditorPosition";
+import { verifyStyleChange } from "./content/styleVerification";
 import {
   escapeHtml,
   formatTime as formatLocalizedTime,
@@ -57,12 +61,15 @@ import { generateRepairPromptForChanges } from "./shared/exporters";
 import type {
   DiagnosticFilter,
   DiagnosticGroup,
+  ArchivedStyleChange,
+  ImageEditMetadata,
   LiveDiagnosticEvent,
   NetworkDetailTab,
   OverlayTab,
   PanelSettings,
   PerformanceInsights,
   StyleChange,
+  StyleChangeArchiveReason,
   UiLocale
 } from "./content/types";
 
@@ -86,6 +93,14 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   isolatedWindow.__DEVLITE_CONTENT_INSTALLED__ = true;
   const pageMessageTargetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
   const pageMessageToken = randomId();
+  const pageLoadId = randomId();
+  let pageMutationVersion = 0;
+  let verificationTimer: number | null = null;
+  let verificationPromise: Promise<void> | null = null;
+  let verificationRerunRequested = false;
+  let verificationForceRenderRequested = false;
+  let suppressVerificationMutations = false;
+  const exportedElementRefs = new Map<string, HTMLElement>();
 
   let captureActive = false;
   let inspectorActive = false;
@@ -113,9 +128,10 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   let captureStartPromise: Promise<void> | null = null;
   let captureGeneration = 0;
   const diagnosticEvents = new DiagnosticEventStore();
-  let sessionSnapshot: { events?: LiveDiagnosticEvent[]; styleChanges?: StyleChange[] } | null = null;
+  let sessionSnapshot: { events?: LiveDiagnosticEvent[]; styleChanges?: StyleChange[]; archivedStyleChanges?: ArchivedStyleChange[] } | null = null;
   let styleChangeSyncPromise: Promise<any> | null = null;
   let imageReplaceInput: HTMLInputElement | null = null;
+  let imageCropperController: ImageCropperController | null = null;
   const panelPositionController = new PanelPositionController();
   const styleEditorPositionController = new StyleEditorPositionController();
   const diagnosticEventBatcher = new DiagnosticEventBatcher((events) => {
@@ -165,7 +181,9 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   window.addEventListener("message", (event) => {
     if (!isTrustedPageMessage(event)) return;
     const data = event.data;
-    if (!data || data.channel !== PAGE_CHANNEL || !data.event) return;
+    if (!data || data.channel !== PAGE_CHANNEL) return;
+    if (imageCropperController?.handlePageMessage(data)) return;
+    if (!data.event) return;
     if (!captureActive) return;
     rememberDiagnosticEvent(data.event);
     diagnosticEventBatcher.enqueue(data.event);
@@ -264,6 +282,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   });
   window.addEventListener("pagehide", flushDiagnosticEvents);
   document.addEventListener("scroll", syncElementOverlays, true);
+  observePageMutations();
 
   async function handleRuntimeMessage(message: any): Promise<any> {
     if (message?.type === "devlite-ping") {
@@ -324,6 +343,25 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     } catch (error) {
       handleAsyncError(error);
     }
+  }
+
+  function observePageMutations(): void {
+    const observer = new MutationObserver((mutations) => {
+      if (suppressVerificationMutations) return;
+      const hasPageMutation = mutations.some((mutation) => {
+        const target = mutation.target;
+        return target instanceof Node && !overlayHost?.contains(target);
+      });
+      if (!hasPageMutation) return;
+      pageMutationVersion += 1;
+      scheduleExportedStyleVerification();
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
   }
 
   function t(key: ContentTextKey): string {
@@ -391,10 +429,17 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     panel.className = "devlite-panel";
     panel.hidden = true;
     shadow.append(style, highlighter, launcherDockController.element, styleEditor, imageReplaceInput, panel);
+    imageCropperController = new ImageCropperController({
+      t,
+      sendRequest: postControlMessage,
+      onApply: (result) => replaceSelectedImage(result.src, result.label, result.metadata),
+      onCancel: () => undefined,
+      onError: () => toast(t("replaceImageFailed"))
+    });
     bindImageFileInput({
       input: imageReplaceInput,
       onError: () => toast(t("replaceImageFailed")),
-      onLoad: replaceSelectedImage
+      onLoad: handleSelectedImageFile
     });
     document.documentElement.appendChild(overlayHost);
     applyOverlayTheme();
@@ -490,7 +535,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       activeTab: activePanelTab,
       captureActive,
       counts: {
-        changes: getStyleChangeRecords().length,
+        changes: getPromptableStyleChangeRecords().length,
         diagnostics: getProblemEvents().length,
         network: getNetworkEvents().length,
         performance: getPerformanceInsights().issues.length
@@ -550,6 +595,15 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       await undoStyleChangeById(source?.dataset.changeId ?? "");
       return;
     }
+    if (action === "verify-style-records") {
+      await verifyExportedStyleChanges(true);
+      renderPanel();
+      return;
+    }
+    if (action === "archive-style-record") {
+      await archiveStyleChangeById(source?.dataset.changeId ?? "", "manual", t("archivedManually"));
+      return;
+    }
     if (action === "clear-network-events") {
       await clearNetworkEvents();
       return;
@@ -604,7 +658,9 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function renderElementTab(): string {
     return renderElementTabView({
-      records: getStyleChangeRecords(),
+      pendingRecords: getPromptableStyleChangeRecords(),
+      verifyingRecords: getVerifyingStyleChangeRecords(),
+      archivedRecords: getArchivedStyleChangeRecords(),
       inspectorActive,
       locale: uiLocale,
       t,
@@ -620,7 +676,22 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     return getRecordedStyleChanges(sessionSnapshot?.styleChanges, currentChange);
   }
 
+  function getPromptableStyleChangeRecords(): StyleChange[] {
+    return getPromptableRecordedStyleChanges(sessionSnapshot?.styleChanges, currentChange);
+  }
+
+  function getVerifyingStyleChangeRecords(): StyleChange[] {
+    return getVerifyingRecordedStyleChanges(sessionSnapshot?.styleChanges, currentChange);
+  }
+
+  function getArchivedStyleChangeRecords(): ArchivedStyleChange[] {
+    return sessionSnapshot?.archivedStyleChanges ?? [];
+  }
+
   async function copySelectedStylePrompt(): Promise<void> {
+    if (styleChangeSyncPromise) {
+      await styleChangeSyncPromise.catch(() => null);
+    }
     const selectedIds = new Set(
       Array.from(panel?.querySelectorAll<HTMLInputElement>("input[data-style-record-select]:checked") ?? []).map((input) => input.value)
     );
@@ -634,7 +705,9 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       return;
     }
     await copyText(generateRepairPromptForChanges(selectedChanges, uiLocale, getPageContext()));
-    toast(t("fullPromptCopied"));
+    await markStyleChangesExported(selectedChanges);
+    renderPanel();
+    toast(t("promptCopiedPendingVerification"));
   }
 
   function selectAllStyleRecords(): void {
@@ -642,6 +715,32 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     const shouldSelectAll = inputs.some((input) => !input.checked);
     inputs.forEach((input) => {
       input.checked = shouldSelectAll;
+    });
+  }
+
+  async function markStyleChangesExported(changes: StyleChange[]): Promise<void> {
+    if (changes.length === 0) return;
+    const ids = changes.map((change) => change.id);
+    const now = Date.now();
+    for (const change of changes) {
+      const element = resolveStyleChangeElement(change);
+      if (element) exportedElementRefs.set(change.id, element);
+    }
+    updateLocalStyleChanges(ids, (change) => ({
+      ...change,
+      exportedAt: change.exportedAt ?? now,
+      exportedPageLoadId: pageLoadId,
+      exportedMutationVersion: pageMutationVersion,
+      verificationStatus: "waiting",
+      lastVerifiedAt: now,
+      lastVerifyReason: t("waitingForPageUpdate")
+    }));
+    await sendRuntime({
+      type: "style-changes-mark-exported",
+      ids,
+      pageLoadId,
+      mutationVersion: pageMutationVersion,
+      reason: t("waitingForPageUpdate")
     });
   }
 
@@ -679,6 +778,150 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     }
   }
 
+  function scheduleExportedStyleVerification(): void {
+    if (verificationTimer !== null) {
+      window.clearTimeout(verificationTimer);
+    }
+    verificationTimer = window.setTimeout(() => {
+      verificationTimer = null;
+      void verifyExportedStyleChanges(false).catch(handleAsyncError);
+    }, 350);
+  }
+
+  async function verifyExportedStyleChanges(forceRender: boolean): Promise<void> {
+    if (verificationPromise) {
+      verificationRerunRequested = true;
+      verificationForceRenderRequested = verificationForceRenderRequested || forceRender;
+      return verificationPromise;
+    }
+
+    verificationForceRenderRequested = verificationForceRenderRequested || forceRender;
+    verificationPromise = runExportedStyleVerificationLoop().finally(() => {
+      verificationPromise = null;
+    });
+
+    return verificationPromise;
+  }
+
+  async function runExportedStyleVerificationLoop(): Promise<void> {
+    do {
+      const startedMutationVersion = pageMutationVersion;
+      const forceRender = verificationForceRenderRequested;
+      verificationRerunRequested = false;
+      verificationForceRenderRequested = false;
+
+      await runExportedStyleVerificationPass(forceRender);
+
+      if (pageMutationVersion !== startedMutationVersion) {
+        verificationRerunRequested = true;
+      }
+    } while (verificationRerunRequested);
+  }
+
+  async function runExportedStyleVerificationPass(forceRender: boolean): Promise<void> {
+    const records = getVerifyingStyleChangeRecords();
+    if (records.length === 0) return;
+
+    let changed = false;
+    for (const change of records) {
+      const element = resolveStyleChangeElement(change);
+      suppressVerificationMutations = true;
+      const result = verifyStyleChange(change, element, {
+        pageLoadId,
+        mutationVersion: pageMutationVersion,
+        exportedElement: exportedElementRefs.get(change.id) ?? null,
+        normalizationRoot: shadow,
+        t
+      });
+      window.setTimeout(() => {
+        suppressVerificationMutations = false;
+      }, 0);
+
+      if (result.status === "verified") {
+        await archiveStyleChangeById(change.id, "verified", result.reason, false);
+        changed = true;
+        continue;
+      }
+
+      const nextStatus = result.status;
+      if (change.verificationStatus !== nextStatus || change.lastVerifyReason !== result.reason) {
+        updateLocalStyleChanges([change.id], (item) => ({
+          ...item,
+          verificationStatus: nextStatus,
+          lastVerifiedAt: Date.now(),
+          lastVerifyReason: result.reason
+        }));
+        await sendRuntime({
+          type: "style-change-verification-update",
+          id: change.id,
+          status: nextStatus,
+          reason: result.reason
+        });
+        changed = true;
+      }
+    }
+    if ((changed || forceRender) && panelOpen && activePanelTab === "element") {
+      renderPanel();
+    }
+  }
+
+  async function archiveStyleChangeById(
+    id: string,
+    reason: StyleChangeArchiveReason,
+    verificationReason: string,
+    showToast = true
+  ): Promise<void> {
+    const change = getStyleChangeRecords().find((item) => item.id === id);
+    if (!change) return;
+    await sendRuntime({ type: "style-changes-archive", ids: [id], reason, verificationReason });
+    archiveLocalStyleChange(change, reason, verificationReason);
+    if (currentChange?.id === id) {
+      currentChange = null;
+    }
+    exportedElementRefs.delete(id);
+    if (panelOpen && activePanelTab === "element") renderPanel();
+    if (showToast) toast(t("elementArchived"));
+  }
+
+  function updateLocalStyleChanges(ids: string[], updater: (change: StyleChange) => StyleChange): void {
+    const idSet = new Set(ids);
+    if (sessionSnapshot) {
+      sessionSnapshot = {
+        ...sessionSnapshot,
+        styleChanges: (sessionSnapshot.styleChanges ?? []).map((change) => (idSet.has(change.id) ? updater(change) : change))
+      };
+    }
+    if (currentChange && idSet.has(currentChange.id)) {
+      currentChange = updater(currentChange);
+    }
+  }
+
+  function archiveLocalStyleChange(change: StyleChange, reason: StyleChangeArchiveReason, verificationReason: string): void {
+    if (sessionSnapshot) {
+      const archived = sessionSnapshot.archivedStyleChanges ?? [];
+      sessionSnapshot = {
+        ...sessionSnapshot,
+        styleChanges: (sessionSnapshot.styleChanges ?? []).filter((item) => item.id !== change.id),
+        archivedStyleChanges: archived.some((item) => item.change.id === change.id)
+          ? archived
+          : [
+              ...archived,
+              {
+                change: {
+                  ...change,
+                  verificationStatus: undefined,
+                  lastVerifiedAt: Date.now(),
+                  lastVerifyReason: verificationReason
+                },
+                archivedAt: Date.now(),
+                archiveReason: reason,
+                verificationReason
+              }
+            ]
+      };
+    }
+  }
+
   function removeLocalStyleChange(id: string): void {
     if (sessionSnapshot) {
       sessionSnapshot = {
@@ -686,6 +929,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
         styleChanges: (sessionSnapshot.styleChanges ?? []).filter((change) => change.id !== id)
       };
     }
+    exportedElementRefs.delete(id);
     if (currentChange?.id === id) {
       currentChange = null;
     }
@@ -753,13 +997,24 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function startImageReplacement(): void {
     if (!getConnectedSelectedElement() || !currentChange || !imageReplaceInput) return;
+    imageCropperController?.close(false);
     imageReplaceInput.click();
   }
 
-  function replaceSelectedImage(src: string, label = ""): void {
+  function handleSelectedImageFile(payload: ImageFilePayload): void {
     const element = getConnectedSelectedElement();
     if (!element || !currentChange) return;
-    applyImageReplacement(currentChange, element, src, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"));
+    if (payload.isSvg || !payload.type.startsWith("image/")) {
+      replaceSelectedImage(payload.src, payload.label);
+      return;
+    }
+    imageCropperController?.start(payload, element);
+  }
+
+  function replaceSelectedImage(src: string, label = "", imageEdit?: ImageEditMetadata): void {
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange) return;
+    applyImageReplacement(currentChange, element, src, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"), imageEdit);
     syncCurrentChange();
     updateHighlighter(element);
     updateStyleEditorPosition();
@@ -843,7 +1098,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   function startPanelDrag(event: PointerEvent): void {
     if (!panel) return;
     const target = event.target as HTMLElement | null;
-    if (target?.closest("button, input, select, textarea, summary, [data-panel-resize]")) return;
+    if (target?.closest("a, button, input, select, textarea, summary, [data-panel-resize]")) return;
     panelGestureActive = true;
     panelPositionController.startDrag(panel, event, () => {
       panelGestureActive = false;
@@ -1068,6 +1323,18 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function syncCurrentChange(): void {
     if (!currentChange) return;
+    if (currentChange.exportedAt) {
+      currentChange = {
+        ...currentChange,
+        exportedAt: undefined,
+        exportedPageLoadId: undefined,
+        exportedMutationVersion: undefined,
+        verificationStatus: undefined,
+        lastVerifiedAt: undefined,
+        lastVerifyReason: undefined
+      };
+      exportedElementRefs.delete(currentChange.id);
+    }
     const sync = sendRuntime({ type: "style-change-upsert", change: currentChange }).catch((error) => {
       handleAsyncError(error);
       return null;
@@ -1143,6 +1410,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       void sendRuntime({ type: "page-context", page: getPageContext() }).catch(handleAsyncError);
       postControlMessage({ type: "start", settings: sessionSettings });
       performanceMonitor.start();
+      scheduleExportedStyleVerification();
       schedulePanelRender();
     })().finally(() => {
       if (generation === captureGeneration) {
@@ -1186,10 +1454,12 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     sessionSnapshot = response.session ?? null;
     mergeSessionEvents(sessionSnapshot?.events ?? []);
     if (shouldSyncSettings) syncInjectedSettings();
+    scheduleExportedStyleVerification();
   }
 
   function closePanel(): void {
     stopInlineTextEdit();
+    imageCropperController?.close(false);
     stopInspector();
     selectedElement = null;
     currentChange = null;

@@ -82,6 +82,12 @@ export async function handlePanelAction(action: string, context: PanelActionCont
     return;
   }
 
+  if (action === "open-source-page") {
+    const response = await context.sendRuntime({ type: "open-source-page" });
+    if (!response?.ok) toast(response?.error || t("openSourceFailed"));
+    return;
+  }
+
   const currentChange = context.getCurrentChange();
   const selectedElement = context.getSelectedElement();
 

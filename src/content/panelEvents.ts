@@ -83,12 +83,15 @@ export function bindPanelEvents(options: PanelEventsOptions): void {
     });
   });
 
-  panel.querySelectorAll<HTMLButtonElement>("button[data-action]").forEach((button) => {
-    button.addEventListener("click", async (event) => {
+  panel.querySelectorAll<HTMLElement>("[data-action]").forEach((control) => {
+    control.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+    });
+    control.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
       try {
-        await options.onAction(button.dataset.action ?? "", button);
+        await options.onAction(control.dataset.action ?? "", control);
       } catch (error) {
         options.onError(error);
       }

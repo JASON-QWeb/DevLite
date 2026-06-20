@@ -1,10 +1,13 @@
 import { analyzeSession } from "./analyzer";
+import { promptableStyleChanges } from "./styleChanges";
+import { truncate, truncateInlineImages } from "./textUtils";
 import type { DiagnosticSettings, DiagnosticSession, UiLocale } from "./types";
 
 export function generateMarkdownReport(session: DiagnosticSession, settings: DiagnosticSettings): string {
   const locale = settings.locale;
   const analysis = analyzeSession(session, settings.slowRequestThreshold, locale);
   const page = session.page;
+  const pendingStyleChanges = promptableStyleChanges(session.styleChanges);
   const lines: string[] = [];
   const l = (zh: string, en: string) => (locale === "en" ? en : zh);
 
@@ -80,26 +83,33 @@ export function generateMarkdownReport(session: DiagnosticSession, settings: Dia
     });
   }
 
-  if (session.styleChanges.length > 0) {
+  if (pendingStyleChanges.length > 0) {
     lines.push(locale === "en" ? "## Page Edits" : "## 页面修改");
-    session.styleChanges.forEach((change, index) => {
+    pendingStyleChanges.forEach((change, index) => {
       const hasStyleChanges = Object.values(change.after).some(Boolean);
       const hasTextChange = change.textAfter !== undefined && change.textAfter !== (change.textBefore ?? "");
       const hasDomChange = change.domAfter !== undefined && change.domAfter !== (change.domBefore ?? "");
+      const hasImageEdit = Boolean(change.imageEdit);
       lines.push(`### ${index + 1}. ${change.elementLabel}`);
       lines.push(`- Selector: \`${change.selector}\``);
       lines.push(`- ${l("文本", "Text")}: ${change.textSnippet || l("无文本", "No text")}`);
+      if (hasImageEdit && change.imageEdit) {
+        const { source, crop, output } = change.imageEdit;
+        lines.push(
+          `- ${l("图片裁剪替换", "Image crop replacement")}: ${source.name} (${source.width} x ${source.height}) -> ${output.width} x ${output.height}, crop ${crop.width} x ${crop.height}`
+        );
+      }
 
       if (hasTextChange) {
         lines.push("");
         lines.push(l("文字修改前:", "Text before:"));
         lines.push("```text");
-        lines.push(truncate(change.textBefore ?? "", 1200));
+        lines.push(truncateInlineImages(change.textBefore ?? "", 1200));
         lines.push("```");
         lines.push("");
         lines.push(l("文字修改后:", "Text after:"));
         lines.push("```text");
-        lines.push(truncate(change.textAfter ?? "", 1200));
+        lines.push(truncateInlineImages(change.textAfter ?? "", 1200));
         lines.push("```");
       }
 
@@ -122,12 +132,12 @@ export function generateMarkdownReport(session: DiagnosticSession, settings: Dia
         lines.push("");
         lines.push(l("修改前:", "Before:"));
         lines.push("```html");
-        lines.push(truncate(change.domBefore ?? "", 1200));
+        lines.push(truncateInlineImages(change.domBefore ?? "", 1200));
         lines.push("```");
         lines.push("");
         lines.push(l("修改后:", "After:"));
         lines.push("```html");
-        lines.push(truncate(change.domAfter ?? "", 1200));
+        lines.push(truncateInlineImages(change.domAfter ?? "", 1200));
         lines.push("```");
       }
       lines.push("");
@@ -154,9 +164,4 @@ function cssBlock(styles: Record<string, string>, locale: UiLocale): string {
 
 function formatDate(timestamp: number, locale: UiLocale): string {
   return new Date(timestamp).toLocaleString(locale === "en" ? "en-US" : "zh-CN");
-}
-
-function truncate(value: string, max: number): string {
-  if (value.length <= max) return value;
-  return `${value.slice(0, max)}\n...[TRUNCATED ${value.length - max} chars]`;
 }

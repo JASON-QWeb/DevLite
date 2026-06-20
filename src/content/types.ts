@@ -1,7 +1,7 @@
 import type { ContentLocale } from "./i18n";
-import type { ElementAncestor, ElementLocator, MatchedCssRule, StyleChange } from "../shared/types";
+import type { ArchivedStyleChange, ElementAncestor, ElementLocator, ImageEditMetadata, MatchedCssRule, StyleChange, StyleChangeArchiveReason } from "../shared/types";
 
-export type { ElementAncestor, ElementLocator, MatchedCssRule, StyleChange };
+export type { ArchivedStyleChange, ElementAncestor, ElementLocator, ImageEditMetadata, MatchedCssRule, StyleChange, StyleChangeArchiveReason };
 
 export type InlineTextEditState = {
   element: HTMLElement;

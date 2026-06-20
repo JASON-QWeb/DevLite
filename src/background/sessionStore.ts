@@ -93,6 +93,9 @@ class SessionStore {
     for (const [tabId, session] of Object.entries(stored)) {
       const numericTabId = Number(tabId);
       if (!Number.isFinite(numericTabId) || !session) continue;
+      session.events ??= [];
+      session.styleChanges ??= [];
+      session.archivedStyleChanges ??= [];
       sessions.set(numericTabId, session);
     }
     return sessions;
@@ -101,9 +104,9 @@ class SessionStore {
   private async save(sessions: Map<number, DiagnosticSession>): Promise<Map<number, DiagnosticSession>> {
     const attempts = [
       sessions,
-      compactSessions(sessions, { maxSessions: 10, maxEvents: 300, maxStyleChanges: 120 }),
-      compactSessions(sessions, { maxSessions: 3, maxEvents: 160, maxStyleChanges: 60 }),
-      compactSessions(sessions, { maxSessions: 1, maxEvents: 80, maxStyleChanges: 30 })
+      compactSessions(sessions, { maxSessions: 10, maxEvents: 300, maxStyleChanges: 120, maxArchivedStyleChanges: 80 }),
+      compactSessions(sessions, { maxSessions: 3, maxEvents: 160, maxStyleChanges: 60, maxArchivedStyleChanges: 40 }),
+      compactSessions(sessions, { maxSessions: 1, maxEvents: 80, maxStyleChanges: 30, maxArchivedStyleChanges: 20 })
     ];
     let lastQuotaError: unknown;
 
@@ -150,7 +153,7 @@ function serializeSessions(sessions: Map<number, DiagnosticSession>): StoredSess
 
 function compactSessions(
   sessions: Map<number, DiagnosticSession>,
-  limits: { maxSessions: number; maxEvents: number; maxStyleChanges: number }
+  limits: { maxSessions: number; maxEvents: number; maxStyleChanges: number; maxArchivedStyleChanges: number }
 ): Map<number, DiagnosticSession> {
   const compacted = new Map<number, DiagnosticSession>();
   const sorted = Array.from(sessions.entries()).sort(([, left], [, right]) => {
@@ -160,8 +163,9 @@ function compactSessions(
   for (const [tabId, session] of sorted.slice(0, limits.maxSessions)) {
     compacted.set(tabId, {
       ...session,
-      events: session.events.slice(-limits.maxEvents),
-      styleChanges: session.styleChanges.slice(-limits.maxStyleChanges)
+      events: (session.events ?? []).slice(-limits.maxEvents),
+      styleChanges: (session.styleChanges ?? []).slice(-limits.maxStyleChanges),
+      archivedStyleChanges: (session.archivedStyleChanges ?? []).slice(-limits.maxArchivedStyleChanges)
     });
   }
 

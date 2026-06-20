@@ -25,6 +25,8 @@ English | [中文](./README.zh.md)
 
 ![DevLite Demo](assets/devlite-demo-en.gif)
 
+[Watch the demo video on YouTube](https://youtu.be/qLPrFxTM11E)
+
 </div>
 
 ---

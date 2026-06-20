@@ -123,6 +123,85 @@
   padding: 10px;
   border-top: 1px solid var(--dl-border);
 }
+.image-cropper-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  box-sizing: border-box;
+  pointer-events: auto;
+  background: rgba(20, 20, 19, 0.42);
+  color: var(--dl-text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.image-cropper-shell {
+  display: grid;
+  grid-template-rows: auto minmax(220px, 1fr) auto;
+  width: min(860px, calc(100vw - 32px));
+  height: min(660px, calc(100dvh - 32px));
+  min-height: 360px;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--dl-borderStrong);
+  border-radius: 8px;
+  background: var(--dl-bg);
+  box-shadow: 0 24px 80px var(--dl-shadow);
+}
+.image-cropper-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid var(--dl-border);
+}
+.image-cropper-head div {
+  min-width: 0;
+}
+.image-cropper-head strong {
+  display: block;
+  font-size: 14px;
+}
+.image-cropper-head span {
+  display: block;
+  max-width: 620px;
+  overflow: hidden;
+  color: var(--dl-textMuted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.image-cropper-stage {
+  min-height: 0;
+  padding: 12px;
+  background: var(--dl-surface2);
+}
+.image-cropper-stage cropper-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+  overflow: hidden;
+  background: #171717;
+}
+.image-cropper-stage cropper-selection {
+  outline-color: var(--dl-primary);
+}
+.image-cropper-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--dl-border);
+}
+.image-cropper-actions button.active {
+  border-color: var(--dl-primary);
+  background: var(--dl-primarySoft);
+  color: var(--dl-primary);
+}
 .devlite-dock {
   position: fixed;
   right: 0;
@@ -325,6 +404,46 @@
   color: var(--dl-primary);
 }
 .sidebar-spacer { flex: 1; }
+.open-source-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--dl-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  text-decoration: none;
+  cursor: pointer;
+}
+.open-source-link svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.open-source-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-decoration: underline;
+  text-overflow: ellipsis;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+.open-source-link:hover,
+.open-source-link:focus-visible {
+  color: var(--dl-primaryHover);
+}
+.open-source-link:focus-visible {
+  outline: 2px solid var(--dl-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 .sidebar-tools {
   display: grid;
   grid-template-columns: 1fr 36px;
@@ -425,11 +544,39 @@
   display: grid;
   gap: 8px;
 }
+.style-record-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.style-record-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--dl-text);
+  font-size: 13px;
+}
+.style-record-section-head span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--dl-surface2);
+  color: var(--dl-textMuted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 .style-record {
   padding: 10px;
   border: 1px solid var(--dl-border);
   border-radius: 8px;
   background: var(--dl-surface);
+}
+.style-record.archived {
+  opacity: .82;
 }
 .style-record-head {
   display: flex;
@@ -451,6 +598,9 @@
   gap: 8px;
   min-width: 0;
   flex: 1 1 auto;
+}
+.style-record-select.readonly {
+  pointer-events: none;
 }
 .style-record-select input {
   width: 15px;
@@ -550,6 +700,10 @@
 .style-record p {
   margin: 7px 0 0;
   color: var(--dl-text);
+}
+.style-record-status {
+  color: var(--dl-textMuted) !important;
+  font-size: 12px;
 }
 code {
   overflow:hidden;
@@ -1254,7 +1408,8 @@ details.issue[open] {
     border-bottom: 1px solid var(--dl-border);
   }
   .panel-brand,
-  .sidebar-spacer {
+  .sidebar-spacer,
+  .open-source-link {
     display: none;
   }
   .panel-nav {
