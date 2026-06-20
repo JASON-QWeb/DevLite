@@ -33,9 +33,9 @@
 
 <div align="center">
 
-[![Get it on Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Get%20Extension-1A73E8?style=for-the-badge&logo=googlechrome&logoColor=white&labelColor=202124)](#)
+[![Get it on Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Get%20Extension-1A73E8?style=for-the-badge&logo=googlechrome&logoColor=white&labelColor=202124)](https://chromewebstore.google.com/detail/devlite/pppajolpipomdlekjlmboemhoadlkgfm)
 &nbsp;&nbsp;
-[![Get it on Microsoft Edge Add-ons](https://img.shields.io/badge/Microsoft%20Edge%20Add--ons-Get%20Extension-0A7B83?style=for-the-badge&logo=microsoftedge&logoColor=white&labelColor=202124)](#)
+![Microsoft Edge Add-ons 即将上线](https://img.shields.io/badge/Microsoft%20Edge%20Add--ons-%E5%8D%B3%E5%B0%86%E4%B8%8A%E7%BA%BF-0A7B83?style=for-the-badge&logo=microsoftedge&logoColor=white&labelColor=202124)
 &nbsp;&nbsp;
 </div>
 
@@ -66,7 +66,7 @@ DevLite 导出的 Prompt 支持**全部主流 Coding Agent**：
 
 ---
 
-## 快速开始
+## 开发者启动
 
 ```bash
 git clone https://github.com/JASON-QWeb/DevLite.git
