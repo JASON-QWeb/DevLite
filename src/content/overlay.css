@@ -1053,42 +1053,6 @@ details.issue[open] {
   color: var(--dl-textMuted);
   font-size: 12px;
 }
-.network-groups {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-.network-groups section {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-width: 0;
-  padding: 8px;
-  border: 1px solid var(--dl-border);
-  border-radius: 8px;
-  background: var(--dl-surface);
-}
-.network-groups strong {
-  color: var(--dl-text);
-  font-size: 12px;
-}
-.network-groups span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  max-width: 100%;
-  padding: 3px 6px;
-  border-radius: 999px;
-  background: var(--dl-surface2);
-  color: var(--dl-textMuted);
-  font-size: 11px;
-}
-.network-groups b {
-  color: var(--dl-text);
-  font-variant-numeric: tabular-nums;
-}
 .network-workspace {
   display: grid;
   grid-template-columns: minmax(150px, var(--network-list-width, 260px)) 8px minmax(260px, 1fr);
@@ -1107,11 +1071,15 @@ details.issue[open] {
 .network-row {
   position: relative;
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
-  gap: 5px 8px;
-  height: auto;
+  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 4px 10px;
+  min-height: 58px;
+  height: auto !important;
   padding: 8px;
+  align-items: start;
   text-align: left;
+  line-height: 1.25;
   border-color: var(--dl-border);
   background: var(--dl-surface);
   overflow: hidden;
@@ -1131,30 +1099,49 @@ details.issue[open] {
   box-shadow: inset 3px 0 0 var(--dl-primary);
 }
 .network-method-stack {
-  display: grid;
+  grid-row: 1 / 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 2px;
   min-width: 0;
+  align-self: start;
 }
 .network-method {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dl-primary) 14%, transparent);
   color: var(--dl-primary);
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
 }
 .network-code {
   font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--dl-textMuted);
+  line-height: 1.2;
+  white-space: nowrap;
 }
 .network-duration {
   color: var(--dl-textMuted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 .network-url {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--dl-text);
+  line-height: 1.25;
 }
 .network-status {
   font-variant-numeric: tabular-nums;
@@ -1176,6 +1163,7 @@ details.issue[open] {
   white-space: nowrap;
   color: var(--dl-textMuted);
   font-size: 12px;
+  line-height: 1.25;
 }
 .network-splitter {
   position: relative;

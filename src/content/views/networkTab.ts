@@ -53,7 +53,6 @@ export function renderNetworkTabView(context: NetworkTabContext): string {
           <div><strong>${slow}</strong><span>${t("slow")}</span></div>
           <div><strong>${matchedCount}</strong><span>${t("showingRequests")}</span></div>
         </div>
-        ${renderNetworkGroups(events, context)}
         ${
           events.length === 0
             ? `<div class="empty compact">${filterErrorsOnly ? t("noNetworkErrors") : t("noNetworkData")}</div>`
@@ -69,43 +68,6 @@ export function renderNetworkTabView(context: NetworkTabContext): string {
         }
       </div>
     `;
-}
-
-function renderNetworkGroups(events: LiveDiagnosticEvent[], context: NetworkTabContext): string {
-  if (events.length === 0) return "";
-  const domains = topGroups(events, (event) => domainLabel(event.url));
-  const statuses = topGroups(events, (event) => (typeof event.status === "number" ? String(event.status) : event.severity));
-  return `
-      <div class="network-groups">
-        <section><strong>${context.t("groupedByDomain")}</strong>${domains.map(renderGroupPill).join("")}</section>
-        <section><strong>${context.t("groupedByStatus")}</strong>${statuses.map(renderGroupPill).join("")}</section>
-      </div>
-    `;
-}
-
-function topGroups(events: LiveDiagnosticEvent[], keyFn: (event: LiveDiagnosticEvent) => string): Array<{ key: string; count: number }> {
-  const counts = new Map<string, number>();
-  events.forEach((event) => {
-    const key = keyFn(event) || "unknown";
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  });
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4)
-    .map(([key, count]) => ({ key, count }));
-}
-
-function renderGroupPill(group: { key: string; count: number }): string {
-  return `<span>${escapeHtml(group.key)} <b>${group.count}</b></span>`;
-}
-
-function domainLabel(url?: string): string {
-  if (!url) return "unknown";
-  try {
-    return new URL(url, location.href).host || "same-origin";
-  } catch {
-    return "unknown";
-  }
 }
 
 function renderNetworkListItem(event: LiveDiagnosticEvent, selected: boolean, maxDuration: number, context: NetworkTabContext): string {
