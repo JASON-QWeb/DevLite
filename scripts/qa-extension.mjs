@@ -384,7 +384,7 @@ try {
   assert(editPrompt.includes("font-size") || editPrompt.includes("color"), "edit prompt contains style change");
   const deletionModification = parsedPrompt.changes
     .flatMap((change) => change.modifications ?? [])
-    .find((modification) => modification.type === "dom" && String(modification.property ?? "").includes("删除"));
+    .find((modification) => modification.type === "dom" && modification.after === "");
   assert(deletionModification?.after === "", "edit prompt contains element deletion DOM modification");
   const imageCropModification = parsedPrompt.changes
     .flatMap((change) => change.modifications ?? [])

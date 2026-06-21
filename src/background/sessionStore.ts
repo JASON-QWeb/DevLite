@@ -145,9 +145,44 @@ function cloneSessions(sessions: Map<number, DiagnosticSession>): Map<number, Di
 
 function cloneSession(session: DiagnosticSession): DiagnosticSession {
   if (typeof structuredClone === "function") {
-    return structuredClone(session);
+    try {
+      return structuredClone(session);
+    } catch {
+      // Fall through to a storage-compatible clone for unexpected non-cloneable fields.
+    }
   }
-  return JSON.parse(JSON.stringify(session)) as DiagnosticSession;
+  return cloneStorageValue(session) as DiagnosticSession;
+}
+
+function cloneStorageValue(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (value === null) return null;
+  const valueType = typeof value;
+  if (valueType === "string" || valueType === "number" || valueType === "boolean") return value;
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return [];
+    seen.add(value);
+    return value.map((item) => {
+      const cloned = cloneStorageValue(item, seen);
+      return cloned === undefined ? null : cloned;
+    });
+  }
+
+  if (valueType === "object") {
+    const source = value as Record<string, unknown>;
+    if (seen.has(source)) return undefined;
+    seen.add(source);
+    const cloned: Record<string, unknown> = {};
+    Object.entries(source).forEach(([key, item]) => {
+      const clonedItem = cloneStorageValue(item, seen);
+      if (clonedItem !== undefined) {
+        cloned[key] = clonedItem;
+      }
+    });
+    return cloned;
+  }
+
+  return undefined;
 }
 
 function serializeSessions(sessions: Map<number, DiagnosticSession>): StoredSessions {

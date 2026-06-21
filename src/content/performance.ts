@@ -1,4 +1,5 @@
 import { formatBytes } from "./utils";
+import { getMemoryInfo, type MemoryInfo } from "./performanceMemory";
 import type { LiveDiagnosticEvent, PerformanceInsights, PerformanceIssue, UiLocale } from "./types";
 import type { PageContext } from "../shared/types";
 
@@ -339,18 +340,6 @@ function pushRuntimePerformanceIssues(webVitals: WebVitals, memory: MemoryInfo |
           : "检查未释放的组件树、大缓存、重复订阅和游离 DOM 节点。"
     });
   }
-}
-
-type MemoryInfo = {
-  usedJSHeapSize: number;
-  totalJSHeapSize: number;
-  jsHeapSizeLimit: number;
-};
-
-function getMemoryInfo(): MemoryInfo | null {
-  const memory = (performance as Performance & { memory?: MemoryInfo }).memory;
-  if (!memory || !Number.isFinite(memory.usedJSHeapSize) || !Number.isFinite(memory.jsHeapSizeLimit)) return null;
-  return memory;
 }
 
 function resourceToPromptItem(resource: PerformanceResourceTiming): Record<string, unknown> {

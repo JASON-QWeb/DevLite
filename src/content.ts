@@ -91,6 +91,20 @@ type PanelUiState = {
   }>;
 };
 
+type DiagnosticEventCache = {
+  revision: number;
+  allEvents?: LiveDiagnosticEvent[];
+  problemEvents?: LiveDiagnosticEvent[];
+  storedNetworkEvents?: LiveDiagnosticEvent[];
+  networkEvents?: LiveDiagnosticEvent[];
+  consoleLogEvents?: LiveDiagnosticEvent[];
+  performanceEvents?: LiveDiagnosticEvent[];
+  launcherCounts?: {
+    issues: number;
+    network: number;
+  };
+};
+
 const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-detail", ".payload-preview", ".payload-raw", "pre"];
 const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "performance", "settings", "skill"];
 const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
@@ -109,6 +123,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   let diagnosticScopeResetTimer: number | null = null;
   let verificationTimer: number | null = null;
   let verificationPromise: Promise<void> | null = null;
+  let pageMutationObserver: MutationObserver | null = null;
   let verificationRerunRequested = false;
   let verificationForceRenderRequested = false;
   let suppressVerificationMutations = false;
@@ -127,6 +142,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   let launcherDockController: LauncherDockController | null = null;
   let panel: HTMLDivElement | null = null;
   let panelOpen = false;
+  let colorSchemeMedia: MediaQueryList | null = null;
   let activePanelTab: OverlayTab = "element";
   let renderedPanelTab: OverlayTab | null = null;
   let panelRenderVersion = 0;
@@ -145,7 +161,9 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   let captureGeneration = 0;
   const diagnosticEvents = new DiagnosticEventStore();
   let diagnosticRevision = 0;
+  let diagnosticEventCache: DiagnosticEventCache = { revision: -1 };
   let performanceInsightsCache: { key: string; time: number; value: PerformanceInsights } | null = null;
+  let launcherStatusFrameId: number | null = null;
   let sessionSnapshot: {
     diagnosticScope?: DiagnosticScope;
     events?: LiveDiagnosticEvent[];
@@ -214,7 +232,6 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     if (shouldDropDiagnosticEvent(diagnosticEvent)) return;
     rememberDiagnosticEvent(diagnosticEvent);
     diagnosticEventBatcher.enqueue(diagnosticEvent);
-    updateLauncherStatus();
     schedulePanelRender();
   });
 
@@ -310,16 +327,9 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     panelPositionController.apply(panel);
     syncElementOverlays();
   });
-  const colorSchemeMedia =
-    typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
-  colorSchemeMedia?.addEventListener("change", () => {
-    if (normalizeTheme(sessionSettings.uiTheme) === "system") {
-      applyOverlayTheme();
-      if (panelOpen) renderPanel();
-      if (styleEditor && !styleEditor.hidden) renderStyleEditor();
-    }
-  });
-  window.addEventListener("pagehide", flushDiagnosticEvents);
+  colorSchemeMedia = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  colorSchemeMedia?.addEventListener("change", handleColorSchemeChange);
+  window.addEventListener("pagehide", handlePageHide);
   document.addEventListener("scroll", syncElementOverlays, true);
   observePageMutations();
 
@@ -340,6 +350,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       void sendRuntime({ type: "page-context", page: getPageContext() }).catch(handleAsyncError);
       postControlMessage({ type: "start", settings: sessionSettings });
       performanceMonitor.start();
+      updateLauncherStatus();
       schedulePanelRender();
       return { ok: true };
     }
@@ -352,6 +363,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       flushDiagnosticEvents();
       postControlMessage({ type: "stop" });
       performanceMonitor.stop();
+      updateLauncherStatus();
       schedulePanelRender();
       return { ok: true };
     }
@@ -390,7 +402,8 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function observePageMutations(): void {
-    const observer = new MutationObserver((mutations) => {
+    pageMutationObserver?.disconnect();
+    pageMutationObserver = new MutationObserver((mutations) => {
       if (suppressVerificationMutations) return;
       const hasPageMutation = mutations.some((mutation) => {
         const target = mutation.target;
@@ -403,12 +416,43 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
         scheduleDiagnosticScopeReset("page-update");
       }
     });
-    observer.observe(document.documentElement, {
+    pageMutationObserver.observe(document.documentElement, {
       attributes: true,
       childList: true,
       characterData: true,
       subtree: true
     });
+  }
+
+  function handleColorSchemeChange(): void {
+    if (normalizeTheme(sessionSettings.uiTheme) !== "system") return;
+    applyOverlayTheme();
+    if (panelOpen) renderPanel();
+    if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+  }
+
+  function handlePageHide(): void {
+    cleanupContentScript();
+  }
+
+  function cleanupContentScript(): void {
+    flushDiagnosticEvents();
+    document.removeEventListener("keydown", handleGlobalKeydown, true);
+    colorSchemeMedia?.removeEventListener("change", handleColorSchemeChange);
+    colorSchemeMedia = null;
+    window.removeEventListener("pagehide", handlePageHide);
+    pageMutationObserver?.disconnect();
+    pageMutationObserver = null;
+    clearDiagnosticScopeResetTimer();
+    if (verificationTimer !== null) {
+      window.clearTimeout(verificationTimer);
+      verificationTimer = null;
+    }
+    if (launcherStatusFrameId !== null) {
+      window.cancelAnimationFrame(launcherStatusFrameId);
+      launcherStatusFrameId = null;
+    }
+    performanceMonitor.stop();
   }
 
   function hasSignificantDiagnosticMutation(mutations: MutationRecord[]): boolean {
@@ -1528,7 +1572,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       insights: getPerformanceInsights(),
       settings: mergedPanelSettings(),
       settingsOpen: performanceSettingsOpen,
-      performanceEvents: diagnosticEvents.all.filter((event) => event.type === "performance"),
+      performanceEvents: getPerformanceEvents(),
       resourceEntries: performance.getEntriesByType("resource") as PerformanceResourceTiming[],
       t,
       formatResourceTiming,
@@ -1633,7 +1677,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   function applyOverlayTheme(): void {
     if (!overlayHost) return;
-    const theme = PANEL_THEMES[resolvedPanelTheme(sessionSettings.uiTheme)];
+    const theme = PANEL_THEMES[resolvedPanelTheme(sessionSettings.uiTheme)] ?? PANEL_THEMES.claude;
     Object.entries(theme).forEach(([key, value]) => {
       overlayHost?.style.setProperty(`--dl-${key}`, value);
     });
@@ -1779,7 +1823,6 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     } as LiveDiagnosticEvent);
     rememberDiagnosticEvent(diagnosticEvent);
     diagnosticEventBatcher.enqueue(diagnosticEvent);
-    updateLauncherStatus();
     schedulePanelRender();
   }
 
@@ -1826,6 +1869,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       void sendRuntime({ type: "page-context", page: getPageContext() }).catch(handleAsyncError);
       postControlMessage({ type: "start", settings: sessionSettings });
       performanceMonitor.start();
+      updateLauncherStatus();
       scheduleExportedStyleVerification();
       schedulePanelRender();
     })().finally(() => {
@@ -1921,15 +1965,21 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function getProblemEvents(): LiveDiagnosticEvent[] {
-    return diagnosticEvents.getProblemEvents().filter((event) => !shouldDropDiagnosticEvent(event) && !isDevelopmentNetworkEvent(event));
+    const cache = getDiagnosticEventCache();
+    cache.problemEvents ??= diagnosticEvents.getProblemEvents().filter((event) => !shouldDropDiagnosticEvent(event) && !isDevelopmentNetworkEvent(event));
+    return cache.problemEvents;
   }
 
   function getNetworkEvents(): LiveDiagnosticEvent[] {
-    return getStoredNetworkEvents().filter((event) => !isDevelopmentNetworkEvent(event));
+    const cache = getDiagnosticEventCache();
+    cache.networkEvents ??= getStoredNetworkEvents().filter((event) => !isDevelopmentNetworkEvent(event));
+    return cache.networkEvents;
   }
 
   function getStoredNetworkEvents(): LiveDiagnosticEvent[] {
-    return diagnosticEvents.getNetworkEvents().filter((event) => !shouldDropDiagnosticEvent(event));
+    const cache = getDiagnosticEventCache();
+    cache.storedNetworkEvents ??= diagnosticEvents.getNetworkEvents().filter((event) => !shouldDropDiagnosticEvent(event));
+    return cache.storedNetworkEvents;
   }
 
   function getNetworkTabEvents(events: LiveDiagnosticEvent[]): LiveDiagnosticEvent[] {
@@ -1956,7 +2006,9 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function getConsoleLogEvents(): LiveDiagnosticEvent[] {
-    return diagnosticEvents.getConsoleLogEvents().filter((event) => !shouldDropDiagnosticEvent(event));
+    const cache = getDiagnosticEventCache();
+    cache.consoleLogEvents ??= diagnosticEvents.getConsoleLogEvents().filter((event) => !shouldDropDiagnosticEvent(event));
+    return cache.consoleLogEvents;
   }
 
   function groupDiagnosticEvents(events: LiveDiagnosticEvent[]): DiagnosticGroup[] {
@@ -1990,7 +2042,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       },
       revision: diagnosticRevision,
       pageContext: getPageContext(),
-      allEvents: diagnosticEvents.all,
+      allEvents: getAllDiagnosticEvents(),
       networkEvents: getNetworkEvents(),
       text: {
         domReadyTime: t("domReadyTime"),
@@ -2065,11 +2117,48 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function updateLauncherStatus(): void {
+    if (launcherStatusFrameId !== null) return;
+    launcherStatusFrameId = window.requestAnimationFrame(() => {
+      launcherStatusFrameId = null;
+      flushLauncherStatus();
+    });
+  }
+
+  function flushLauncherStatus(): void {
+    const counts = getLauncherStatusCounts();
     launcherDockController?.updateStatus({
       active: captureActive,
+      issues: counts.issues,
+      network: counts.network
+    });
+  }
+
+  function getLauncherStatusCounts(): { issues: number; network: number } {
+    const cache = getDiagnosticEventCache();
+    cache.launcherCounts ??= {
       issues: getProblemEvents().length,
       network: getNetworkEvents().length
-    });
+    };
+    return cache.launcherCounts;
+  }
+
+  function getAllDiagnosticEvents(): LiveDiagnosticEvent[] {
+    const cache = getDiagnosticEventCache();
+    cache.allEvents ??= diagnosticEvents.all;
+    return cache.allEvents;
+  }
+
+  function getPerformanceEvents(): LiveDiagnosticEvent[] {
+    const cache = getDiagnosticEventCache();
+    cache.performanceEvents ??= getAllDiagnosticEvents().filter((event) => event.type === "performance");
+    return cache.performanceEvents;
+  }
+
+  function getDiagnosticEventCache(): DiagnosticEventCache {
+    if (diagnosticEventCache.revision !== diagnosticRevision) {
+      diagnosticEventCache = { revision: diagnosticRevision };
+    }
+    return diagnosticEventCache;
   }
 
   function toast(message: string): void {

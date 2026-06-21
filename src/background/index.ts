@@ -21,6 +21,7 @@ const responseBodyCaptureTabs = new Set<number>();
 const LEGACY_CONTENT_SCRIPT_ID = "devlite-content";
 const MAIN_WORLD_SCRIPT_ID = "devlite-main-world-injected";
 const OPEN_SOURCE_URL = "https://github.com/JASON-QWeb/DevLite";
+let settingsCache: DiagnosticSettings | null = null;
 const BACKGROUND_TEXT = {
   zh: {
     invalidMessage: "无效消息",
@@ -50,10 +51,16 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(SETTINGS_KEY, (result) => {
     if (!result[SETTINGS_KEY]) {
       chrome.storage.local.set({ [SETTINGS_KEY]: DEFAULT_SETTINGS });
+      settingsCache = DEFAULT_SETTINGS;
     }
   });
   void registerMainWorldScript();
   void pruneExpiredSessions().catch((error) => console.warn("[DevLite] prune sessions failed", error));
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" || !changes[SETTINGS_KEY]) return;
+  settingsCache = mergeSettings(changes[SETTINGS_KEY].newValue as Partial<DiagnosticSettings> | undefined);
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -660,12 +667,25 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
 }
 
 async function getSettings(): Promise<DiagnosticSettings> {
+  if (settingsCache) return settingsCache;
   const result = await chrome.storage.local.get(SETTINGS_KEY);
-  return mergeSettings(result[SETTINGS_KEY]);
+  const rawSettings = result[SETTINGS_KEY] as Partial<DiagnosticSettings> | undefined;
+  const settings = mergeSettings(rawSettings);
+  settingsCache = settings;
+  if (needsSettingsMigration(rawSettings, settings)) {
+    void chrome.storage.local.set({ [SETTINGS_KEY]: settings }).catch((error) => console.warn("[DevLite] settings migration failed", error));
+  }
+  return settings;
 }
 
 async function backgroundText(key: BackgroundTextKey): Promise<string> {
-  return BACKGROUND_TEXT[(await getSettings()).locale][key];
+  let locale = DEFAULT_SETTINGS.locale;
+  try {
+    locale = (await getSettings()).locale;
+  } catch (error) {
+    console.warn("[DevLite] load settings for background text failed", error);
+  }
+  return BACKGROUND_TEXT[locale]?.[key] ?? BACKGROUND_TEXT[DEFAULT_SETTINGS.locale][key];
 }
 
 async function getTabSettings(tabId: number): Promise<DiagnosticSettings> {
@@ -681,6 +701,7 @@ async function getTabSettings(tabId: number): Promise<DiagnosticSettings> {
 async function saveSettings(settings: DiagnosticSettings): Promise<void> {
   const merged = mergeSettings(settings);
   await chrome.storage.local.set({ [SETTINGS_KEY]: merged });
+  settingsCache = merged;
   await pruneExpiredSessions(merged).catch((error) => console.warn("[DevLite] prune sessions failed", error));
 }
 
@@ -700,6 +721,10 @@ function mergeSettings(input?: Partial<DiagnosticSettings>): DiagnosticSettings 
     retainHours: clampNumber(input?.retainHours, 1, 24 * 30, DEFAULT_SETTINGS.retainHours),
     extraRedactionKeys: input?.extraRedactionKeys ?? DEFAULT_SETTINGS.extraRedactionKeys
   };
+}
+
+function needsSettingsMigration(input: Partial<DiagnosticSettings> | undefined, settings: DiagnosticSettings): boolean {
+  return !!input && input.uiTheme !== undefined && input.uiTheme !== settings.uiTheme;
 }
 
 function safeSendResponse(sendResponse: (response?: any) => void, response: any): void {
