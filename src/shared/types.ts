@@ -10,7 +10,7 @@ export type DiagnosticEventType =
 
 export type Severity = "info" | "warning" | "error";
 export type UiLocale = "zh" | "en";
-export type UiTheme = "claude" | "saas" | "dark" | "cartoon";
+export type UiTheme = "system" | "claude" | "saas" | "dark";
 export type StyleChangeVerificationStatus = "waiting" | "failed";
 export type StyleChangeArchiveReason = "verified" | "manual";
 
@@ -43,6 +43,12 @@ export interface DiagnosticSettings {
   collectResponseBody: boolean;
   maxResponseLength: number;
   slowRequestThreshold: number;
+  performanceTtfbWarning: number;
+  performanceTtfbError: number;
+  performanceDomReadyWarning: number;
+  performanceLoadWarning: number;
+  performanceLoadError: number;
+  performanceResourceSizeWarning: number;
   retainHours: number;
   extraRedactionKeys: string[];
 }
@@ -98,6 +104,8 @@ export interface StyleChange {
   domBefore?: string;
   domAfter?: string;
   domAction?: string;
+  domParentSelector?: string;
+  domChildIndex?: number;
   imageEdit?: ImageEditMetadata;
   exportedAt?: number;
   exportedPageLoadId?: string;

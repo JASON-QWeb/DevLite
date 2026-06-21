@@ -18,11 +18,11 @@ export function renderElementTabView(context: ElementTabContext): string {
       <div class="toolbar element-toolbar">
         <div class="toolbar-group">
           <button data-action="quick-select" class="primary">${inspectorActive ? t("selecting") : t("selectElement")}</button>
-          <button data-action="select-all-style-records" ${pendingRecords.length === 0 ? "disabled" : ""}>${t("selectAll")}</button>
           <button data-action="verify-style-records" ${verifyingRecords.length === 0 ? "disabled" : ""}>${t("verifyNow")}</button>
           ${inspectorActive ? `<button data-action="stop-select">${t("stopSelecting")}</button>` : ""}
         </div>
         <div class="toolbar-group toolbar-group-right">
+          <button data-action="select-all-style-records" ${pendingRecords.length === 0 ? "disabled" : ""}>${t("selectAll")}</button>
           <button data-action="copy-prompt" class="primary" ${pendingRecords.length === 0 ? "disabled" : ""}>${t("copyFullPrompt")}</button>
         </div>
       </div>
@@ -92,7 +92,16 @@ function renderStyleChangeRecord(change: StyleChange, index: number, context: El
               <span class="style-record-icon" aria-label="${escapeHtml(tagName)}">${styleRecordIcon(tagName)}</span>
               <strong>${escapeHtml(title)}</strong>
             </label>
-            <button type="button" class="style-record-restore" data-action="undo-style-record" data-change-id="${escapeHtml(change.id)}">${context.t("restoreElement")}</button>
+            ${
+              mode === "pending"
+                ? `<button type="button" class="style-record-restore" data-action="undo-style-record" data-change-id="${escapeHtml(change.id)}">${context.t("restoreElement")}</button>`
+                : ""
+            }
+            ${
+              mode === "verifying"
+                ? `<button type="button" class="style-record-restore" data-action="requeue-style-record" data-change-id="${escapeHtml(change.id)}">${context.t("retryRepair")}</button>`
+                : ""
+            }
             ${
               mode === "verifying"
                 ? `<button type="button" class="style-record-restore" data-action="archive-style-record" data-change-id="${escapeHtml(change.id)}">${context.t("markFixed")}</button>`

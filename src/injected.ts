@@ -53,6 +53,9 @@ type ImageCropperSession = {
   const originalOpen = XMLHttpRequest.prototype.open;
   const originalSend = XMLHttpRequest.prototype.send;
   const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+  const xhrMetaKey = Symbol("__devlite_meta__");
+  const OriginalWebSocket = window.WebSocket;
+  const OriginalEventSource = window.EventSource;
 
   window.addEventListener("message", (event) => {
     if (!isTrustedControlMessage(event)) return;
@@ -207,7 +210,7 @@ type ImageCropperSession = {
   };
 
   XMLHttpRequest.prototype.open = function patchedOpen(method: string, url: string | URL, async?: boolean, username?: string | null, password?: string | null) {
-    (this as any).__devlite = {
+    (this as any)[xhrMetaKey] = {
       method,
       url: String(url),
       headers: {},
@@ -217,7 +220,7 @@ type ImageCropperSession = {
   };
 
   XMLHttpRequest.prototype.setRequestHeader = function patchedSetRequestHeader(name: string, value: string) {
-    const meta = (this as any).__devlite;
+    const meta = (this as any)[xhrMetaKey];
     if (meta) {
       meta.headers[name] = value;
     }
@@ -226,10 +229,10 @@ type ImageCropperSession = {
 
   XMLHttpRequest.prototype.send = function patchedSend(body?: Document | XMLHttpRequestBodyInit | null) {
     const xhr = this;
-    const meta = (xhr as any).__devlite ?? {};
+    const meta = (xhr as any)[xhrMetaKey] ?? {};
     meta.startedAt = performance.now();
     meta.requestBody = summarizeBody(body);
-    (xhr as any).__devlite = meta;
+    (xhr as any)[xhrMetaKey] = meta;
 
     let finalized = false;
     const finalize = (kind: "loadend" | "error" | "timeout" | "abort") => {
@@ -265,6 +268,57 @@ type ImageCropperSession = {
 
     return originalSend.call(xhr, body ?? null);
   };
+
+  window.WebSocket = function patchedWebSocket(url: string | URL, protocols?: string | string[]) {
+    const startedAt = performance.now();
+    const socket = protocols === undefined ? new OriginalWebSocket(url) : new OriginalWebSocket(url, protocols);
+    const targetUrl = String(url);
+    socket.addEventListener("open", () => {
+      emitTransportEvent("websocket", "open", targetUrl, "WS", Math.round(performance.now() - startedAt), "info");
+    });
+    socket.addEventListener("error", () => {
+      emitTransportEvent("websocket", "error", targetUrl, "WS", Math.round(performance.now() - startedAt), "error");
+    });
+    socket.addEventListener("close", (event) => {
+      const severity = event.wasClean ? "info" : "warning";
+      emitTransportEvent("websocket", `close:${event.code}`, targetUrl, "WS", Math.round(performance.now() - startedAt), severity, {
+        reason: event.reason,
+        wasClean: event.wasClean
+      });
+    });
+    socket.addEventListener("message", (event) => {
+      if (!settings.collectResponseBody) return;
+      emitTransportEvent("websocket", "message", targetUrl, "WS", undefined, "info", undefined, summarizeBody(event.data));
+    });
+    return socket;
+  } as unknown as typeof WebSocket;
+  window.WebSocket.prototype = OriginalWebSocket.prototype;
+  Object.setPrototypeOf(window.WebSocket, OriginalWebSocket);
+
+  if (OriginalEventSource) {
+    window.EventSource = function patchedEventSource(url: string | URL, eventSourceInitDict?: EventSourceInit) {
+      const startedAt = performance.now();
+      const source = new OriginalEventSource(url, eventSourceInitDict);
+      const targetUrl = String(url);
+      source.addEventListener("open", () => {
+        emitTransportEvent("eventsource", "open", targetUrl, "SSE", Math.round(performance.now() - startedAt), "info");
+      });
+      source.addEventListener("error", () => {
+        emitTransportEvent("eventsource", "error", targetUrl, "SSE", Math.round(performance.now() - startedAt), "warning", {
+          readyState: source.readyState
+        });
+      });
+      source.addEventListener("message", (event) => {
+        if (!settings.collectResponseBody) return;
+        emitTransportEvent("eventsource", "message", targetUrl, "SSE", undefined, "info", {
+          lastEventId: event.lastEventId
+        }, summarizeBody(event.data));
+      });
+      return source;
+    } as unknown as typeof EventSource;
+    window.EventSource.prototype = OriginalEventSource.prototype;
+    Object.setPrototypeOf(window.EventSource, OriginalEventSource);
+  }
 
   async function openImageCropper(data: any): Promise<void> {
     const payload = normalizeImageCropperPayload(data.payload);
@@ -675,6 +729,32 @@ type ImageCropperSession = {
     } catch {
       return undefined;
     }
+  }
+
+  function emitTransportEvent(
+    source: "websocket" | "eventsource",
+    eventName: string,
+    url: string,
+    method: "WS" | "SSE",
+    duration: number | undefined,
+    severity: "info" | "warning" | "error",
+    metadata: Record<string, unknown> = {},
+    responseBody?: string
+  ): void {
+    emit({
+      type: "network",
+      severity,
+      message: `${method} ${url} -> ${eventName}`,
+      url,
+      method,
+      duration,
+      responseBody,
+      metadata: {
+        source,
+        event: eventName,
+        ...metadata
+      }
+    });
   }
 
   function collectFetchRequestHeaders(request: Request | null, init?: RequestInit): Record<string, string> {

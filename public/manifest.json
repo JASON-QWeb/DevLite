@@ -34,7 +34,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["icons/devlite-ui-256.png"],
+      "resources": ["icons/devlite-ui-256.png", "agent-logos/*"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ],

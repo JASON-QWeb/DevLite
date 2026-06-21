@@ -20,6 +20,30 @@ const responseBodyCaptureTabs = new Set<number>();
 const LEGACY_CONTENT_SCRIPT_ID = "devlite-content";
 const MAIN_WORLD_SCRIPT_ID = "devlite-main-world-injected";
 const OPEN_SOURCE_URL = "https://github.com/JASON-QWeb/DevLite";
+const BACKGROUND_TEXT = {
+  zh: {
+    invalidMessage: "无效消息",
+    missingTabId: "缺少 tabId",
+    missingTabInfo: "缺少 tab 信息",
+    missingPageInfo: "缺少页面信息",
+    activeTabUnavailable: "无法获取当前标签页",
+    noSession: "当前页面还没有诊断数据，请先开始诊断或使用元素选择器。",
+    unsupportedPagePanel: "当前页面不支持打开 DevLite 面板",
+    unknownMessage: "未知消息类型"
+  },
+  en: {
+    invalidMessage: "Invalid message",
+    missingTabId: "Missing tabId",
+    missingTabInfo: "Missing tab information",
+    missingPageInfo: "Missing page information",
+    activeTabUnavailable: "Could not get the current tab",
+    noSession: "This page does not have diagnostic data yet. Start diagnostics or use the element selector first.",
+    unsupportedPagePanel: "The current page does not support opening the DevLite panel",
+    unknownMessage: "Unknown message type"
+  }
+} as const;
+
+type BackgroundTextKey = keyof typeof BACKGROUND_TEXT.zh;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(SETTINGS_KEY, (result) => {
@@ -63,7 +87,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function handleMessage(message: any, sender: chrome.runtime.MessageSender): Promise<any> {
   if (!message || typeof message !== "object" || typeof message.type !== "string") {
-    return { ok: false, error: "无效消息" };
+    return { ok: false, error: await backgroundText("invalidMessage") };
   }
   const type = message?.type;
 
@@ -85,15 +109,15 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "get-tab-session") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     return { ok: true, session: (await sessionStore.get(tabId)) ?? null, settings: await getTabSettings(tabId) };
   }
 
   if (type === "ensure-session") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     const tab = sender.tab;
-    if (!tab) return { ok: false, error: "缺少 tab 信息" };
+    if (!tab) return { ok: false, error: await backgroundText("missingTabInfo") };
     const session = await sessionStore.update(tabId, (current) => {
       const next = current ?? createSession(tabId, message.page ?? createFallbackPageContext(tab));
       if (message.page) {
@@ -111,11 +135,11 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "start-page-capture") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     const tab = sender.tab;
     await ensureInjectedScript(tabId);
     const page = message.page ?? (tab ? createFallbackPageContext(tab) : undefined);
-    if (!page) return { ok: false, error: "缺少页面信息" };
+    if (!page) return { ok: false, error: await backgroundText("missingPageInfo") };
     const session = await sessionStore.update(tabId, (current) => {
       const next = current ?? createSession(tabId, page as PageContext);
       next.active = true;
@@ -132,14 +156,14 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "enable-tab-response-body") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     responseBodyCaptureTabs.add(tabId);
     return { ok: true, settings: await getTabSettings(tabId) };
   }
 
   if (type === "start-diagnosis") {
     const tab = await getActiveTab();
-    if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
+    if (typeof tab.id !== "number") throw new Error(await backgroundText("activeTabUnavailable"));
     await ensurePageScripts(tab.id);
     const settings = await getTabSettings(tab.id);
     const session = createSession(tab.id, message.page ?? createFallbackPageContext(tab));
@@ -150,7 +174,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "stop-diagnosis") {
     const tab = await getActiveTab();
-    if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
+    if (typeof tab.id !== "number") throw new Error(await backgroundText("activeTabUnavailable"));
     const session = await sessionStore.update(tab.id, (current) => {
       if (!current) return undefined;
       current.active = false;
@@ -164,7 +188,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "start-inspector") {
     const tab = await getActiveTab();
-    if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
+    if (typeof tab.id !== "number") throw new Error(await backgroundText("activeTabUnavailable"));
     const tabId = tab.id;
     await ensurePageScripts(tabId);
     const session = await sessionStore.update(tabId, (current) => current ?? createSession(tabId, createFallbackPageContext(tab)));
@@ -174,14 +198,14 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "stop-inspector") {
     const tab = await getActiveTab();
-    if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
+    if (typeof tab.id !== "number") throw new Error(await backgroundText("activeTabUnavailable"));
     await safeSendTabMessage(tab.id, { type: "devlite-stop-inspector" });
     return { ok: true };
   }
 
   if (type === "diagnostic-event") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     const settings = await getTabSettings(tabId);
     const event = sanitizeEvent(message.event as DiagnosticEvent, settings);
     await upsertEvent(tabId, event);
@@ -190,7 +214,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "diagnostic-events") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     const settings = await getTabSettings(tabId);
     const events = Array.isArray(message.events) ? message.events : [];
     await upsertEvents(
@@ -202,7 +226,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "page-context") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     await sessionStore.update(tabId, (session) => {
       if (!session) return undefined;
       session.page = {
@@ -218,21 +242,21 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "style-change-upsert") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     await upsertStyleChange(tabId, message.change as StyleChange);
     return { ok: true };
   }
 
   if (type === "style-change-delete") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     await deleteStyleChange(tabId, message.id);
     return { ok: true };
   }
 
   if (type === "style-changes-mark-exported") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     await markStyleChangesExported(tabId, Array.isArray(message.ids) ? message.ids : [], {
       pageLoadId: message.pageLoadId,
       mutationVersion: message.mutationVersion,
@@ -243,21 +267,21 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 
   if (type === "style-change-verification-update") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     await updateStyleChangeVerification(tabId, message.id, message.status, message.reason);
     return { ok: true };
   }
 
   if (type === "style-changes-archive") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     await archiveStyleChanges(tabId, Array.isArray(message.ids) ? message.ids : [], message.reason, message.verificationReason);
     return { ok: true };
   }
 
   if (type === "clear-network-events") {
     const tabId = sender.tab?.id;
-    if (typeof tabId !== "number") return { ok: false, error: "缺少 tabId" };
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     await clearNetworkEvents(tabId);
     return { ok: true };
   }
@@ -291,7 +315,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "open-page-panel") {
     const tab = await getActiveTab();
     const opened = await openPagePanel(tab);
-    return opened ? { ok: true } : { ok: false, error: "当前页面不支持打开 DevLite 面板" };
+    return opened ? { ok: true } : { ok: false, error: await backgroundText("unsupportedPagePanel") };
   }
 
   if (type === "open-source-page") {
@@ -299,7 +323,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     return { ok: true };
   }
 
-  return { ok: false, error: `未知消息类型：${type}` };
+  return { ok: false, error: `${await backgroundText("unknownMessage")}: ${type}` };
 }
 
 function createSession(tabId: number, page: PageContext): DiagnosticSession {
@@ -489,7 +513,7 @@ async function clearNetworkEvents(tabId: number): Promise<void> {
 async function requireSession(tabId: number): Promise<DiagnosticSession> {
   const session = await sessionStore.get(tabId);
   if (!session) {
-    throw new Error("当前页面还没有诊断数据，请先开始诊断或使用元素选择器。");
+    throw new Error(await backgroundText("noSession"));
   }
   return session;
 }
@@ -499,7 +523,7 @@ async function getSessionTabId(sender: chrome.runtime.MessageSender): Promise<nu
     return sender.tab.id;
   }
   const tab = await getActiveTab();
-  if (typeof tab.id !== "number") throw new Error("无法获取当前标签页");
+  if (typeof tab.id !== "number") throw new Error(await backgroundText("activeTabUnavailable"));
   return tab.id;
 }
 
@@ -583,7 +607,7 @@ async function safeSendTabMessage(tabId: number, message: unknown): Promise<void
 async function getActiveTab(): Promise<chrome.tabs.Tab> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) {
-    throw new Error("无法获取当前标签页");
+    throw new Error(await backgroundText("activeTabUnavailable"));
   }
   return tab;
 }
@@ -591,6 +615,10 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
 async function getSettings(): Promise<DiagnosticSettings> {
   const result = await chrome.storage.local.get(SETTINGS_KEY);
   return mergeSettings(result[SETTINGS_KEY]);
+}
+
+async function backgroundText(key: BackgroundTextKey): Promise<string> {
+  return BACKGROUND_TEXT[(await getSettings()).locale][key];
 }
 
 async function getTabSettings(tabId: number): Promise<DiagnosticSettings> {
@@ -616,6 +644,12 @@ function mergeSettings(input?: Partial<DiagnosticSettings>): DiagnosticSettings 
     collectResponseBody: input?.collectResponseBody ?? DEFAULT_SETTINGS.collectResponseBody,
     maxResponseLength: clampNumber(input?.maxResponseLength, 256, 10000, DEFAULT_SETTINGS.maxResponseLength),
     slowRequestThreshold: clampNumber(input?.slowRequestThreshold, 300, 20000, DEFAULT_SETTINGS.slowRequestThreshold),
+    performanceTtfbWarning: clampNumber(input?.performanceTtfbWarning, 100, 10000, DEFAULT_SETTINGS.performanceTtfbWarning),
+    performanceTtfbError: clampNumber(input?.performanceTtfbError, 100, 20000, DEFAULT_SETTINGS.performanceTtfbError),
+    performanceDomReadyWarning: clampNumber(input?.performanceDomReadyWarning, 500, 30000, DEFAULT_SETTINGS.performanceDomReadyWarning),
+    performanceLoadWarning: clampNumber(input?.performanceLoadWarning, 500, 60000, DEFAULT_SETTINGS.performanceLoadWarning),
+    performanceLoadError: clampNumber(input?.performanceLoadError, 500, 120000, DEFAULT_SETTINGS.performanceLoadError),
+    performanceResourceSizeWarning: clampNumber(input?.performanceResourceSizeWarning, 64 * 1024, 20 * 1024 * 1024, DEFAULT_SETTINGS.performanceResourceSizeWarning),
     retainHours: clampNumber(input?.retainHours, 1, 24 * 30, DEFAULT_SETTINGS.retainHours),
     extraRedactionKeys: input?.extraRedactionKeys ?? DEFAULT_SETTINGS.extraRedactionKeys
   };

@@ -13,6 +13,12 @@ type LauncherDockOptions = {
   initialTop?: number;
 };
 
+type LauncherStatus = {
+  active: boolean;
+  issues: number;
+  network: number;
+};
+
 export class LauncherDockController {
   readonly element: HTMLDivElement;
 
@@ -47,6 +53,10 @@ export class LauncherDockController {
     const maxTop = Math.max(minTop, window.innerHeight - minTop);
     this.top = Math.min(Math.max(minTop, this.top), maxTop);
     this.element.style.top = `${this.top}px`;
+  }
+
+  updateStatus(status: LauncherStatus): void {
+    void status;
   }
 
   private bindEvents(): void {

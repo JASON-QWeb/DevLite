@@ -6,6 +6,7 @@ type DiagnosticsTabContext = {
   filter: DiagnosticFilter;
   issueEvents: LiveDiagnosticEvent[];
   logEvents: LiveDiagnosticEvent[];
+  searchQuery: string;
   t: (key: ContentTextKey) => string;
   eventTypeLabel: (event: LiveDiagnosticEvent) => string;
   formatTime: (timestamp: number) => string;
@@ -13,7 +14,7 @@ type DiagnosticsTabContext = {
 };
 
 export function renderDiagnosticsTabView(context: DiagnosticsTabContext): string {
-  const { issueEvents, logEvents, filter, t } = context;
+  const { issueEvents, logEvents, filter, searchQuery, t } = context;
   const activeEvents = filter === "logs" ? logEvents : issueEvents;
 
   return `
@@ -22,7 +23,11 @@ export function renderDiagnosticsTabView(context: DiagnosticsTabContext): string
           ${diagnosticFilterButton("issues", t("issueArchive"), issueEvents.length, filter)}
           ${diagnosticFilterButton("logs", "console.log", logEvents.length, filter)}
         </div>
-        <button data-action="copy-all-errors" ${issueEvents.length === 0 ? "disabled" : ""}>${t("copyAllErrors")}</button>
+        <input data-diagnostic-search type="search" value="${escapeHtml(searchQuery)}" placeholder="${t("searchDiagnostics")}" />
+        <div class="diagnostic-actions toolbar-group-right">
+          <button data-action="download-json-report">${t("downloadJsonReport")}</button>
+          <button data-action="copy-all-errors" class="primary" ${issueEvents.length === 0 ? "disabled" : ""}>${t("copyAllErrors")}</button>
+        </div>
       </div>
       ${
         activeEvents.length === 0

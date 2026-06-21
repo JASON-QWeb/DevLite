@@ -5,9 +5,11 @@ type PanelEventsOptions = {
   onAction: (action: string, source?: HTMLElement) => Promise<void> | void;
   onError: (error: unknown) => void;
   onDiagnosticFilter: (filter: DiagnosticFilter) => void;
+  onDiagnosticSearch: (value: string) => void;
   onNetworkDetail: (tab: NetworkDetailTab) => void;
   onNetworkEvent: (id: string | null) => void;
   onNetworkListResize: (event: PointerEvent) => void;
+  onNetworkSearch: (value: string) => void;
   onStartDrag: (event: PointerEvent) => void;
   onStartResize: (event: PointerEvent) => void;
   onStyleInput: (prop: string, value: string) => void;
@@ -25,6 +27,12 @@ export function bindPanelEvents(options: PanelEventsOptions): void {
 
   panel.querySelector<HTMLElement>("[data-panel-resize]")?.addEventListener("pointerdown", options.onStartResize);
   panel.querySelector<HTMLElement>("[data-network-splitter]")?.addEventListener("pointerdown", options.onNetworkListResize);
+  panel.querySelector<HTMLInputElement>("[data-diagnostic-search]")?.addEventListener("input", (event) => {
+    options.onDiagnosticSearch((event.currentTarget as HTMLInputElement).value);
+  });
+  panel.querySelector<HTMLInputElement>("[data-network-search]")?.addEventListener("input", (event) => {
+    options.onNetworkSearch((event.currentTarget as HTMLInputElement).value);
+  });
 
   panel.querySelectorAll<HTMLButtonElement>("button[data-tab]").forEach((button) => {
     button.addEventListener("click", (event) => {

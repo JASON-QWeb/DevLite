@@ -138,9 +138,16 @@ export const sessionStore = new SessionStore();
 function cloneSessions(sessions: Map<number, DiagnosticSession>): Map<number, DiagnosticSession> {
   const cloned = new Map<number, DiagnosticSession>();
   for (const [tabId, session] of sessions) {
-    cloned.set(tabId, JSON.parse(JSON.stringify(session)) as DiagnosticSession);
+    cloned.set(tabId, cloneSession(session));
   }
   return cloned;
+}
+
+function cloneSession(session: DiagnosticSession): DiagnosticSession {
+  if (typeof structuredClone === "function") {
+    return structuredClone(session);
+  }
+  return JSON.parse(JSON.stringify(session)) as DiagnosticSession;
 }
 
 function serializeSessions(sessions: Map<number, DiagnosticSession>): StoredSessions {

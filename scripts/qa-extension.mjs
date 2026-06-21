@@ -184,12 +184,12 @@ try {
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel opens");
   await waitForEval(
     page,
-    "document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.sidebar-open-source')?.href === 'https://github.com/JASON-QWeb/DevLite'",
-    "open source star link renders"
+    "document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.open-source-link')?.dataset.action === 'show-skill-install'",
+    "companion skill entry renders"
   );
   await waitForCaptureStart(cdpPort, page, extensionId);
   record("panel opens and starts page capture", true);
-  record("panel shows GitHub star link", true);
+  record("panel shows companion skill entry", true);
 
   await shadowClick(page, ".locale-button");
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Performance')", "English locale applied");
@@ -244,7 +244,7 @@ try {
   record("diagnostics panel shows console JS and Promise failures", true);
 
   await shadowClick(page, 'button[data-tab="performance"]');
-  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('DOMContentLoaded')", "performance metrics visible");
+  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('FPS')", "performance metrics visible");
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('长任务') || document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('资源')", "performance evidence visible");
   await shadowClick(page, 'button[data-action="copy-performance-prompt"]');
   const performancePrompt = readClipboard();
@@ -255,6 +255,22 @@ try {
   await shadowClick(page, 'button[data-action="quick-select"]');
   await clickRelative(page, '[data-testid="editable-card"]', 0.88, 0.12);
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.style-editor-popover:not([hidden])')", "style editor appears");
+  await waitForEval(
+    page,
+    `
+      (() => {
+        const root = document.querySelector('#devlite-overlay-root')?.shadowRoot;
+        const select = root?.querySelector('.style-editor-head-actions [data-style-action="select"].primary');
+        const back = root?.querySelector('.style-editor-head-actions [data-style-action="back-panel"]');
+        const actions = Array.from(root?.querySelectorAll('.style-editor-actions [data-style-action]') ?? []).map((button) => button.dataset.styleAction);
+        if (!select || !back) return false;
+        const selectRect = select.getBoundingClientRect();
+        const backRect = back.getBoundingClientRect();
+        return selectRect.right <= backRect.left && actions.join('|') === 'text|replace-image|replace-icon|delete-element|copy-element|undo';
+      })()
+    `,
+    "style editor action layout matches requested order"
+  );
   await evaluate(page, `
     (() => {
       const shadow = document.querySelector("#devlite-overlay-root").shadowRoot;
@@ -309,6 +325,15 @@ try {
   await waitForEval(page, "document.querySelector('[data-testid=\"replaceable-image\"]')?.src.startsWith('data:image/png')", "cropped image source replaced");
   record("image cropper edits and applies selected raster file", true);
 
+  await shadowClick(page, '[data-style-action="back-panel"]');
+  await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel opens from style editor");
+  await shadowClick(page, 'button[data-action="quick-select"]');
+  await clickCenter(page, ".muted-panel h3");
+  await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.style-editor-popover:not([hidden])')", "style editor appears for removable element");
+  await shadowClick(page, '[data-style-action="delete-element"]');
+  await waitForEval(page, "!document.querySelector('.muted-panel h3')", "selected element is deleted");
+  record("style editor records element deletion", true);
+
   await shadowClick(page, ".devlite-launcher");
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel reopens after image replacement");
   await shadowClick(page, 'button[data-tab="element"]');
@@ -316,9 +341,13 @@ try {
   await delay(300);
   const editPrompt = readClipboard();
   const parsedPrompt = JSON.parse(editPrompt);
-  assert(Array.isArray(parsedPrompt.changes) && parsedPrompt.changes.length >= 3, "edit prompt contains multiple selected changes");
+  assert(Array.isArray(parsedPrompt.changes) && parsedPrompt.changes.length >= 4, "edit prompt contains multiple selected changes");
   assert(editPrompt.includes("Updated by DevLite QA prompt export"), "edit prompt contains text change");
   assert(editPrompt.includes("font-size") || editPrompt.includes("color"), "edit prompt contains style change");
+  const deletionModification = parsedPrompt.changes
+    .flatMap((change) => change.modifications ?? [])
+    .find((modification) => modification.type === "dom" && String(modification.property ?? "").includes("删除"));
+  assert(deletionModification?.after === "", "edit prompt contains element deletion DOM modification");
   const imageCropModification = parsedPrompt.changes
     .flatMap((change) => change.modifications ?? [])
     .find((modification) => modification.type === "image" && modification.property === "cropReplacement");
@@ -373,6 +402,7 @@ try {
       document.head.appendChild(style);
       const bodyCopy = document.querySelector(".body-copy");
       if (bodyCopy) bodyCopy.textContent = "Updated by DevLite QA prompt export.";
+      document.querySelector(".muted-panel h3")?.remove();
       return true;
     })()
   `);

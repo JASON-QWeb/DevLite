@@ -1,13 +1,19 @@
 type PanelPosition = {
   left: number | null;
   top: number;
+  width?: number;
+  height?: number;
 };
 
+const PANEL_POSITION_STORAGE_KEY = "devlite.panel.position";
+
 export class PanelPositionController {
-  private position: PanelPosition = { left: null, top: 16 };
+  private position: PanelPosition = loadPanelPosition();
 
   apply(panel: HTMLElement | null): void {
     if (!panel) return;
+    if (this.position.width) panel.style.width = `${this.position.width}px`;
+    if (this.position.height) panel.style.height = `${this.position.height}px`;
     const rect = panel.getBoundingClientRect();
     const width = Math.min(rect.width || 760, window.innerWidth - 16);
     const maxLeft = Math.max(8, window.innerWidth - width - 8);
@@ -22,6 +28,7 @@ export class PanelPositionController {
     panel.style.top = `${this.position.top}px`;
     if (rect.width > window.innerWidth - 16) panel.style.width = `${window.innerWidth - 16}px`;
     if (rect.height > window.innerHeight - 16) panel.style.height = `${window.innerHeight - 16}px`;
+    this.rememberSize(panel);
   }
 
   startDrag(panel: HTMLElement | null, event: PointerEvent, onEnd?: () => void): void {
@@ -77,6 +84,8 @@ export class PanelPositionController {
       panel.removeEventListener("pointermove", onMove);
       panel.removeEventListener("pointerup", onUp);
       panel.removeEventListener("pointercancel", onUp);
+      this.rememberSize(panel);
+      savePanelPosition(this.position);
       onEnd?.();
     };
 
@@ -132,11 +141,45 @@ export class PanelPositionController {
       panel.removeEventListener("pointerup", onUp);
       panel.removeEventListener("pointercancel", onUp);
       this.apply(panel);
+      this.rememberSize(panel);
+      savePanelPosition(this.position);
       onEnd?.();
     };
 
     panel.addEventListener("pointermove", onMove);
     panel.addEventListener("pointerup", onUp);
     panel.addEventListener("pointercancel", onUp);
+  }
+
+  private rememberSize(panel: HTMLElement): void {
+    const rect = panel.getBoundingClientRect();
+    this.position = {
+      ...this.position,
+      width: Math.round(Math.min(Math.max(320, rect.width), window.innerWidth - 16)),
+      height: Math.round(Math.min(Math.max(280, rect.height), window.innerHeight - 16))
+    };
+  }
+}
+
+function loadPanelPosition(): PanelPosition {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PANEL_POSITION_STORAGE_KEY) || "null") as PanelPosition | null;
+    if (!parsed || typeof parsed !== "object") return { left: null, top: 16 };
+    return {
+      left: typeof parsed.left === "number" ? parsed.left : null,
+      top: typeof parsed.top === "number" ? parsed.top : 16,
+      width: typeof parsed.width === "number" ? parsed.width : undefined,
+      height: typeof parsed.height === "number" ? parsed.height : undefined
+    };
+  } catch {
+    return { left: null, top: 16 };
+  }
+}
+
+function savePanelPosition(position: PanelPosition): void {
+  try {
+    localStorage.setItem(PANEL_POSITION_STORAGE_KEY, JSON.stringify(position));
+  } catch {
+    // Some pages block storage access; panel still works with in-memory position.
   }
 }

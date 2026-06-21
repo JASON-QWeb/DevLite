@@ -6,6 +6,12 @@ export const DEFAULT_SETTINGS: DiagnosticSettings = {
   collectResponseBody: false,
   maxResponseLength: 2048,
   slowRequestThreshold: 2000,
+  performanceTtfbWarning: 600,
+  performanceTtfbError: 1200,
+  performanceDomReadyWarning: 2500,
+  performanceLoadWarning: 4500,
+  performanceLoadError: 8000,
+  performanceResourceSizeWarning: 512 * 1024,
   retainHours: 24,
   extraRedactionKeys: []
 };

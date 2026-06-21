@@ -22,13 +22,21 @@ type CssProbeRoot = Node & ParentNode;
 const cssNormalizationProbes = new WeakMap<CssProbeRoot, HTMLElement>();
 
 export function verifyStyleChange(change: StyleChange, element: HTMLElement | null, context: VerificationContext): VerificationResult {
-  if (!element) {
-    return { status: "failed", reason: context.t("verifyMissingElement") };
-  }
-
   const samePageLoad = !!change.exportedPageLoadId && change.exportedPageLoadId === context.pageLoadId;
   const hasPageMutation =
     typeof change.exportedMutationVersion === "number" ? context.mutationVersion > change.exportedMutationVersion : false;
+  const deletedDom = change.domBefore !== undefined && change.domAfter === "";
+
+  if (!element) {
+    if (deletedDom) {
+      if (samePageLoad && !hasPageMutation) {
+        return { status: "waiting", reason: context.t("waitingForPageUpdate") };
+      }
+      return { status: "verified", reason: samePageLoad ? context.t("verifyHotUpdateMatched") : context.t("verifyReloadMatched") };
+    }
+    return { status: "failed", reason: context.t("verifyMissingElement") };
+  }
+
   const sameExportedElement = !!context.exportedElement && context.exportedElement === element;
 
   if (samePageLoad && !hasPageMutation) {

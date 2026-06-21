@@ -41,27 +41,32 @@
 
 ---
 
-## 安装配套 SKILL 强化 Agent 能力
+## 安装配套 SKILL
 
 DevLite 导出的 Prompt 支持**全部主流 Coding Agent**：
 
 <div align="center">
 
-[![Codex](https://img.shields.io/badge/Codex-000000?style=for-the-badge&logo=openai&logoColor=white)](#)
-&nbsp;
-[![Claude Code](https://img.shields.io/badge/Claude_Code-D97757?style=for-the-badge&logo=claude&logoColor=white)](#)
-&nbsp;
-[![Qwen](https://img.shields.io/badge/通义千问-615CED?style=for-the-badge&logo=alibabacloud&logoColor=white)](#)
-&nbsp;
-[![DeepSeek](https://img.shields.io/badge/DeepSeek-4D6BFF?style=for-the-badge&logo=deepseek&logoColor=white)](#)&nbsp;
-[![Hermes](https://img.shields.io/badge/Hermes-7952B3?style=for-the-badge&logo=hermes&logoColor=white)](#)
+<img src="public/agent-logos/codex.svg" title="Codex" alt="Codex" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/claude-code.svg" title="Claude Code" alt="Claude Code" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/gemini.svg" title="Gemini" alt="Gemini" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/qwen.svg" title="Qwen" alt="Qwen" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/deepseek.svg" title="DeepSeek" alt="DeepSeek" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/kimi.svg" title="Kimi" alt="Kimi" width="32" />
+<br>
+<img src="public/agent-logos/minimax.svg" title="MiniMax" alt="MiniMax" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/glm.svg" title="GLM" alt="GLM" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/antigravity.svg" title="Antigravity" alt="Antigravity" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/hermes.svg" title="Hermes" alt="Hermes" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/openclaw.svg" title="OpenClaw" alt="OpenClaw" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/cursor.svg" title="Cursor" alt="Cursor" width="32" />
 
 </div>
 
-让你的 AI Agent 强化 **理解和处理 DevLite 诊断报告** 的能力，只需发送以下指令给Agent：
+发送此指令给你的 Agent，以强化 **处理 DevLite 的能力**：
 
 ```
-请安装 https://github.com/JASON-QWeb/DevLite 仓库中的 SKILL.md 到你的 Agent Skills 配置中，并根据README.md里的浏览器下载地址，提示帮助用户安装DevLite浏览器插件。
+Read https://github.com/JASON-QWeb/DevLite/blob/main/SKILL.md and install the SKILL
 ```
 
 ---
