@@ -28,7 +28,7 @@ export const DEFAULT_PANEL_SETTINGS: Required<PanelSettings> = {
   collectResponseBody: false,
   maxResponseLength: 2048,
   slowRequestThreshold: 2000,
-  performanceTtfbWarning: 600,
+  performanceTtfbWarning: 800,
   performanceTtfbError: 1200,
   performanceDomReadyWarning: 2500,
   performanceLoadWarning: 4500,

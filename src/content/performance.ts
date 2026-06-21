@@ -50,7 +50,7 @@ export function getPerformanceInsights(context: PerformanceContext): Performance
   const largeResources = resources
     .filter((resource) => resource.transferSize >= thresholds.resourceSizeWarning || resource.encodedBodySize >= thresholds.resourceSizeWarning)
     .sort((a, b) => Math.max(b.transferSize, b.encodedBodySize) - Math.max(a.transferSize, a.encodedBodySize));
-  const slowResources = resources.filter((resource) => resource.duration >= Math.max(1200, slowThreshold)).sort((a, b) => b.duration - a.duration);
+  const slowResources = resources.filter((resource) => resource.duration >= slowThreshold).sort((a, b) => b.duration - a.duration);
   const longTasks = context.allEvents
     .filter((event) => event.type === "performance" && event.metadata?.kind === "longtask")
     .sort((a, b) => (b.duration ?? 0) - (a.duration ?? 0));
@@ -313,7 +313,7 @@ function pushWebVitalIssues(webVitals: WebVitals, issues: PerformanceIssue[], co
 
 function pushRuntimePerformanceIssues(webVitals: WebVitals, memory: MemoryInfo | null, issues: PerformanceIssue[], context: PerformanceContext): void {
   const { locale } = context;
-  if (typeof webVitals.fps === "number" && webVitals.fps < 50) {
+  if (typeof webVitals.fps === "number" && webVitals.fps < 40) {
     issues.push({
       title: locale === "en" ? "Low frame rate" : "帧率偏低",
       severity: webVitals.fps < 30 ? "error" : "warning",
