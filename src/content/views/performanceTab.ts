@@ -81,11 +81,12 @@ function renderPerformanceSettings(context: PerformanceTabContext): string {
 }
 
 function settingNumberField(name: string, label: string, value: number, min: string, max: string, step: string, hint: string): string {
+  const fieldValue = Number.isFinite(value) ? String(value) : "";
   return `
       <label class="field">
-        <span>${label}</span>
-        <input data-setting="${name}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" />
-        <small>${hint}</small>
+        <span>${escapeHtml(label)}</span>
+        <input data-setting="${escapeHtml(name)}" type="number" min="${escapeHtml(min)}" max="${escapeHtml(max)}" step="${escapeHtml(step)}" value="${escapeHtml(fieldValue)}" />
+        <small>${escapeHtml(hint)}</small>
       </label>
     `;
 }
@@ -127,9 +128,11 @@ function renderTrend(context: PerformanceTabContext): string {
         ${samples
           .map((event) => {
             const value = sampleValue(event);
-            const height = Math.max(10, Math.round((value / max) * 100));
+            const safeValue = Number.isFinite(value) ? value : 0;
+            const height = Math.max(10, Math.round((safeValue / max) * 100));
             const kind = String(event.metadata?.kind ?? "sample");
-            return `<i class="${event.severity}" style="height:${height}%" title="${escapeHtml(`${kind}: ${value} @ ${context.formatTime(event.timestamp)}`)}"></i>`;
+            const label = Number.isFinite(value) ? String(value) : "-";
+            return `<i class="${event.severity}" style="height:${height}%" title="${escapeHtml(`${kind}: ${label} @ ${context.formatTime(event.timestamp)}`)}"></i>`;
           })
           .join("")}
       </div>

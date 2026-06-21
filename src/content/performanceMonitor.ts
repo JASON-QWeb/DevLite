@@ -1,4 +1,5 @@
 import type { LiveDiagnosticEvent, PerformanceInsights, UiLocale } from "./types";
+import { getMemoryInfo } from "./performanceMemory";
 import { formatBytes } from "./utils";
 
 type PerformanceMonitorOptions = {
@@ -171,29 +172,34 @@ export class PerformanceMonitor {
 
   private startFpsMonitor(): void {
     if (this.fpsFrameId !== null) return;
+    if (!this.options.isCaptureActive()) return;
     const tick = (timestamp: number): void => {
-      if (this.options.isCaptureActive()) {
-        if (this.fpsWindowStarted === 0) {
-          this.fpsWindowStarted = timestamp;
-          this.fpsFrames = 0;
-        }
-        this.fpsFrames += 1;
-        const elapsed = timestamp - this.fpsWindowStarted;
-        if (elapsed >= 3000) {
-          const fps = Math.round((this.fpsFrames * 1000) / elapsed);
-          this.options.sendDiagnosticEvent({
-            type: "performance",
-            severity: fps < 30 ? "error" : fps < 50 ? "warning" : "info",
-            message: webVitalMessage(this.options.getLocale(), "FPS", String(fps)),
-            metadata: {
-              kind: "fps",
-              value: fps,
-              windowMs: Math.round(elapsed)
-            }
-          });
-          this.fpsWindowStarted = timestamp;
-          this.fpsFrames = 0;
-        }
+      if (!this.options.isCaptureActive()) {
+        this.fpsFrameId = null;
+        this.fpsWindowStarted = 0;
+        this.fpsFrames = 0;
+        return;
+      }
+      if (this.fpsWindowStarted === 0) {
+        this.fpsWindowStarted = timestamp;
+        this.fpsFrames = 0;
+      }
+      this.fpsFrames += 1;
+      const elapsed = timestamp - this.fpsWindowStarted;
+      if (elapsed >= 3000) {
+        const fps = Math.round((this.fpsFrames * 1000) / elapsed);
+        this.options.sendDiagnosticEvent({
+          type: "performance",
+          severity: fps < 30 ? "error" : fps < 50 ? "warning" : "info",
+          message: webVitalMessage(this.options.getLocale(), "FPS", String(fps)),
+          metadata: {
+            kind: "fps",
+            value: fps,
+            windowMs: Math.round(elapsed)
+          }
+        });
+        this.fpsWindowStarted = timestamp;
+        this.fpsFrames = 0;
       }
       this.fpsFrameId = window.requestAnimationFrame(tick);
     };
@@ -202,8 +208,15 @@ export class PerformanceMonitor {
 
   private startMemoryMonitor(): void {
     if (this.memoryTimerId !== null) return;
+    if (!this.options.isCaptureActive()) return;
     const reportMemory = (): void => {
-      if (!this.options.isCaptureActive()) return;
+      if (!this.options.isCaptureActive()) {
+        if (this.memoryTimerId !== null) {
+          window.clearInterval(this.memoryTimerId);
+          this.memoryTimerId = null;
+        }
+        return;
+      }
       const memory = getMemoryInfo();
       if (!memory) return;
       const ratio = memory.jsHeapSizeLimit > 0 ? memory.usedJSHeapSize / memory.jsHeapSizeLimit : 0;
@@ -224,18 +237,6 @@ export class PerformanceMonitor {
     reportMemory();
     this.memoryTimerId = window.setInterval(reportMemory, 5000);
   }
-}
-
-type MemoryInfo = {
-  usedJSHeapSize: number;
-  totalJSHeapSize: number;
-  jsHeapSizeLimit: number;
-};
-
-function getMemoryInfo(): MemoryInfo | null {
-  const memory = (performance as Performance & { memory?: MemoryInfo }).memory;
-  if (!memory || !Number.isFinite(memory.usedJSHeapSize) || !Number.isFinite(memory.jsHeapSizeLimit)) return null;
-  return memory;
 }
 
 function longTaskMessage(locale: UiLocale, duration: number): string {
