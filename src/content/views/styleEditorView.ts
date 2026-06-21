@@ -36,7 +36,10 @@ export function renderStyleEditorView({ element, change, canEditText, t }: Style
   return `
       <div class="style-editor-head">
         <strong>${escapeHtml(change.elementLabel)}</strong>
-        <button type="button" data-style-action="back-panel" class="icon-button">${t("backToPanel")}</button>
+        <div class="style-editor-head-actions">
+          <button type="button" data-style-action="select" class="primary">${t("selectAnother")}</button>
+          <button type="button" data-style-action="back-panel" class="icon-button">${t("backToPanel")}</button>
+        </div>
       </div>
       <div class="rows">${basicRows}</div>
       <details class="style-editor-details">
@@ -44,11 +47,11 @@ export function renderStyleEditorView({ element, change, canEditText, t }: Style
         <div class="rows">${detailRows}</div>
       </details>
       <div class="style-editor-actions">
-        <button type="button" data-style-action="copy-element">${t("copyElement")}</button>
+        <button type="button" data-style-action="text" ${canEditText ? "" : "disabled"}>${t("editText")}</button>
         <button type="button" data-style-action="replace-image">${t("replaceImage")}</button>
         <button type="button" data-style-action="replace-icon">${t("replaceIcon")}</button>
-        ${canEditText ? `<button type="button" data-style-action="text">${t("editText")}</button>` : ""}
-        <button type="button" data-style-action="select">${t("selectAnother")}</button>
+        <button type="button" data-style-action="delete-element" class="danger-button">${t("deleteElement")}</button>
+        <button type="button" data-style-action="copy-element">${t("copyElement")}</button>
         <button type="button" data-style-action="undo">${t("undo")}</button>
       </div>
     `;

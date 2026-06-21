@@ -897,7 +897,7 @@ async function findExtensionId(session) {
   const result = await session.send("Target.getTargets");
   const target = result.targetInfos.find(
     (item) => item.type === "service_worker" && /chrome-extension:\/\/[^/]+\/background\.js$/.test(item.url)
-  ) ?? result.targetInfos.find((item) => /chrome-extension:\/\/[^/]+\/(?:popup|options)\.html$/.test(item.url));
+  ) ?? result.targetInfos.find((item) => /chrome-extension:\/\/[^/]+\/options\.html$/.test(item.url));
   return target?.url.match(/^chrome-extension:\/\/([^/]+)\//)?.[1] || "";
 }
 

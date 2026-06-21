@@ -28,11 +28,38 @@ export const DEFAULT_PANEL_SETTINGS: Required<PanelSettings> = {
   collectResponseBody: false,
   maxResponseLength: 2048,
   slowRequestThreshold: 2000,
+  performanceTtfbWarning: 600,
+  performanceTtfbError: 1200,
+  performanceDomReadyWarning: 2500,
+  performanceLoadWarning: 4500,
+  performanceLoadError: 8000,
+  performanceResourceSizeWarning: 512 * 1024,
   retainHours: 24,
   extraRedactionKeys: []
 };
 
 export const PANEL_THEMES: Record<UiTheme, ThemeTokens> = {
+  system: {
+    bg: "#FAF9F5",
+    surface: "#FFFFFF",
+    surface2: "#F4F3EE",
+    sidebar: "#F1EFE7",
+    border: "#E8E6DC",
+    borderStrong: "#D4D0C4",
+    text: "#141413",
+    textMuted: "#6F6A60",
+    primary: "#D97757",
+    primaryHover: "#C15F3C",
+    primarySoft: "#F3DED4",
+    onPrimary: "#FFFFFF",
+    danger: "#B94A48",
+    warning: "#B8792F",
+    success: "#788C5D",
+    codeText: "#7B402F",
+    toastBg: "#141413",
+    shadow: "rgba(32, 28, 22, 0.18)",
+    focus: "rgba(217, 119, 87, 0.32)"
+  },
   claude: {
     bg: "#FAF9F5",
     surface: "#FFFFFF",
@@ -95,26 +122,5 @@ export const PANEL_THEMES: Record<UiTheme, ThemeTokens> = {
     toastBg: "#EEF2FF",
     shadow: "rgba(0, 0, 0, 0.42)",
     focus: "rgba(122, 162, 255, 0.36)"
-  },
-  cartoon: {
-    bg: "#F7FBF2",
-    surface: "#FFFFFF",
-    surface2: "#EEF6E4",
-    sidebar: "#E8F3DC",
-    border: "#D7E6CA",
-    borderStrong: "#B8D2A5",
-    text: "#172017",
-    textMuted: "#65735F",
-    primary: "#5F9352",
-    primaryHover: "#4C7841",
-    primarySoft: "#DDEED5",
-    onPrimary: "#FFFFFF",
-    danger: "#C85650",
-    warning: "#B9832B",
-    success: "#4F8A66",
-    codeText: "#496F3E",
-    toastBg: "#172017",
-    shadow: "rgba(35, 58, 30, 0.16)",
-    focus: "rgba(95, 147, 82, 0.32)"
   }
 };

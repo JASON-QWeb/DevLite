@@ -45,10 +45,10 @@ function render(): void {
           <h2>${t("appearance")}</h2>
           <div class="body">
             <div class="theme-grid" role="radiogroup" aria-label="${t("theme")}">
+              ${themeOption("system", t("themeSystem"), settings.uiTheme)}
               ${themeOption("claude", t("themeClaude"), settings.uiTheme)}
               ${themeOption("saas", t("themeSaas"), settings.uiTheme)}
               ${themeOption("dark", t("themeDark"), settings.uiTheme)}
-              ${themeOption("cartoon", t("themeCartoon"), settings.uiTheme)}
             </div>
           </div>
         </section>

@@ -1,9 +1,10 @@
 import { copyText } from "./clipboard";
 import { editableTextValue } from "./editableText";
-import { buildAllErrorsText, buildNetworkEventText } from "./exportText";
+import { buildAllErrorsText, buildCurlCommand, buildNetworkEventText } from "./exportText";
 import type { ContentTextKey } from "./i18n";
 import { DEFAULT_PANEL_SETTINGS } from "./panelConfig";
 import { collectPanelSettingsForm } from "./settings";
+import { SKILL_INSTALL_PROMPT } from "./skillInstall";
 import { cssBlock } from "./utils";
 import type { LiveDiagnosticEvent, PanelSettings, StyleChange } from "./types";
 
@@ -24,6 +25,7 @@ type PanelActionContext = {
   renderPanel: () => void;
   savePanelSettings: (next: PanelSettings, successMessage?: string) => Promise<void>;
   sendRuntime: (message: any) => Promise<any>;
+  showSkillInstall: () => void;
   showSettings: () => void;
   startInlineTextEdit: () => void;
   startInspector: () => void;
@@ -67,6 +69,19 @@ export async function handlePanelAction(action: string, context: PanelActionCont
     return;
   }
 
+  if (action === "show-skill-install") {
+    context.showSkillInstall();
+    await copyText(SKILL_INSTALL_PROMPT);
+    toast(t("skillPromptCopied"));
+    return;
+  }
+
+  if (action === "copy-skill-install-prompt") {
+    await copyText(SKILL_INSTALL_PROMPT);
+    toast(t("skillPromptCopied"));
+    return;
+  }
+
   if (action === "save-panel-settings") {
     await context.savePanelSettings(collectPanelSettingsForm(context.getPanel(), context.getSettings()));
     return;
@@ -79,6 +94,12 @@ export async function handlePanelAction(action: string, context: PanelActionCont
 
   if (action === "toggle-locale") {
     await context.toggleLocale();
+    return;
+  }
+
+  if (action === "open-source-page") {
+    const response = await context.sendRuntime({ type: "open-source-page" });
+    if (!response?.ok) toast(response?.error || t("openSourceFailed"));
     return;
   }
 
@@ -140,6 +161,17 @@ export async function handlePanelAction(action: string, context: PanelActionCont
     return;
   }
 
+  if (action === "copy-selected-curl") {
+    const selectedNetworkEvent = context.getSelectedNetworkEvent();
+    if (!selectedNetworkEvent) {
+      toast(t("noRequestToCopy"));
+      return;
+    }
+    await copyText(buildCurlCommand(selectedNetworkEvent));
+    toast(t("curlCopied"));
+    return;
+  }
+
   if (action === "copy-all-errors") {
     const text = buildAllErrorsText(context.getProblemEvents(), context.eventTypeLabel);
     if (!text) {
@@ -148,6 +180,16 @@ export async function handlePanelAction(action: string, context: PanelActionCont
     }
     await copyText(text);
     toast(t("errorsCopied"));
+    return;
+  }
+
+  if (action === "download-markdown-report") {
+    await downloadReport("markdown", context);
+    return;
+  }
+
+  if (action === "download-json-report") {
+    await downloadReport("json", context);
     return;
   }
 
@@ -167,4 +209,30 @@ export async function handlePanelAction(action: string, context: PanelActionCont
     context.stopInlineTextEdit();
     await context.undoCurrentChange();
   }
+}
+
+async function downloadReport(format: "markdown" | "json", context: PanelActionContext): Promise<void> {
+  const response = await context.sendRuntime({ type: "generate-export", format });
+  if (!response?.ok || typeof response.text !== "string") {
+    context.toast(response?.error || context.t("exportFailed"));
+    return;
+  }
+
+  const extension = format === "json" ? "json" : "md";
+  const mime = format === "json" ? "application/json" : "text/markdown";
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  downloadTextFile(response.text, `devlite-report-${timestamp}.${extension}`, mime);
+  context.toast(context.t("reportDownloaded"));
+}
+
+function downloadTextFile(text: string, filename: string, mime: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: `${mime};charset=utf-8` }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.documentElement.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

@@ -70,6 +70,12 @@ export class DiagnosticEventStore {
     events.forEach((event) => this.remember(event));
   }
 
+  removeWhere(predicate: (event: LiveDiagnosticEvent) => boolean): number {
+    const before = this.events.length;
+    this.events = this.events.filter((event) => !predicate(event));
+    return before - this.events.length;
+  }
+
   getProblemEvents(): LiveDiagnosticEvent[] {
     return this.events
       .filter((event) => {

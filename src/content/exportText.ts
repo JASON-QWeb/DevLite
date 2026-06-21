@@ -21,6 +21,21 @@ export function buildNetworkEventText(event: LiveDiagnosticEvent): string {
   ].join("\n");
 }
 
+export function buildCurlCommand(event: LiveDiagnosticEvent): string {
+  const parts = ["curl", "-X", shellQuote(event.method ?? "GET"), shellQuote(event.url ?? "")];
+  const headers = event.metadata?.requestHeaders;
+  if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+    Object.entries(headers as Record<string, unknown>).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      parts.push("-H", shellQuote(`${key}: ${String(value)}`));
+    });
+  }
+  if (event.requestBody) {
+    parts.push("--data-raw", shellQuote(event.requestBody));
+  }
+  return parts.join(" ");
+}
+
 function formatUnknown(value: unknown): string {
   if (!value) return "";
   if (typeof value === "string") return value;
@@ -29,6 +44,10 @@ function formatUnknown(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function buildAllErrorsText(events: LiveDiagnosticEvent[], eventTypeLabel: (event: LiveDiagnosticEvent) => string): string {

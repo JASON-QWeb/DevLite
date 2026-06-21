@@ -1,4 +1,29 @@
+import Cropper from "cropperjs";
+import type { CropperImage, CropperSelection } from "cropperjs";
 import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
+
+type ImageCropperPayload = {
+  src: string;
+  label: string;
+  name: string;
+  type: string;
+  size: number;
+};
+
+type ImageCropperTexts = Record<
+  "cropImage" | "cancel" | "matchElementRatio" | "freeRatio" | "zoomOut" | "zoomIn" | "resetCrop" | "applyCrop",
+  string
+>;
+
+type ImageCropperSession = {
+  id: string;
+  root: HTMLDivElement;
+  cropper: Cropper;
+  payload: ImageCropperPayload;
+  source: { width: number; height: number };
+  targetAspectRatio: number | null;
+  texts: ImageCropperTexts;
+};
 
 (() => {
   const win = window as any;
@@ -12,7 +37,10 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
   let bufferEarlyEvents = true;
   const pendingEvents: any[] = [];
   const MAX_PENDING_EVENTS = 200;
+  const MAX_CROP_OUTPUT_EDGE = 1600;
+  const CROP_OUTPUT_TYPE = "image/png";
   let controlMessageToken: string | null = null;
+  let activeImageCropper: ImageCropperSession | null = null;
   let settings = {
     collectResponseBody: false,
     maxResponseLength: 2048,
@@ -25,6 +53,9 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
   const originalOpen = XMLHttpRequest.prototype.open;
   const originalSend = XMLHttpRequest.prototype.send;
   const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+  const xhrMetaKey = Symbol("__devlite_meta__");
+  const OriginalWebSocket = window.WebSocket;
+  const OriginalEventSource = window.EventSource;
 
   window.addEventListener("message", (event) => {
     if (!isTrustedControlMessage(event)) return;
@@ -32,7 +63,17 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     if (!data || data.channel !== CONTROL_CHANNEL) return;
     if (typeof data.token !== "string") return;
     if (controlMessageToken !== null && data.token !== controlMessageToken && data.type !== "start") return;
-    controlMessageToken = data.token;
+    if (controlMessageToken === null || data.type === "start") {
+      controlMessageToken = data.token;
+    }
+    if (data.type === "image-cropper-open") {
+      void openImageCropper(data).catch((error) => postImageCropperError(data.cropperId, error));
+      return;
+    }
+    if (data.type === "image-cropper-close") {
+      closeImageCropper(data.cropperId, false);
+      return;
+    }
     if (data.type === "start") {
       active = true;
       bufferEarlyEvents = false;
@@ -169,7 +210,7 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
   };
 
   XMLHttpRequest.prototype.open = function patchedOpen(method: string, url: string | URL, async?: boolean, username?: string | null, password?: string | null) {
-    (this as any).__devlite = {
+    (this as any)[xhrMetaKey] = {
       method,
       url: String(url),
       headers: {},
@@ -179,7 +220,7 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
   };
 
   XMLHttpRequest.prototype.setRequestHeader = function patchedSetRequestHeader(name: string, value: string) {
-    const meta = (this as any).__devlite;
+    const meta = (this as any)[xhrMetaKey];
     if (meta) {
       meta.headers[name] = value;
     }
@@ -188,10 +229,10 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
 
   XMLHttpRequest.prototype.send = function patchedSend(body?: Document | XMLHttpRequestBodyInit | null) {
     const xhr = this;
-    const meta = (xhr as any).__devlite ?? {};
+    const meta = (xhr as any)[xhrMetaKey] ?? {};
     meta.startedAt = performance.now();
     meta.requestBody = summarizeBody(body);
-    (xhr as any).__devlite = meta;
+    (xhr as any)[xhrMetaKey] = meta;
 
     let finalized = false;
     const finalize = (kind: "loadend" | "error" | "timeout" | "abort") => {
@@ -227,6 +268,381 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
 
     return originalSend.call(xhr, body ?? null);
   };
+
+  window.WebSocket = function patchedWebSocket(url: string | URL, protocols?: string | string[]) {
+    const startedAt = performance.now();
+    const socket = protocols === undefined ? new OriginalWebSocket(url) : new OriginalWebSocket(url, protocols);
+    const targetUrl = String(url);
+    const protocolList = normalizeWebSocketProtocols(protocols);
+    const transportMetadata: Record<string, unknown> = {
+      protocols: protocolList,
+      ...classifyWebSocketTransport(protocolList)
+    };
+    socket.addEventListener("open", () => {
+      emitTransportEvent("websocket", "open", targetUrl, "WS", Math.round(performance.now() - startedAt), "info", transportMetadata);
+    });
+    socket.addEventListener("error", () => {
+      emitTransportEvent("websocket", "error", targetUrl, "WS", Math.round(performance.now() - startedAt), "error", transportMetadata);
+    });
+    socket.addEventListener("close", (event) => {
+      const severity = event.wasClean ? "info" : "warning";
+      emitTransportEvent("websocket", `close:${event.code}`, targetUrl, "WS", Math.round(performance.now() - startedAt), severity, {
+        ...transportMetadata,
+        reason: event.reason,
+        wasClean: event.wasClean
+      });
+    });
+    socket.addEventListener("message", (event) => {
+      if (!settings.collectResponseBody) return;
+      if (transportMetadata.devTransport) return;
+      emitTransportEvent("websocket", "message", targetUrl, "WS", undefined, "info", transportMetadata, summarizeBody(event.data));
+    });
+    return socket;
+  } as unknown as typeof WebSocket;
+  window.WebSocket.prototype = OriginalWebSocket.prototype;
+  Object.setPrototypeOf(window.WebSocket, OriginalWebSocket);
+
+  if (OriginalEventSource) {
+    window.EventSource = function patchedEventSource(url: string | URL, eventSourceInitDict?: EventSourceInit) {
+      const startedAt = performance.now();
+      const source = new OriginalEventSource(url, eventSourceInitDict);
+      const targetUrl = String(url);
+      source.addEventListener("open", () => {
+        emitTransportEvent("eventsource", "open", targetUrl, "SSE", Math.round(performance.now() - startedAt), "info");
+      });
+      source.addEventListener("error", () => {
+        emitTransportEvent("eventsource", "error", targetUrl, "SSE", Math.round(performance.now() - startedAt), "warning", {
+          readyState: source.readyState
+        });
+      });
+      source.addEventListener("message", (event) => {
+        if (!settings.collectResponseBody) return;
+        emitTransportEvent("eventsource", "message", targetUrl, "SSE", undefined, "info", {
+          lastEventId: event.lastEventId
+        }, summarizeBody(event.data));
+      });
+      return source;
+    } as unknown as typeof EventSource;
+    window.EventSource.prototype = OriginalEventSource.prototype;
+    Object.setPrototypeOf(window.EventSource, OriginalEventSource);
+  }
+
+  async function openImageCropper(data: any): Promise<void> {
+    const payload = normalizeImageCropperPayload(data.payload);
+    const cropperId = typeof data.cropperId === "string" ? data.cropperId : "";
+    if (!cropperId || !payload) throw new Error("Invalid image cropper request");
+    closeImageCropper(undefined, false);
+
+    const host = document.querySelector("#devlite-overlay-root");
+    const shadow = host?.shadowRoot;
+    if (!shadow) throw new Error("DevLite overlay root not found");
+
+    const texts = normalizeImageCropperTexts(data.texts);
+    const targetAspectRatio = typeof data.targetAspectRatio === "number" && Number.isFinite(data.targetAspectRatio) ? data.targetAspectRatio : null;
+    const source = await loadImageSize(payload.src);
+    const root = document.createElement("div");
+    root.className = "image-cropper-modal";
+    root.innerHTML = renderImageCropperMarkup(texts, payload, targetAspectRatio);
+    shadow.appendChild(root);
+
+    try {
+      const container = root.querySelector<HTMLElement>("[data-cropper-container]");
+      if (!container) throw new Error("Cropper container not found");
+      const image = new Image();
+      image.src = payload.src;
+      image.alt = payload.name;
+      const cropper = new Cropper(image, {
+        container,
+        template: imageCropperTemplate(targetAspectRatio)
+      });
+      const session = { id: cropperId, root, cropper, payload, source, targetAspectRatio, texts };
+      activeImageCropper = session;
+      bindImageCropperControls(session);
+      await cropper.getCropperImage()?.$ready();
+      cropper.getCropperImage()?.$center("contain");
+      await nextAnimationFrame();
+      await nextAnimationFrame();
+      if (activeImageCropper === session) {
+        ensureImageCropperSelectionLayout(session, true);
+      }
+    } catch (error) {
+      root.remove();
+      throw error;
+    }
+  }
+
+  function bindImageCropperControls(session: ImageCropperSession): void {
+    session.root.addEventListener("click", (event) => {
+      const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-cropper-action]") : null;
+      if (!button) return;
+      event.preventDefault();
+      void handleImageCropperAction(session, button.dataset.cropperAction ?? "").catch((error) => postImageCropperError(session.id, error));
+    });
+  }
+
+  async function handleImageCropperAction(session: ImageCropperSession, action: string): Promise<void> {
+    if (activeImageCropper !== session) return;
+    const selection = session.cropper.getCropperSelection();
+    const image = session.cropper.getCropperImage();
+    if (action === "cancel") {
+      postImageCropperCancel(session.id);
+      closeImageCropper(session.id, false);
+      return;
+    }
+    if (action === "zoom-in") {
+      image?.$zoom(0.1);
+      return;
+    }
+    if (action === "zoom-out") {
+      image?.$zoom(-0.1);
+      return;
+    }
+    if (action === "reset") {
+      image?.$resetTransform();
+      image?.$center("contain");
+      selection?.$reset();
+      ensureImageCropperSelectionLayout(session, true);
+      return;
+    }
+    if (action === "free-ratio") {
+      setImageCropperAspectRatio(session, selection, null);
+      return;
+    }
+    if (action === "target-ratio") {
+      setImageCropperAspectRatio(session, selection, session.targetAspectRatio);
+      return;
+    }
+    if (action === "apply") {
+      await applyImageCrop(session, selection, image);
+    }
+  }
+
+  function setImageCropperAspectRatio(session: ImageCropperSession, selection: CropperSelection | null, aspectRatio: number | null): void {
+    if (!selection) return;
+    selection.aspectRatio = aspectRatio && Number.isFinite(aspectRatio) ? aspectRatio : Number.NaN;
+    selection.$render();
+    ensureImageCropperSelectionLayout(session);
+    session.root
+      .querySelectorAll<HTMLButtonElement>("[data-cropper-action='target-ratio'], [data-cropper-action='free-ratio']")
+      .forEach((button) => {
+        const active =
+          (button.dataset.cropperAction === "target-ratio" && !!aspectRatio) ||
+          (button.dataset.cropperAction === "free-ratio" && !aspectRatio);
+        button.classList.toggle("active", active);
+      });
+  }
+
+  function ensureImageCropperSelectionLayout(session: ImageCropperSession, force = false): void {
+    const selection = session.cropper.getCropperSelection();
+    const canvas = session.cropper.getCropperCanvas();
+    const rect = canvas?.getBoundingClientRect();
+    if (!selection || !rect || rect.width <= 1 || rect.height <= 1 || (!force && selection.width > 0 && selection.height > 0)) {
+      return;
+    }
+    const ratio = Number.isFinite(selection.aspectRatio) ? selection.aspectRatio : session.targetAspectRatio;
+    let width = rect.width * 0.86;
+    let height = rect.height * 0.86;
+    if (ratio && Number.isFinite(ratio)) {
+      if (width / height > ratio) {
+        width = height * ratio;
+      } else {
+        height = width / ratio;
+      }
+    }
+    selection.$change((rect.width - width) / 2, (rect.height - height) / 2, width, height, ratio ?? undefined, true);
+  }
+
+  async function applyImageCrop(session: ImageCropperSession, selection: CropperSelection | null, image: CropperImage | null): Promise<void> {
+    if (!selection) {
+      postImageCropperError(session.id, new Error("Cropper selection not found"));
+      return;
+    }
+    ensureImageCropperSelectionLayout(session);
+    const outputSize = cropOutputSize(selection);
+    const canvas = await selection.$toCanvas(outputSize);
+    const crop = cropSelectionMetrics(selection);
+    const result = {
+      src: canvas.toDataURL(CROP_OUTPUT_TYPE),
+      label: `${session.texts.cropImage}: ${session.payload.label} -> ${canvas.width}x${canvas.height}`,
+      metadata: {
+        mode: "crop",
+        source: {
+          name: session.payload.name,
+          type: session.payload.type,
+          size: session.payload.size,
+          width: session.source.width,
+          height: session.source.height
+        },
+        crop: {
+          x: round(crop.x),
+          y: round(crop.y),
+          width: round(crop.width),
+          height: round(crop.height),
+          aspectRatio: selection.aspectRatio > 0 && Number.isFinite(selection.aspectRatio) ? round(selection.aspectRatio) : null
+        },
+        output: {
+          width: canvas.width,
+          height: canvas.height,
+          type: CROP_OUTPUT_TYPE
+        }
+      }
+    };
+    image?.$resetTransform();
+    postImageCropperResult(session.id, result);
+    closeImageCropper(session.id, false);
+  }
+
+  function closeImageCropper(cropperId?: unknown, notifyCancel = false): void {
+    const session = activeImageCropper;
+    if (!session || (typeof cropperId === "string" && cropperId !== session.id)) return;
+    activeImageCropper = null;
+    session.cropper.destroy();
+    session.root.remove();
+    if (notifyCancel) postImageCropperCancel(session.id);
+  }
+
+  function postImageCropperResult(cropperId: string, result: unknown): void {
+    window.postMessage({ channel: PAGE_CHANNEL, token: controlMessageToken, type: "image-cropper-result", cropperId, result }, pageMessageTargetOrigin);
+  }
+
+  function postImageCropperCancel(cropperId: string): void {
+    window.postMessage({ channel: PAGE_CHANNEL, token: controlMessageToken, type: "image-cropper-cancel", cropperId }, pageMessageTargetOrigin);
+  }
+
+  function postImageCropperError(cropperId: unknown, error: unknown): void {
+    if (typeof cropperId !== "string") return;
+    closeImageCropper(cropperId, false);
+    window.postMessage(
+      {
+        channel: PAGE_CHANNEL,
+        token: controlMessageToken,
+        type: "image-cropper-error",
+        cropperId,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      pageMessageTargetOrigin
+    );
+  }
+
+  function renderImageCropperMarkup(texts: ImageCropperTexts, payload: ImageCropperPayload, targetAspectRatio: number | null): string {
+    return `
+      <div class="image-cropper-shell" role="dialog" aria-label="${escapeHtml(texts.cropImage)}">
+        <div class="image-cropper-head">
+          <div>
+            <strong>${escapeHtml(texts.cropImage)}</strong>
+            <span>${escapeHtml(payload.label)}</span>
+          </div>
+          <button type="button" data-cropper-action="cancel">${escapeHtml(texts.cancel)}</button>
+        </div>
+        <div class="image-cropper-stage" data-cropper-container></div>
+        <div class="image-cropper-actions">
+          <div class="toolbar-group">
+            <button type="button" class="${targetAspectRatio ? "active" : ""}" data-cropper-action="target-ratio" ${targetAspectRatio ? "" : "disabled"}>${escapeHtml(texts.matchElementRatio)}</button>
+            <button type="button" class="${targetAspectRatio ? "" : "active"}" data-cropper-action="free-ratio">${escapeHtml(texts.freeRatio)}</button>
+          </div>
+          <div class="toolbar-group toolbar-group-right">
+            <button type="button" data-cropper-action="zoom-out">${escapeHtml(texts.zoomOut)}</button>
+            <button type="button" data-cropper-action="zoom-in">${escapeHtml(texts.zoomIn)}</button>
+            <button type="button" data-cropper-action="reset">${escapeHtml(texts.resetCrop)}</button>
+            <button type="button" class="primary" data-cropper-action="apply">${escapeHtml(texts.applyCrop)}</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function imageCropperTemplate(aspectRatio: number | null): string {
+    const ratio = aspectRatio && Number.isFinite(aspectRatio) ? ` aspect-ratio="${aspectRatio}" initial-aspect-ratio="${aspectRatio}"` : "";
+    return `
+      <cropper-canvas background scale-step="0.1">
+        <cropper-image translatable scalable></cropper-image>
+        <cropper-shade hidden></cropper-shade>
+        <cropper-handle action="move" plain></cropper-handle>
+        <cropper-selection initial-coverage="0.86" movable resizable outlined precise keyboard${ratio}>
+          <cropper-grid role="grid" bordered covered></cropper-grid>
+          <cropper-crosshair centered></cropper-crosshair>
+          <cropper-handle action="move" theme-color="rgba(255, 255, 255, 0.35)"></cropper-handle>
+          <cropper-handle action="n-resize"></cropper-handle>
+          <cropper-handle action="e-resize"></cropper-handle>
+          <cropper-handle action="s-resize"></cropper-handle>
+          <cropper-handle action="w-resize"></cropper-handle>
+          <cropper-handle action="ne-resize"></cropper-handle>
+          <cropper-handle action="nw-resize"></cropper-handle>
+          <cropper-handle action="se-resize"></cropper-handle>
+          <cropper-handle action="sw-resize"></cropper-handle>
+        </cropper-selection>
+      </cropper-canvas>
+    `;
+  }
+
+  function normalizeImageCropperPayload(value: unknown): ImageCropperPayload | null {
+    if (!value || typeof value !== "object") return null;
+    const payload = value as Partial<ImageCropperPayload>;
+    if (typeof payload.src !== "string" || typeof payload.name !== "string") return null;
+    return {
+      src: payload.src,
+      label: typeof payload.label === "string" ? payload.label : payload.name,
+      name: payload.name,
+      type: typeof payload.type === "string" ? payload.type : "image/png",
+      size: typeof payload.size === "number" ? payload.size : 0
+    };
+  }
+
+  function normalizeImageCropperTexts(value: unknown): ImageCropperTexts {
+    const texts = (value && typeof value === "object" ? value : {}) as Partial<ImageCropperTexts>;
+    return {
+      cropImage: texts.cropImage || "Crop image",
+      cancel: texts.cancel || "Cancel",
+      matchElementRatio: texts.matchElementRatio || "Match element ratio",
+      freeRatio: texts.freeRatio || "Free ratio",
+      zoomOut: texts.zoomOut || "Zoom out",
+      zoomIn: texts.zoomIn || "Zoom in",
+      resetCrop: texts.resetCrop || "Reset",
+      applyCrop: texts.applyCrop || "Apply crop"
+    };
+  }
+
+  function cropOutputSize(selection: CropperSelection): { width: number; height: number } {
+    const crop = cropSelectionMetrics(selection);
+    const width = Math.max(1, crop.width || 1);
+    const height = Math.max(1, crop.height || 1);
+    const scale = Math.min(1, MAX_CROP_OUTPUT_EDGE / Math.max(width, height));
+    return {
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale))
+    };
+  }
+
+  function cropSelectionMetrics(selection: CropperSelection): { x: number; y: number; width: number; height: number } {
+    const rect = selection.getBoundingClientRect();
+    return {
+      x: selection.x || 0,
+      y: selection.y || 0,
+      width: selection.width || rect.width || 1,
+      height: selection.height || rect.height || 1
+    };
+  }
+
+  function loadImageSize(src: string): Promise<{ width: number; height: number }> {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve({ width: image.naturalWidth || image.width, height: image.naturalHeight || image.height });
+      image.onerror = () => reject(new Error("Failed to load image"));
+      image.src = src;
+    });
+  }
+
+  function nextAnimationFrame(): Promise<void> {
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  }
+
+  function escapeHtml(value: string): string {
+    return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char);
+  }
+
+  function round(value: number): number {
+    return Math.round(value * 100) / 100;
+  }
 
   function emit(event: any): void {
     const diagnosticEvent = {
@@ -320,6 +736,41 @@ import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
     } catch {
       return undefined;
     }
+  }
+
+  function emitTransportEvent(
+    source: "websocket" | "eventsource",
+    eventName: string,
+    url: string,
+    method: "WS" | "SSE",
+    duration: number | undefined,
+    severity: "info" | "warning" | "error",
+    metadata: Record<string, unknown> = {},
+    responseBody?: string
+  ): void {
+    emit({
+      type: "network",
+      severity,
+      message: `${method} ${url} -> ${eventName}`,
+      url,
+      method,
+      duration,
+      responseBody,
+      metadata: {
+        source,
+        event: eventName,
+        ...metadata
+      }
+    });
+  }
+
+  function normalizeWebSocketProtocols(protocols?: string | string[]): string[] {
+    if (Array.isArray(protocols)) return protocols.filter((protocol) => typeof protocol === "string" && protocol.length > 0);
+    return typeof protocols === "string" && protocols.length > 0 ? [protocols] : [];
+  }
+
+  function classifyWebSocketTransport(protocols: string[]): Record<string, unknown> {
+    return protocols.includes("vite-hmr") ? { devTransport: "vite-hmr" } : {};
   }
 
   function collectFetchRequestHeaders(request: Request | null, init?: RequestInit): Record<string, string> {

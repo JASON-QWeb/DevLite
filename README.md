@@ -25,6 +25,8 @@ English | [中文](./README.zh.md)
 
 ![DevLite Demo](assets/devlite-demo-en.gif)
 
+[Watch the demo video on YouTube](https://youtu.be/qLPrFxTM11E)
+
 </div>
 
 ---
@@ -42,27 +44,32 @@ English | [中文](./README.zh.md)
 
 ---
 
-## Install Companion SKILL to Strengthen Agent Capabilities
+## Install Companion SKILL
 
 DevLite exports prompts compatible with **all mainstream coding agents**:
 
 <div align="center">
 
-[![Codex](https://img.shields.io/badge/Codex-000000?style=for-the-badge&logo=openai&logoColor=white)](#)
-&nbsp;
-[![Claude Code](https://img.shields.io/badge/Claude_Code-D97757?style=for-the-badge&logo=claude&logoColor=white)](#)
-&nbsp;
-[![Qwen](https://img.shields.io/badge/Qwen-615CED?style=for-the-badge&logo=alibabacloud&logoColor=white)](#)
-&nbsp;
-[![DeepSeek](https://img.shields.io/badge/DeepSeek-4D6BFF?style=for-the-badge&logo=deepseek&logoColor=white)](#)&nbsp;
-[![Hermes](https://img.shields.io/badge/Hermes-7952B3?style=for-the-badge&logo=hermes&logoColor=white)](#)
+<img src="public/agent-logos/codex.svg" title="Codex" alt="Codex" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/claude-code.svg" title="Claude Code" alt="Claude Code" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/gemini.svg" title="Gemini" alt="Gemini" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/qwen.svg" title="Qwen" alt="Qwen" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/deepseek.svg" title="DeepSeek" alt="DeepSeek" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/kimi.svg" title="Kimi" alt="Kimi" width="32" />
+<br>
+<img src="public/agent-logos/minimax.svg" title="MiniMax" alt="MiniMax" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/glm.svg" title="GLM" alt="GLM" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/antigravity.svg" title="Antigravity" alt="Antigravity" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/hermes.svg" title="Hermes" alt="Hermes" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/openclaw.svg" title="OpenClaw" alt="OpenClaw" width="32" />&nbsp;&nbsp;&nbsp;&nbsp;
+<img src="public/agent-logos/cursor.svg" title="Cursor" alt="Cursor" width="32" />
 
 </div>
 
-Strengthen your AI agent's ability to **understand and process DevLite diagnostic reports** by sending this instruction to your agent:
+Sending this instruction to your agent to strengthen **Process DevLite Power**:
 
 ```
-Please install the SKILL.md from the https://github.com/JASON-QWeb/DevLite repository into your Agent Skills configuration, and use the browser download links in README.md to help the user install the DevLite browser extension.
+Read https://github.com/JASON-QWeb/DevLite/blob/main/SKILL.md and install the SKILL
 ```
 
 ---

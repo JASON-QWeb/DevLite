@@ -14,10 +14,10 @@ export function renderSettingsTabView({ settings, t }: SettingsTabContext): stri
         <section class="settings-card">
           <h3>${t("appearance")}</h3>
           <div class="theme-grid" role="radiogroup" aria-label="${t("theme")}">
+            ${panelThemeOption("system", t("themeSystem"), settings.uiTheme)}
             ${panelThemeOption("claude", t("themeClaude"), settings.uiTheme)}
             ${panelThemeOption("saas", t("themeSaas"), settings.uiTheme)}
             ${panelThemeOption("dark", t("themeDark"), settings.uiTheme)}
-            ${panelThemeOption("cartoon", t("themeCartoon"), settings.uiTheme)}
           </div>
         </section>
         <section class="settings-card">

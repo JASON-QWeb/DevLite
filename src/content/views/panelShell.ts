@@ -1,7 +1,7 @@
 import type { ContentTextKey } from "../i18n";
 import { LOGO_URL } from "../panelConfig";
 import type { OverlayTab, UiLocale } from "../types";
-import { panelIcon } from "./icons";
+import { githubIcon, panelIcon } from "./icons";
 
 type PanelCounts = {
   changes: number;
@@ -22,6 +22,7 @@ type PanelShellContext = {
 
 export function renderPanelShell(context: PanelShellContext): string {
   const { activeTab, counts, tabBody, t, uiLocale } = context;
+  const headerMeta = panelHeaderMeta(context);
   return `
       <div class="panel-shell">
         <aside class="panel-sidebar">
@@ -38,6 +39,13 @@ export function renderPanelShell(context: PanelShellContext): string {
             ${navButton("performance", t("performance"), counts.performance, activeTab)}
           </nav>
           <div class="sidebar-spacer"></div>
+          <a
+            href="#"
+            data-action="show-skill-install"
+            class="open-source-link"
+            title="${t("installCompanionSkill")}"
+            aria-label="${t("installCompanionSkill")}"
+          >${githubIcon()}<span>${t("installCompanionSkill")}</span></a>
           <div class="sidebar-tools">
             <button data-action="toggle-locale" class="locale-button" title="Language" aria-label="Language">${uiLocale === "en" ? "中" : "EN"}</button>
             <button data-action="show-settings" class="config-button icon-only ${activeTab === "settings" ? "active" : ""}" title="${t("settings")}" aria-label="${t("settings")}">${panelIcon("settings")}</button>
@@ -47,7 +55,7 @@ export function renderPanelShell(context: PanelShellContext): string {
           <div class="panel-header">
             <div>
               <strong>${panelTabTitle(activeTab, t)}</strong>
-              <span>${panelHeaderMeta(context)}</span>
+              ${headerMeta ? `<span>${headerMeta}</span>` : ""}
             </div>
             <button data-action="close" class="icon-button">${t("close")}</button>
           </div>
@@ -65,6 +73,7 @@ function panelTabTitle(activeTab: OverlayTab, t: (key: ContentTextKey) => string
   if (activeTab === "diagnostics") return t("diagnostics");
   if (activeTab === "network") return t("data");
   if (activeTab === "performance") return t("performance");
+  if (activeTab === "skill") return t("skillInstallTitle");
   return t("settings");
 }
 
@@ -91,5 +100,8 @@ function panelHeaderMeta(context: PanelShellContext): string {
   if (activeTab === "settings") {
     return t("settingsPanelMeta");
   }
-  return counts.network > 0 ? (uiLocale === "en" ? `Latest ${Math.min(counts.network, 20)} requests` : `最近 ${Math.min(counts.network, 20)} 条请求`) : t("summarizingNetwork");
+  if (activeTab === "skill") {
+    return "";
+  }
+  return counts.network > 0 ? (uiLocale === "en" ? `Latest ${Math.min(counts.network, 100)} requests` : `最近 ${Math.min(counts.network, 100)} 条请求`) : t("summarizingNetwork");
 }

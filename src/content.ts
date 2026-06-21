@@ -2,8 +2,11 @@ import { copyText } from "./content/clipboard";
 import {
   applyStyleChange,
   createStyleChange,
+  ensureDomChangeBaseline,
   ensureTextChangeBaseline as ensureTextChangeRecordBaseline,
+  getPromptableStyleChangeRecords as getPromptableRecordedStyleChanges,
   getStyleChangeRecords as getRecordedStyleChanges,
+  getVerifyingStyleChangeRecords as getVerifyingRecordedStyleChanges,
   recordTextAfter as recordTextChangeAfter,
   undoStyleChange
 } from "./content/changeManager";
@@ -16,7 +19,8 @@ import {
 } from "./content/domLocator";
 import { DiagnosticEventBatcher, DiagnosticEventStore } from "./content/diagnosticEvents";
 import { canEditTextContent as canEditTextContentBase } from "./content/editableText";
-import { bindImageFileInput } from "./content/imageFileInput";
+import { ImageCropperController } from "./content/imageCropper";
+import { bindImageFileInput, type ImageFilePayload } from "./content/imageFileInput";
 import { applyIconReplacement, applyImageReplacement } from "./content/imageReplacement";
 import { InlineTextEditor } from "./content/inlineTextEditor";
 import { LauncherDockController } from "./content/launcherDock";
@@ -24,7 +28,7 @@ import { overlayStyles } from "./content/overlayStyles";
 import { formatUrl, getPageContext } from "./content/pageContext";
 import { handlePanelAction } from "./content/panelActions";
 import { bindPanelEvents } from "./content/panelEvents";
-import { EDITABLE_PROPS, PANEL_THEMES } from "./content/panelConfig";
+import { DEFAULT_PANEL_SETTINGS, EDITABLE_PROPS, PANEL_THEMES } from "./content/panelConfig";
 import { PanelPositionController } from "./content/panelPosition";
 import { PanelRefreshController } from "./content/panelRefresh";
 import {
@@ -40,6 +44,7 @@ import { PerformanceMonitor } from "./content/performanceMonitor";
 import { collectPanelSettingsForm, mergePanelSettings, normalizeLocale, normalizeTheme } from "./content/settings";
 import { bindStyleEditorEvents } from "./content/styleEditorEvents";
 import { StyleEditorPositionController } from "./content/styleEditorPosition";
+import { verifyStyleChange } from "./content/styleVerification";
 import {
   escapeHtml,
   formatTime as formatLocalizedTime,
@@ -51,19 +56,29 @@ import { pickSelectedNetworkEvent, renderNetworkTabView } from "./content/views/
 import { renderPanelShell } from "./content/views/panelShell";
 import { renderPerformanceTabView } from "./content/views/performanceTab";
 import { renderSettingsTabView } from "./content/views/settingsTab";
+import { renderSkillTabView } from "./content/views/skillTab";
 import { renderStyleEditorView } from "./content/views/styleEditorView";
 import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
+import {
+  diagnosticScopeMetadata,
+  isStaleDiagnosticScopeEvent,
+  type DiagnosticScope
+} from "./shared/diagnosticScope";
 import { generateRepairPromptForChanges } from "./shared/exporters";
 import type {
   DiagnosticFilter,
   DiagnosticGroup,
+  ArchivedStyleChange,
+  ImageEditMetadata,
   LiveDiagnosticEvent,
   NetworkDetailTab,
   OverlayTab,
   PanelSettings,
   PerformanceInsights,
   StyleChange,
-  UiLocale
+  StyleChangeArchiveReason,
+  UiLocale,
+  UiTheme
 } from "./content/types";
 
 type PanelUiState = {
@@ -77,6 +92,8 @@ type PanelUiState = {
 };
 
 const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-detail", ".payload-preview", ".payload-raw", "pre"];
+const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "performance", "settings", "skill"];
+const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
 (() => {
   const isolatedWindow = window as any;
@@ -86,6 +103,16 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   isolatedWindow.__DEVLITE_CONTENT_INSTALLED__ = true;
   const pageMessageTargetOrigin = window.location.origin === "null" ? "*" : window.location.origin;
   const pageMessageToken = randomId();
+  const pageLoadId = randomId();
+  let pageMutationVersion = 0;
+  let diagnosticGeneration = 0;
+  let diagnosticScopeResetTimer: number | null = null;
+  let verificationTimer: number | null = null;
+  let verificationPromise: Promise<void> | null = null;
+  let verificationRerunRequested = false;
+  let verificationForceRenderRequested = false;
+  let suppressVerificationMutations = false;
+  const exportedElementRefs = new Map<string, HTMLElement>();
 
   let captureActive = false;
   let inspectorActive = false;
@@ -105,17 +132,31 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   let panelRenderVersion = 0;
   let networkDetailTab: NetworkDetailTab = "preview";
   let networkErrorOnly = false;
+  let networkSearchQuery = "";
+  let showDevelopmentNetworkTraffic = false;
   let networkListWidth = 260;
   let panelGestureActive = false;
   let diagnosticFilter: DiagnosticFilter = "issues";
+  let diagnosticSearchQuery = "";
+  let performanceSettingsOpen = false;
   let selectedNetworkEventId: string | null = null;
   let uiLocale: UiLocale = "zh";
   let captureStartPromise: Promise<void> | null = null;
   let captureGeneration = 0;
   const diagnosticEvents = new DiagnosticEventStore();
-  let sessionSnapshot: { events?: LiveDiagnosticEvent[]; styleChanges?: StyleChange[] } | null = null;
+  let diagnosticRevision = 0;
+  let performanceInsightsCache: { key: string; time: number; value: PerformanceInsights } | null = null;
+  let sessionSnapshot: {
+    diagnosticScope?: DiagnosticScope;
+    events?: LiveDiagnosticEvent[];
+    styleChanges?: StyleChange[];
+    archivedStyleChanges?: ArchivedStyleChange[];
+  } | null = null;
   let styleChangeSyncPromise: Promise<any> | null = null;
   let imageReplaceInput: HTMLInputElement | null = null;
+  let imageCropperController: ImageCropperController | null = null;
+  const toastQueue: string[] = [];
+  let visibleToastCount = 0;
   const panelPositionController = new PanelPositionController();
   const styleEditorPositionController = new StyleEditorPositionController();
   const diagnosticEventBatcher = new DiagnosticEventBatcher((events) => {
@@ -165,10 +206,15 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   window.addEventListener("message", (event) => {
     if (!isTrustedPageMessage(event)) return;
     const data = event.data;
-    if (!data || data.channel !== PAGE_CHANNEL || !data.event) return;
+    if (!data || data.channel !== PAGE_CHANNEL) return;
+    if (imageCropperController?.handlePageMessage(data)) return;
+    if (!data.event) return;
     if (!captureActive) return;
-    rememberDiagnosticEvent(data.event);
-    diagnosticEventBatcher.enqueue(data.event);
+    const diagnosticEvent = stampDiagnosticEvent(data.event as LiveDiagnosticEvent);
+    if (shouldDropDiagnosticEvent(diagnosticEvent)) return;
+    rememberDiagnosticEvent(diagnosticEvent);
+    diagnosticEventBatcher.enqueue(diagnosticEvent);
+    updateLauncherStatus();
     schedulePanelRender();
   });
 
@@ -245,6 +291,8 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     true
   );
 
+  document.addEventListener("keydown", handleGlobalKeydown, true);
+
   document.addEventListener(
     "mousemove",
     (event) => {
@@ -262,8 +310,18 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     panelPositionController.apply(panel);
     syncElementOverlays();
   });
+  const colorSchemeMedia =
+    typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  colorSchemeMedia?.addEventListener("change", () => {
+    if (normalizeTheme(sessionSettings.uiTheme) === "system") {
+      applyOverlayTheme();
+      if (panelOpen) renderPanel();
+      if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+    }
+  });
   window.addEventListener("pagehide", flushDiagnosticEvents);
   document.addEventListener("scroll", syncElementOverlays, true);
+  observePageMutations();
 
   async function handleRuntimeMessage(message: any): Promise<any> {
     if (message?.type === "devlite-ping") {
@@ -273,12 +331,16 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     if (message?.type === "devlite-start-capture") {
       captureGeneration += 1;
       captureActive = true;
+      diagnosticGeneration += 1;
       sessionSettings = mergePanelSettings(message.settings ?? {});
       uiLocale = normalizeLocale(sessionSettings.locale);
       applyOverlayTheme();
+      pruneStaleDiagnosticEventsForCurrentScope();
+      void sendRuntime({ type: "reset-diagnostic-scope", diagnosticScope: currentDiagnosticScope("capture-start") }).catch(handleAsyncError);
       void sendRuntime({ type: "page-context", page: getPageContext() }).catch(handleAsyncError);
       postControlMessage({ type: "start", settings: sessionSettings });
       performanceMonitor.start();
+      schedulePanelRender();
       return { ok: true };
     }
 
@@ -286,6 +348,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       captureGeneration += 1;
       captureStartPromise = null;
       captureActive = false;
+      clearDiagnosticScopeResetTimer();
       flushDiagnosticEvents();
       postControlMessage({ type: "stop" });
       performanceMonitor.stop();
@@ -326,6 +389,142 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     }
   }
 
+  function observePageMutations(): void {
+    const observer = new MutationObserver((mutations) => {
+      if (suppressVerificationMutations) return;
+      const hasPageMutation = mutations.some((mutation) => {
+        const target = mutation.target;
+        return target instanceof Node && !overlayHost?.contains(target);
+      });
+      if (!hasPageMutation) return;
+      pageMutationVersion += 1;
+      scheduleExportedStyleVerification();
+      if (captureActive && hasSignificantDiagnosticMutation(mutations)) {
+        scheduleDiagnosticScopeReset("page-update");
+      }
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
+  }
+
+  function hasSignificantDiagnosticMutation(mutations: MutationRecord[]): boolean {
+    return mutations.some((mutation) => {
+      const target = mutation.target;
+      if (target instanceof Node && overlayHost?.contains(target)) return false;
+
+      if (mutation.type === "childList") {
+        if (target === document.head) return true;
+        const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
+        return changedNodes.some(isSignificantDiagnosticNode);
+      }
+
+      if (mutation.type === "attributes" && target instanceof Element) {
+        const tagName = target.tagName.toLowerCase();
+        return (tagName === "link" || tagName === "script") && ["href", "src", "rel", "type"].includes(mutation.attributeName ?? "");
+      }
+
+      if (mutation.type === "characterData") {
+        const parent = target.parentElement;
+        const tagName = parent?.tagName.toLowerCase();
+        return tagName === "style" || tagName === "script";
+      }
+
+      return false;
+    });
+  }
+
+  function isSignificantDiagnosticNode(node: Node): boolean {
+    if (node instanceof Element && overlayHost?.contains(node)) return false;
+    if (!(node instanceof HTMLElement)) return false;
+    const tagName = node.tagName.toLowerCase();
+    if (tagName === "style" || tagName === "script" || tagName === "link") return true;
+    if (node.querySelector("style, script, link")) return true;
+    if (node.matches("main, section, article, [data-root], #root, #__next")) return true;
+    return node.querySelectorAll("*").length >= 3;
+  }
+
+  function scheduleDiagnosticScopeReset(reason: string): void {
+    if (diagnosticScopeResetTimer !== null) {
+      window.clearTimeout(diagnosticScopeResetTimer);
+    }
+    diagnosticScopeResetTimer = window.setTimeout(() => {
+      diagnosticScopeResetTimer = null;
+      void resetDiagnosticScope(reason).catch(handleAsyncError);
+    }, DIAGNOSTIC_SCOPE_RESET_DELAY);
+  }
+
+  function clearDiagnosticScopeResetTimer(): void {
+    if (diagnosticScopeResetTimer === null) return;
+    window.clearTimeout(diagnosticScopeResetTimer);
+    diagnosticScopeResetTimer = null;
+  }
+
+  async function resetDiagnosticScope(reason: string): Promise<void> {
+    if (!captureActive) return;
+    diagnosticGeneration += 1;
+    const scope = currentDiagnosticScope(reason);
+    const changed = pruneStaleDiagnosticEventsForCurrentScope();
+    const response = await sendRuntime({ type: "reset-diagnostic-scope", diagnosticScope: scope });
+    if (response?.session) {
+      sessionSnapshot = response.session;
+      mergeSessionEvents(sessionSnapshot?.events ?? []);
+    }
+    if (changed) {
+      schedulePanelRender();
+    }
+  }
+
+  function currentDiagnosticScope(reason?: string): DiagnosticScope {
+    const scope: DiagnosticScope = {
+      pageLoadId,
+      diagnosticGeneration,
+      mutationVersion: pageMutationVersion,
+      updatedAt: Date.now()
+    };
+    if (reason) scope.reason = reason;
+    return scope;
+  }
+
+  function stampDiagnosticEvent(event: LiveDiagnosticEvent): LiveDiagnosticEvent {
+    return {
+      ...event,
+      metadata: {
+        ...(event.metadata ?? {}),
+        ...diagnosticScopeMetadata(currentDiagnosticScope())
+      }
+    };
+  }
+
+  function pruneStaleDiagnosticEventsForCurrentScope(): boolean {
+    const scope = currentDiagnosticScope();
+    const isStale = (event: LiveDiagnosticEvent) => isStaleDiagnosticScopeEvent(event, scope);
+    diagnosticEventBatcher.removeWhere(isStale);
+    const removed = diagnosticEvents.removeWhere(isStale);
+    const previousSelectedNetworkEventId = selectedNetworkEventId;
+    let removedFromSnapshot = 0;
+    if (sessionSnapshot) {
+      const nextEvents = (sessionSnapshot.events ?? []).filter((event) => !isStale(event));
+      removedFromSnapshot = (sessionSnapshot.events ?? []).length - nextEvents.length;
+      sessionSnapshot = {
+        ...sessionSnapshot,
+        diagnosticScope: scope,
+        events: nextEvents
+      };
+    }
+    if (removed === 0 && removedFromSnapshot === 0) return false;
+    if (previousSelectedNetworkEventId && !diagnosticEvents.all.some((event) => event.id === previousSelectedNetworkEventId)) {
+      selectedNetworkEventId = null;
+    }
+    diagnosticRevision += 1;
+    invalidatePerformanceInsights();
+    updateLauncherStatus();
+    return true;
+  }
+
   function t(key: ContentTextKey): string {
     return contentText(uiLocale, key);
   }
@@ -363,6 +562,53 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     }).catch(handleAsyncError);
   }
 
+  function handleGlobalKeydown(event: KeyboardEvent): void {
+    if (event.defaultPrevented) return;
+    const isEditableTarget = isEditableKeyboardTarget(event);
+    const commandKey = event.metaKey || event.ctrlKey;
+
+    if (commandKey && event.shiftKey && event.key.toLowerCase() === "d") {
+      if (isEditableTarget) return;
+      event.preventDefault();
+      panelOpen ? hidePanel() : openPanel(activePanelTab === "settings" ? "element" : activePanelTab);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      if (inlineTextEditor.isActive()) {
+        stopInlineTextEdit();
+        event.preventDefault();
+        return;
+      }
+      if (isEditableTarget) return;
+      if (inspectorActive) {
+        stopInspector();
+        event.preventDefault();
+        return;
+      }
+      if (panelOpen) {
+        hidePanel();
+        event.preventDefault();
+      }
+      return;
+    }
+
+    if (panelOpen && commandKey && event.key === "Tab" && !isEditableTarget) {
+      event.preventDefault();
+      const currentIndex = Math.max(0, PANEL_TAB_ORDER.indexOf(activePanelTab));
+      const delta = event.shiftKey ? -1 : 1;
+      activePanelTab = PANEL_TAB_ORDER[(currentIndex + delta + PANEL_TAB_ORDER.length) % PANEL_TAB_ORDER.length];
+      renderPanel();
+    }
+  }
+
+  function isEditableKeyboardTarget(event: KeyboardEvent): boolean {
+    return event.composedPath().some((target) => {
+      if (!(target instanceof HTMLElement)) return false;
+      return target.matches("input, select, textarea") || target.isContentEditable;
+    });
+  }
+
   function ensureOverlay(): void {
     if (overlayHost && shadow) return;
     overlayHost = document.createElement("div");
@@ -391,10 +637,17 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     panel.className = "devlite-panel";
     panel.hidden = true;
     shadow.append(style, highlighter, launcherDockController.element, styleEditor, imageReplaceInput, panel);
+    imageCropperController = new ImageCropperController({
+      t,
+      sendRequest: postControlMessage,
+      onApply: (result) => replaceSelectedImage(result.src, result.label, result.metadata),
+      onCancel: () => undefined,
+      onError: () => toast(t("replaceImageFailed"))
+    });
     bindImageFileInput({
       input: imageReplaceInput,
       onError: () => toast(t("replaceImageFailed")),
-      onLoad: replaceSelectedImage
+      onLoad: handleSelectedImageFile
     });
     document.documentElement.appendChild(overlayHost);
     applyOverlayTheme();
@@ -490,7 +743,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       activeTab: activePanelTab,
       captureActive,
       counts: {
-        changes: getStyleChangeRecords().length,
+        changes: getPromptableStyleChangeRecords().length,
         diagnostics: getProblemEvents().length,
         network: getNetworkEvents().length,
         performance: getPerformanceInsights().issues.length
@@ -500,11 +753,16 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       uiLocale,
       t
     });
+    updateLauncherStatus();
     bindPanelEvents({
       panel,
       onAction: handlePanelScopedAction,
       onDiagnosticFilter: (filter) => {
         diagnosticFilter = filter;
+        renderPanel();
+      },
+      onDiagnosticSearch: (value) => {
+        diagnosticSearchQuery = value;
         renderPanel();
       },
       onNetworkDetail: (tab) => {
@@ -516,6 +774,11 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
         renderPanel();
       },
       onNetworkListResize: startNetworkListResize,
+      onNetworkSearch: (value) => {
+        networkSearchQuery = value;
+        selectedNetworkEventId = null;
+        renderPanel();
+      },
       onError: showInteractionError,
       onStartDrag: startPanelDrag,
       onStartResize: startPanelResize,
@@ -550,6 +813,19 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       await undoStyleChangeById(source?.dataset.changeId ?? "");
       return;
     }
+    if (action === "requeue-style-record") {
+      await requeueStyleChangeById(source?.dataset.changeId ?? "");
+      return;
+    }
+    if (action === "verify-style-records") {
+      await verifyExportedStyleChanges(true);
+      renderPanel();
+      return;
+    }
+    if (action === "archive-style-record") {
+      await archiveStyleChangeById(source?.dataset.changeId ?? "", "manual", t("archivedManually"));
+      return;
+    }
     if (action === "clear-network-events") {
       await clearNetworkEvents();
       return;
@@ -558,6 +834,21 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       networkErrorOnly = !networkErrorOnly;
       selectedNetworkEventId = null;
       renderPanel();
+      return;
+    }
+    if (action === "toggle-development-network") {
+      showDevelopmentNetworkTraffic = !showDevelopmentNetworkTraffic;
+      selectedNetworkEventId = null;
+      renderPanel();
+      return;
+    }
+    if (action === "toggle-performance-settings") {
+      performanceSettingsOpen = !performanceSettingsOpen;
+      renderPanel();
+      return;
+    }
+    if (action === "reset-performance-settings") {
+      await resetPerformanceSettings();
       return;
     }
 
@@ -578,6 +869,10 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       renderPanel,
       savePanelSettings,
       sendRuntime,
+      showSkillInstall: () => {
+        activePanelTab = "skill";
+        renderPanel();
+      },
       showSettings: () => {
         activePanelTab = "settings";
         renderPanel();
@@ -598,13 +893,16 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     if (activePanelTab === "diagnostics") return renderDiagnosticsTab();
     if (activePanelTab === "network") return renderNetworkTab();
     if (activePanelTab === "performance") return renderPerformanceTab();
+    if (activePanelTab === "skill") return renderSkillTab();
     return renderSettingsTab();
   }
 
 
   function renderElementTab(): string {
     return renderElementTabView({
-      records: getStyleChangeRecords(),
+      pendingRecords: getPromptableStyleChangeRecords(),
+      verifyingRecords: getVerifyingStyleChangeRecords(),
+      archivedRecords: getArchivedStyleChangeRecords(),
       inspectorActive,
       locale: uiLocale,
       t,
@@ -616,11 +914,30 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     return renderSettingsTabView({ settings: mergedPanelSettings(), t });
   }
 
+  function renderSkillTab(): string {
+    return renderSkillTabView({ t });
+  }
+
   function getStyleChangeRecords(): StyleChange[] {
     return getRecordedStyleChanges(sessionSnapshot?.styleChanges, currentChange);
   }
 
+  function getPromptableStyleChangeRecords(): StyleChange[] {
+    return getPromptableRecordedStyleChanges(sessionSnapshot?.styleChanges, currentChange);
+  }
+
+  function getVerifyingStyleChangeRecords(): StyleChange[] {
+    return getVerifyingRecordedStyleChanges(sessionSnapshot?.styleChanges, currentChange);
+  }
+
+  function getArchivedStyleChangeRecords(): ArchivedStyleChange[] {
+    return sessionSnapshot?.archivedStyleChanges ?? [];
+  }
+
   async function copySelectedStylePrompt(): Promise<void> {
+    if (styleChangeSyncPromise) {
+      await styleChangeSyncPromise.catch(() => null);
+    }
     const selectedIds = new Set(
       Array.from(panel?.querySelectorAll<HTMLInputElement>("input[data-style-record-select]:checked") ?? []).map((input) => input.value)
     );
@@ -634,7 +951,9 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       return;
     }
     await copyText(generateRepairPromptForChanges(selectedChanges, uiLocale, getPageContext()));
-    toast(t("fullPromptCopied"));
+    await markStyleChangesExported(selectedChanges);
+    renderPanel();
+    toast(t("promptCopiedPendingVerification"));
   }
 
   function selectAllStyleRecords(): void {
@@ -645,18 +964,46 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     });
   }
 
+  async function markStyleChangesExported(changes: StyleChange[]): Promise<void> {
+    if (changes.length === 0) return;
+    const ids = changes.map((change) => change.id);
+    const now = Date.now();
+    for (const change of changes) {
+      const element = resolveStyleChangeElement(change);
+      if (element) exportedElementRefs.set(change.id, element);
+    }
+    updateLocalStyleChanges(ids, (change) => ({
+      ...change,
+      exportedAt: change.exportedAt ?? now,
+      exportedPageLoadId: pageLoadId,
+      exportedMutationVersion: pageMutationVersion,
+      verificationStatus: "waiting",
+      lastVerifiedAt: now,
+      lastVerifyReason: t("waitingForPageUpdate")
+    }));
+    await sendRuntime({
+      type: "style-changes-mark-exported",
+      ids,
+      pageLoadId,
+      mutationVersion: pageMutationVersion,
+      reason: t("waitingForPageUpdate")
+    });
+  }
+
   async function undoStyleChangeById(id: string): Promise<void> {
     const change = getStyleChangeRecords().find((item) => item.id === id);
     if (!change) return;
     const element = resolveStyleChangeElement(change);
-    if (!element) {
+    const wasSelected = currentChange?.id === change.id || (!!element && selectedElement === element);
+
+    stopInlineTextEdit();
+    if (element) {
+      undoStyleChange(change, element);
+    } else if (!restoreDeletedElement(change)) {
       toast(t("elementRestoreFailed"));
       return;
     }
 
-    stopInlineTextEdit();
-    const wasSelected = currentChange?.id === change.id || selectedElement === element;
-    undoStyleChange(change, element);
     await sendRuntime({ type: "style-change-delete", id: change.id });
     removeLocalStyleChange(change.id);
     if (wasSelected) {
@@ -669,6 +1016,27 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     toast(t("elementRestored"));
   }
 
+  async function requeueStyleChangeById(id: string): Promise<void> {
+    const change = getStyleChangeRecords().find((item) => item.id === id);
+    if (!change) return;
+    const nextChange: StyleChange = {
+      ...change,
+      updatedAt: Date.now()
+    };
+    delete nextChange.exportedAt;
+    delete nextChange.exportedPageLoadId;
+    delete nextChange.exportedMutationVersion;
+    delete nextChange.verificationStatus;
+    delete nextChange.lastVerifiedAt;
+    delete nextChange.lastVerifyReason;
+
+    updateLocalStyleChanges([id], () => nextChange);
+    exportedElementRefs.delete(id);
+    await sendRuntime({ type: "style-change-upsert", change: nextChange });
+    renderPanel();
+    toast(t("styleRecordRequeued"));
+  }
+
   function resolveStyleChangeElement(change: StyleChange): HTMLElement | null {
     if (currentChange?.id === change.id && selectedElement?.isConnected) return selectedElement;
     try {
@@ -679,6 +1047,150 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     }
   }
 
+  function scheduleExportedStyleVerification(): void {
+    if (verificationTimer !== null) {
+      window.clearTimeout(verificationTimer);
+    }
+    verificationTimer = window.setTimeout(() => {
+      verificationTimer = null;
+      void verifyExportedStyleChanges(false).catch(handleAsyncError);
+    }, 350);
+  }
+
+  async function verifyExportedStyleChanges(forceRender: boolean): Promise<void> {
+    if (verificationPromise) {
+      verificationRerunRequested = true;
+      verificationForceRenderRequested = verificationForceRenderRequested || forceRender;
+      return verificationPromise;
+    }
+
+    verificationForceRenderRequested = verificationForceRenderRequested || forceRender;
+    verificationPromise = runExportedStyleVerificationLoop().finally(() => {
+      verificationPromise = null;
+    });
+
+    return verificationPromise;
+  }
+
+  async function runExportedStyleVerificationLoop(): Promise<void> {
+    do {
+      const startedMutationVersion = pageMutationVersion;
+      const forceRender = verificationForceRenderRequested;
+      verificationRerunRequested = false;
+      verificationForceRenderRequested = false;
+
+      await runExportedStyleVerificationPass(forceRender);
+
+      if (pageMutationVersion !== startedMutationVersion) {
+        verificationRerunRequested = true;
+      }
+    } while (verificationRerunRequested);
+  }
+
+  async function runExportedStyleVerificationPass(forceRender: boolean): Promise<void> {
+    const records = getVerifyingStyleChangeRecords();
+    if (records.length === 0) return;
+
+    let changed = false;
+    for (const change of records) {
+      const element = resolveStyleChangeElement(change);
+      suppressVerificationMutations = true;
+      const result = verifyStyleChange(change, element, {
+        pageLoadId,
+        mutationVersion: pageMutationVersion,
+        exportedElement: exportedElementRefs.get(change.id) ?? null,
+        normalizationRoot: shadow,
+        t
+      });
+      window.setTimeout(() => {
+        suppressVerificationMutations = false;
+      }, 0);
+
+      if (result.status === "verified") {
+        await archiveStyleChangeById(change.id, "verified", result.reason, false);
+        changed = true;
+        continue;
+      }
+
+      const nextStatus = result.status;
+      if (change.verificationStatus !== nextStatus || change.lastVerifyReason !== result.reason) {
+        updateLocalStyleChanges([change.id], (item) => ({
+          ...item,
+          verificationStatus: nextStatus,
+          lastVerifiedAt: Date.now(),
+          lastVerifyReason: result.reason
+        }));
+        await sendRuntime({
+          type: "style-change-verification-update",
+          id: change.id,
+          status: nextStatus,
+          reason: result.reason
+        });
+        changed = true;
+      }
+    }
+    if ((changed || forceRender) && panelOpen && activePanelTab === "element") {
+      renderPanel();
+    }
+  }
+
+  async function archiveStyleChangeById(
+    id: string,
+    reason: StyleChangeArchiveReason,
+    verificationReason: string,
+    showToast = true
+  ): Promise<void> {
+    const change = getStyleChangeRecords().find((item) => item.id === id);
+    if (!change) return;
+    await sendRuntime({ type: "style-changes-archive", ids: [id], reason, verificationReason });
+    archiveLocalStyleChange(change, reason, verificationReason);
+    if (currentChange?.id === id) {
+      currentChange = null;
+    }
+    exportedElementRefs.delete(id);
+    if (panelOpen && activePanelTab === "element") renderPanel();
+    if (showToast) toast(t("elementArchived"));
+  }
+
+  function updateLocalStyleChanges(ids: string[], updater: (change: StyleChange) => StyleChange): void {
+    const idSet = new Set(ids);
+    if (sessionSnapshot) {
+      sessionSnapshot = {
+        ...sessionSnapshot,
+        styleChanges: (sessionSnapshot.styleChanges ?? []).map((change) => (idSet.has(change.id) ? updater(change) : change))
+      };
+    }
+    if (currentChange && idSet.has(currentChange.id)) {
+      currentChange = updater(currentChange);
+    }
+  }
+
+  function archiveLocalStyleChange(change: StyleChange, reason: StyleChangeArchiveReason, verificationReason: string): void {
+    if (sessionSnapshot) {
+      const archived = sessionSnapshot.archivedStyleChanges ?? [];
+      sessionSnapshot = {
+        ...sessionSnapshot,
+        styleChanges: (sessionSnapshot.styleChanges ?? []).filter((item) => item.id !== change.id),
+        archivedStyleChanges: archived.some((item) => item.change.id === change.id)
+          ? archived
+          : [
+              ...archived,
+              {
+                change: {
+                  ...change,
+                  verificationStatus: undefined,
+                  lastVerifiedAt: Date.now(),
+                  lastVerifyReason: verificationReason
+                },
+                archivedAt: Date.now(),
+                archiveReason: reason,
+                verificationReason
+              }
+            ]
+      };
+    }
+  }
+
   function removeLocalStyleChange(id: string): void {
     if (sessionSnapshot) {
       sessionSnapshot = {
@@ -686,6 +1198,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
         styleChanges: (sessionSnapshot.styleChanges ?? []).filter((change) => change.id !== id)
       };
     }
+    exportedElementRefs.delete(id);
     if (currentChange?.id === id) {
       currentChange = null;
     }
@@ -731,6 +1244,10 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       replaceSelectedIcon();
       return;
     }
+    if (action === "delete-element") {
+      deleteSelectedElement();
+      return;
+    }
     if (action === "text") {
       startInlineTextEdit();
       return;
@@ -751,15 +1268,49 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     toast(t("elementCopied"));
   }
 
+  function deleteSelectedElement(): void {
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange) return;
+    stopInlineTextEdit();
+
+    const parent = element.parentElement;
+    const childIndex = parent ? Array.from(parent.children).indexOf(element) : -1;
+    ensureDomChangeBaseline(currentChange, element, t("deleteElement"));
+    currentChange.domParentSelector = parent ? buildSelector(parent) : undefined;
+    currentChange.domChildIndex = childIndex >= 0 ? childIndex : undefined;
+    currentChange.domAfter = "";
+    currentChange.textSnippet = textSnippet(element);
+    currentChange.updatedAt = Date.now();
+
+    element.remove();
+    selectedElement = null;
+    hideHighlighter();
+    hideStyleEditor();
+    syncCurrentChange();
+    if (panelOpen && activePanelTab === "element") schedulePanelRender();
+    toast(t("elementDeleted"));
+  }
+
   function startImageReplacement(): void {
     if (!getConnectedSelectedElement() || !currentChange || !imageReplaceInput) return;
+    imageCropperController?.close(false);
     imageReplaceInput.click();
   }
 
-  function replaceSelectedImage(src: string, label = ""): void {
+  function handleSelectedImageFile(payload: ImageFilePayload): void {
     const element = getConnectedSelectedElement();
     if (!element || !currentChange) return;
-    applyImageReplacement(currentChange, element, src, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"));
+    if (payload.isSvg || !payload.type.startsWith("image/")) {
+      replaceSelectedImage(payload.src, payload.label);
+      return;
+    }
+    imageCropperController?.start(payload, element);
+  }
+
+  function replaceSelectedImage(src: string, label = "", imageEdit?: ImageEditMetadata): void {
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange) return;
+    applyImageReplacement(currentChange, element, src, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"), imageEdit);
     syncCurrentChange();
     updateHighlighter(element);
     updateStyleEditorPosition();
@@ -794,10 +1345,13 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function renderDiagnosticsTab(): string {
+    const issueEvents = filterDiagnosticEvents(getProblemEvents());
+    const logEvents = filterDiagnosticEvents(getConsoleLogEvents());
     return renderDiagnosticsTabView({
       filter: diagnosticFilter,
-      issueEvents: getProblemEvents(),
-      logEvents: getConsoleLogEvents(),
+      issueEvents,
+      logEvents,
+      searchQuery: diagnosticSearchQuery,
       t,
       eventTypeLabel,
       formatTime,
@@ -806,15 +1360,20 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function renderNetworkTab(): string {
-    const allEvents = getNetworkEvents();
-    const events = (networkErrorOnly ? allEvents.filter(isNetworkErrorEvent) : allEvents).slice(0, 20);
+    const storedEvents = getStoredNetworkEvents();
+    const tabEvents = getNetworkTabEvents(storedEvents);
+    const matchedEvents = getVisibleNetworkEvents(tabEvents);
+    const events = matchedEvents.slice(0, 100);
     const selected = getSelectedNetworkEvent(events);
     return renderNetworkTabView({
       events,
-      totalCount: allEvents.length,
+      totalCount: storedEvents.length,
+      matchedCount: matchedEvents.length,
       selected,
       detailTab: networkDetailTab,
       filterErrorsOnly: networkErrorOnly,
+      showDevelopmentTraffic: showDevelopmentNetworkTraffic,
+      searchQuery: networkSearchQuery,
       listWidth: networkListWidth,
       slowThreshold: Number(sessionSettings.slowRequestThreshold ?? 2000),
       t,
@@ -832,7 +1391,7 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function getSelectedNetworkEventForAction(): LiveDiagnosticEvent | null {
-    const events = (networkErrorOnly ? getNetworkEvents().filter(isNetworkErrorEvent) : getNetworkEvents()).slice(0, 20);
+    const events = getVisibleNetworkEvents(getNetworkTabEvents(getStoredNetworkEvents())).slice(0, 100);
     return getSelectedNetworkEvent(events);
   }
 
@@ -840,10 +1399,52 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     return event.severity === "error" || (typeof event.status === "number" && event.status >= 400);
   }
 
+  function shouldDropDiagnosticEvent(event: LiveDiagnosticEvent): boolean {
+    return isStaleDiagnosticScopeEvent(event, currentDiagnosticScope()) || (isDevelopmentNetworkEvent(event) && event.metadata?.event === "message");
+  }
+
+  function isDevelopmentNetworkEvent(event: LiveDiagnosticEvent): boolean {
+    if (event.type !== "network") return false;
+    const metadata = event.metadata ?? {};
+    if (metadata.devTransport) return true;
+    return metadataStringList(metadata.protocols).includes("vite-hmr");
+  }
+
+  function metadataStringList(value: unknown): string[] {
+    if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+    return typeof value === "string" ? [value] : [];
+  }
+
+  function filterDiagnosticEvents(events: LiveDiagnosticEvent[]): LiveDiagnosticEvent[] {
+    const query = diagnosticSearchQuery.trim().toLowerCase();
+    if (!query) return events;
+    return events.filter((event) =>
+      [event.message, event.source, event.url, event.stack, event.type, event.severity]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query))
+    );
+  }
+
+  function getVisibleNetworkEvents(events: LiveDiagnosticEvent[]): LiveDiagnosticEvent[] {
+    const filtered = networkErrorOnly ? events.filter(isNetworkErrorEvent) : events;
+    const query = networkSearchQuery.trim().toLowerCase();
+    if (!query) return filtered;
+    return filtered.filter((event) => {
+      const status = typeof event.status === "number" ? String(event.status) : event.severity;
+      const contentType = typeof event.metadata?.contentType === "string" ? event.metadata.contentType : "";
+      const source = typeof event.metadata?.source === "string" ? event.metadata.source : "";
+      const devTransport = typeof event.metadata?.devTransport === "string" ? event.metadata.devTransport : "";
+      const eventName = typeof event.metadata?.event === "string" ? event.metadata.event : "";
+      return [event.method ?? "GET", event.url ?? "", status, contentType, source, devTransport, eventName, event.message ?? ""].some((value) =>
+        value.toLowerCase().includes(query)
+      );
+    });
+  }
+
   function startPanelDrag(event: PointerEvent): void {
     if (!panel) return;
     const target = event.target as HTMLElement | null;
-    if (target?.closest("button, input, select, textarea, summary, [data-panel-resize]")) return;
+    if (target?.closest("a, button, input, select, textarea, summary, [data-panel-resize]")) return;
     panelGestureActive = true;
     panelPositionController.startDrag(panel, event, () => {
       panelGestureActive = false;
@@ -925,10 +1526,31 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   function renderPerformanceTab(): string {
     return renderPerformanceTabView({
       insights: getPerformanceInsights(),
+      settings: mergedPanelSettings(),
+      settingsOpen: performanceSettingsOpen,
+      performanceEvents: diagnosticEvents.all.filter((event) => event.type === "performance"),
+      resourceEntries: performance.getEntriesByType("resource") as PerformanceResourceTiming[],
       t,
       formatResourceTiming,
+      formatUrl,
       formatTime
     });
+  }
+
+  async function resetPerformanceSettings(): Promise<void> {
+    const current = mergedPanelSettings();
+    await savePanelSettings(
+      {
+        ...current,
+        performanceTtfbWarning: DEFAULT_PANEL_SETTINGS.performanceTtfbWarning,
+        performanceTtfbError: DEFAULT_PANEL_SETTINGS.performanceTtfbError,
+        performanceDomReadyWarning: DEFAULT_PANEL_SETTINGS.performanceDomReadyWarning,
+        performanceLoadWarning: DEFAULT_PANEL_SETTINGS.performanceLoadWarning,
+        performanceLoadError: DEFAULT_PANEL_SETTINGS.performanceLoadError,
+        performanceResourceSizeWarning: DEFAULT_PANEL_SETTINGS.performanceResourceSizeWarning
+      },
+      t("performanceSettingsReset")
+    );
   }
 
   async function toggleLocale(): Promise<void> {
@@ -1011,10 +1633,22 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function applyOverlayTheme(): void {
     if (!overlayHost) return;
-    const theme = PANEL_THEMES[normalizeTheme(sessionSettings.uiTheme)];
+    const theme = PANEL_THEMES[resolvedPanelTheme(sessionSettings.uiTheme)];
     Object.entries(theme).forEach(([key, value]) => {
       overlayHost?.style.setProperty(`--dl-${key}`, value);
     });
+  }
+
+  function resolvedPanelTheme(theme: unknown): Exclude<UiTheme, "system"> {
+    const normalized = normalizeTheme(theme);
+    if (normalized === "system") {
+      return systemPrefersDark() ? "dark" : "claude";
+    }
+    return normalized;
+  }
+
+  function systemPrefersDark(): boolean {
+    return typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches;
   }
 
   function applyStyle(prop: string, value: string): void {
@@ -1068,6 +1702,18 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function syncCurrentChange(): void {
     if (!currentChange) return;
+    if (currentChange.exportedAt) {
+      currentChange = {
+        ...currentChange,
+        exportedAt: undefined,
+        exportedPageLoadId: undefined,
+        exportedMutationVersion: undefined,
+        verificationStatus: undefined,
+        lastVerifiedAt: undefined,
+        lastVerifyReason: undefined
+      };
+      exportedElementRefs.delete(currentChange.id);
+    }
     const sync = sendRuntime({ type: "style-change-upsert", change: currentChange }).catch((error) => {
       handleAsyncError(error);
       return null;
@@ -1081,10 +1727,15 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   async function undoCurrentChange(): Promise<void> {
-    const element = getConnectedSelectedElement();
-    if (!element || !currentChange) return;
+    if (!currentChange) return;
     const change = currentChange;
-    undoStyleChange(change, element);
+    const element = getConnectedSelectedElement();
+    if (element) {
+      undoStyleChange(change, element);
+    } else if (!restoreDeletedElement(change)) {
+      toast(t("elementRestoreFailed"));
+      return;
+    }
     await sendRuntime({ type: "style-change-delete", id: change.id });
     removeLocalStyleChange(change.id);
     currentChange = null;
@@ -1094,14 +1745,41 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     renderPanel();
   }
 
+  function restoreDeletedElement(change: StyleChange): HTMLElement | null {
+    if (change.domBefore === undefined || change.domAfter !== "") return null;
+    const parent = resolveDeletedElementParent(change);
+    if (!parent) return null;
+    const template = document.createElement("template");
+    template.innerHTML = change.domBefore.trim();
+    const restored = template.content.firstElementChild;
+    if (!(restored instanceof HTMLElement)) return null;
+    const before =
+      typeof change.domChildIndex === "number" && change.domChildIndex >= 0
+        ? parent.children[change.domChildIndex] ?? null
+        : null;
+    parent.insertBefore(restored, before);
+    return restored;
+  }
+
+  function resolveDeletedElementParent(change: StyleChange): HTMLElement | null {
+    if (!change.domParentSelector) return document.body;
+    try {
+      const parent = document.querySelector(change.domParentSelector);
+      return parent instanceof HTMLElement ? parent : null;
+    } catch {
+      return null;
+    }
+  }
+
   function sendDiagnosticEvent(event: Record<string, unknown>): void {
-    const diagnosticEvent = {
+    const diagnosticEvent = stampDiagnosticEvent({
       id: randomId(),
       timestamp: Date.now(),
       ...event
-    } as LiveDiagnosticEvent;
+    } as LiveDiagnosticEvent);
     rememberDiagnosticEvent(diagnosticEvent);
     diagnosticEventBatcher.enqueue(diagnosticEvent);
+    updateLauncherStatus();
     schedulePanelRender();
   }
 
@@ -1129,7 +1807,11 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     captureGeneration = generation;
 
     captureStartPromise = (async () => {
-      const response = await sendRuntime({ type: "start-page-capture", page: getPageContext() });
+      const response = await sendRuntime({
+        type: "start-page-capture",
+        page: getPageContext(),
+        diagnosticScope: currentDiagnosticScope("page-load")
+      });
       if (generation !== captureGeneration) return;
       if (!response?.ok) {
         toast(response?.error || t("startCaptureFailed"));
@@ -1139,10 +1821,12 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       uiLocale = normalizeLocale(sessionSettings.locale);
       sessionSnapshot = response.session ?? null;
       captureActive = true;
+      pruneStaleDiagnosticEventsForCurrentScope();
       mergeSessionEvents(sessionSnapshot?.events ?? []);
       void sendRuntime({ type: "page-context", page: getPageContext() }).catch(handleAsyncError);
       postControlMessage({ type: "start", settings: sessionSettings });
       performanceMonitor.start();
+      scheduleExportedStyleVerification();
       schedulePanelRender();
     })().finally(() => {
       if (generation === captureGeneration) {
@@ -1184,12 +1868,15 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     uiLocale = normalizeLocale(sessionSettings.locale);
     applyOverlayTheme();
     sessionSnapshot = response.session ?? null;
+    pruneStaleDiagnosticEventsForCurrentScope();
     mergeSessionEvents(sessionSnapshot?.events ?? []);
     if (shouldSyncSettings) syncInjectedSettings();
+    scheduleExportedStyleVerification();
   }
 
   function closePanel(): void {
     stopInlineTextEdit();
+    imageCropperController?.close(false);
     stopInspector();
     selectedElement = null;
     currentChange = null;
@@ -1218,23 +1905,42 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
 
   function rememberDiagnosticEvent(event: LiveDiagnosticEvent): void {
     diagnosticEvents.remember(event);
+    diagnosticRevision += 1;
+    invalidatePerformanceInsights();
+    updateLauncherStatus();
   }
 
   function mergeSessionEvents(events: LiveDiagnosticEvent[]): void {
-    diagnosticEvents.merge(events);
+    const nextEvents = events.filter((event) => !shouldDropDiagnosticEvent(event));
+    diagnosticEvents.merge(nextEvents);
+    if (nextEvents.length > 0) {
+      diagnosticRevision += 1;
+      invalidatePerformanceInsights();
+      updateLauncherStatus();
+    }
   }
 
   function getProblemEvents(): LiveDiagnosticEvent[] {
-    return diagnosticEvents.getProblemEvents();
+    return diagnosticEvents.getProblemEvents().filter((event) => !shouldDropDiagnosticEvent(event) && !isDevelopmentNetworkEvent(event));
   }
 
   function getNetworkEvents(): LiveDiagnosticEvent[] {
-    return diagnosticEvents.getNetworkEvents();
+    return getStoredNetworkEvents().filter((event) => !isDevelopmentNetworkEvent(event));
+  }
+
+  function getStoredNetworkEvents(): LiveDiagnosticEvent[] {
+    return diagnosticEvents.getNetworkEvents().filter((event) => !shouldDropDiagnosticEvent(event));
+  }
+
+  function getNetworkTabEvents(events: LiveDiagnosticEvent[]): LiveDiagnosticEvent[] {
+    return showDevelopmentNetworkTraffic ? events : events.filter((event) => !isDevelopmentNetworkEvent(event));
   }
 
   async function clearNetworkEvents(): Promise<void> {
     diagnosticEventBatcher.removeWhere((event) => event.type === "network");
     diagnosticEvents.clearNetworkEvents();
+    diagnosticRevision += 1;
+    invalidatePerformanceInsights();
     selectedNetworkEventId = null;
     if (sessionSnapshot) {
       sessionSnapshot = {
@@ -1244,12 +1950,13 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     }
     await sendRuntime({ type: "clear-network-events" });
     await ensureCapture();
+    updateLauncherStatus();
     renderPanel();
     toast(t("networkDataCleared"));
   }
 
   function getConsoleLogEvents(): LiveDiagnosticEvent[] {
-    return diagnosticEvents.getConsoleLogEvents();
+    return diagnosticEvents.getConsoleLogEvents().filter((event) => !shouldDropDiagnosticEvent(event));
   }
 
   function groupDiagnosticEvents(events: LiveDiagnosticEvent[]): DiagnosticGroup[] {
@@ -1257,13 +1964,31 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
   }
 
   function getPerformanceInsights(): PerformanceInsights {
-    return getPerformanceInsightsData(performanceContext());
+    const context = performanceContext();
+    const key = performanceCacheKey(context);
+    const now = Date.now();
+    if (performanceInsightsCache && performanceInsightsCache.key === key && now - performanceInsightsCache.time < 3000) {
+      return performanceInsightsCache.value;
+    }
+    const value = getPerformanceInsightsData(context);
+    performanceInsightsCache = { key, time: now, value };
+    return value;
   }
 
   function performanceContext() {
+    const settings = mergedPanelSettings();
     return {
       locale: uiLocale,
-      slowThreshold: Number(sessionSettings.slowRequestThreshold ?? 2000),
+      slowThreshold: settings.slowRequestThreshold,
+      thresholds: {
+        ttfbWarning: settings.performanceTtfbWarning,
+        ttfbError: settings.performanceTtfbError,
+        domReadyWarning: settings.performanceDomReadyWarning,
+        loadWarning: settings.performanceLoadWarning,
+        loadError: settings.performanceLoadError,
+        resourceSizeWarning: settings.performanceResourceSizeWarning
+      },
+      revision: diagnosticRevision,
       pageContext: getPageContext(),
       allEvents: diagnosticEvents.all,
       networkEvents: getNetworkEvents(),
@@ -1277,6 +2002,21 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
       formatTime,
       formatUrl
     };
+  }
+
+  function performanceCacheKey(context: ReturnType<typeof performanceContext>): string {
+    return [
+      context.locale,
+      context.slowThreshold,
+      context.revision,
+      JSON.stringify(context.thresholds),
+      performance.getEntriesByType("resource").length,
+      performance.getEntriesByType("navigation").length
+    ].join("|");
+  }
+
+  function invalidatePerformanceInsights(): void {
+    performanceInsightsCache = null;
   }
 
   function buildPerformancePrompt(): string {
@@ -1324,13 +2064,39 @@ const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-det
     return canEditTextContentBase(element, currentChange?.textAfter !== undefined);
   }
 
+  function updateLauncherStatus(): void {
+    launcherDockController?.updateStatus({
+      active: captureActive,
+      issues: getProblemEvents().length,
+      network: getNetworkEvents().length
+    });
+  }
+
   function toast(message: string): void {
+    toastQueue.push(message);
+    flushToastQueue();
+  }
+
+  function flushToastQueue(): void {
+    if (!shadow) return;
+    while (visibleToastCount < 2 && toastQueue.length > 0) {
+      showNextToast(toastQueue.shift() ?? "");
+    }
+  }
+
+  function showNextToast(message: string): void {
     if (!shadow) return;
     const node = document.createElement("div");
     node.className = "toast";
     node.textContent = message;
+    node.style.bottom = `${18 + visibleToastCount * 42}px`;
+    visibleToastCount += 1;
     shadow.appendChild(node);
-    window.setTimeout(() => node.remove(), 1800);
+    window.setTimeout(() => {
+      node.remove();
+      visibleToastCount = Math.max(0, visibleToastCount - 1);
+      flushToastQueue();
+    }, 1800);
   }
 
   function syncInjectedSettings(): void {

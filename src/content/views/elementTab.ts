@@ -1,9 +1,11 @@
 import { escapeHtml } from "../utils";
 import type { ContentTextKey } from "../i18n";
-import type { StyleChange, UiLocale } from "../types";
+import type { ArchivedStyleChange, StyleChange, UiLocale } from "../types";
 
 type ElementTabContext = {
-  records: StyleChange[];
+  pendingRecords: StyleChange[];
+  verifyingRecords: StyleChange[];
+  archivedRecords: ArchivedStyleChange[];
   inspectorActive: boolean;
   locale: UiLocale;
   t: (key: ContentTextKey) => string;
@@ -11,23 +13,22 @@ type ElementTabContext = {
 };
 
 export function renderElementTabView(context: ElementTabContext): string {
-  const { records, inspectorActive, t } = context;
+  const { pendingRecords, verifyingRecords, archivedRecords, inspectorActive, t } = context;
   return `
       <div class="toolbar element-toolbar">
         <div class="toolbar-group">
           <button data-action="quick-select" class="primary">${inspectorActive ? t("selecting") : t("selectElement")}</button>
-          <button data-action="select-all-style-records" ${records.length === 0 ? "disabled" : ""}>${t("selectAll")}</button>
+          <button data-action="verify-style-records" ${verifyingRecords.length === 0 ? "disabled" : ""}>${t("verifyNow")}</button>
           ${inspectorActive ? `<button data-action="stop-select">${t("stopSelecting")}</button>` : ""}
         </div>
         <div class="toolbar-group toolbar-group-right">
-          <button data-action="copy-prompt" class="primary" ${records.length === 0 ? "disabled" : ""}>${t("copyFullPrompt")}</button>
+          <button data-action="select-all-style-records" ${pendingRecords.length === 0 ? "disabled" : ""}>${t("selectAll")}</button>
+          <button data-action="copy-prompt" class="primary" ${pendingRecords.length === 0 ? "disabled" : ""}>${t("copyFullPrompt")}</button>
         </div>
       </div>
-      ${
-        records.length === 0
-          ? `<div class="empty">${t("noEditRecords")}</div>`
-          : `<div class="style-record-list">${records.map((change, index) => renderStyleChangeRecord(change, index, context)).join("")}</div>`
-      }
+      ${renderActiveSection(t("pendingEdits"), pendingRecords, context, "pending")}
+      ${renderActiveSection(t("verifyingEdits"), verifyingRecords, context, "verifying")}
+      ${renderArchiveSection(archivedRecords, context)}
     `;
 }
 
@@ -42,27 +43,109 @@ export function summarizeStyleChange(change: StyleChange, context: Pick<ElementT
   return parts.length > 0 ? parts.join(context.locale === "en" ? ", " : "、") : context.t("selectedNoEdits");
 }
 
-function renderStyleChangeRecord(change: StyleChange, index: number, context: ElementTabContext): string {
+function renderActiveSection(title: string, records: StyleChange[], context: ElementTabContext, mode: "pending" | "verifying"): string {
+  return `
+    <section class="style-record-section" data-style-record-section="${mode}">
+      <div class="style-record-section-head">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${records.length}</span>
+      </div>
+      ${
+        records.length === 0
+          ? `<div class="empty compact">${context.t(mode === "pending" ? "noPendingEdits" : "noVerifyingEdits")}</div>`
+          : `<div class="style-record-list">${records.map((change, index) => renderStyleChangeRecord(change, index, context, mode)).join("")}</div>`
+      }
+    </section>
+  `;
+}
+
+function renderArchiveSection(records: ArchivedStyleChange[], context: ElementTabContext): string {
+  return `
+    <section class="style-record-section" data-style-record-section="archive">
+      <div class="style-record-section-head">
+        <strong>${escapeHtml(context.t("fixedArchive"))}</strong>
+        <span>${records.length}</span>
+      </div>
+      ${
+        records.length === 0
+          ? `<div class="empty compact">${context.t("noArchivedEdits")}</div>`
+          : `<div class="style-record-list">${records
+              .slice()
+              .sort((a, b) => b.archivedAt - a.archivedAt)
+              .map((item, index) => renderArchivedStyleChangeRecord(item, index, context))
+              .join("")}</div>`
+      }
+    </section>
+  `;
+}
+
+function renderStyleChangeRecord(change: StyleChange, index: number, context: ElementTabContext, mode: "pending" | "verifying"): string {
   const tagName = styleRecordTagName(change.elementLabel);
   const title = compactElementTitle(change);
   return `
       <article class="style-record">
         <div class="style-record-head">
           <div class="style-record-title">
-            <label class="style-record-select" title="${escapeHtml(change.elementLabel)}">
-              <input type="checkbox" data-style-record-select value="${escapeHtml(change.id)}" checked />
+            <label class="style-record-select ${mode === "verifying" ? "readonly" : ""}" title="${escapeHtml(change.elementLabel)}">
+              ${mode === "pending" ? `<input type="checkbox" data-style-record-select value="${escapeHtml(change.id)}" checked />` : ""}
               <span class="style-record-index">${index + 1}</span>
               <span class="style-record-icon" aria-label="${escapeHtml(tagName)}">${styleRecordIcon(tagName)}</span>
               <strong>${escapeHtml(title)}</strong>
             </label>
-            <button type="button" class="style-record-restore" data-action="undo-style-record" data-change-id="${escapeHtml(change.id)}">${context.t("restoreElement")}</button>
+            ${
+              mode === "pending"
+                ? `<button type="button" class="style-record-restore" data-action="undo-style-record" data-change-id="${escapeHtml(change.id)}">${context.t("restoreElement")}</button>`
+                : ""
+            }
+            ${
+              mode === "verifying"
+                ? `<button type="button" class="style-record-restore" data-action="requeue-style-record" data-change-id="${escapeHtml(change.id)}">${context.t("retryRepair")}</button>`
+                : ""
+            }
+            ${
+              mode === "verifying"
+                ? `<button type="button" class="style-record-restore" data-action="archive-style-record" data-change-id="${escapeHtml(change.id)}">${context.t("markFixed")}</button>`
+                : ""
+            }
           </div>
           <span class="style-record-time">${context.formatTime(change.updatedAt)}</span>
         </div>
         ${renderSelectorPath(change.selector)}
         <p>${escapeHtml(summarizeStyleChange(change, context))}</p>
+        ${mode === "verifying" ? renderVerificationMeta(change, context) : ""}
       </article>
     `;
+}
+
+function renderArchivedStyleChangeRecord(item: ArchivedStyleChange, index: number, context: ElementTabContext): string {
+  const change = item.change;
+  const tagName = styleRecordTagName(change.elementLabel);
+  return `
+    <article class="style-record archived">
+      <div class="style-record-head">
+        <div class="style-record-title">
+          <span class="style-record-index">${index + 1}</span>
+          <span class="style-record-icon" aria-label="${escapeHtml(tagName)}">${styleRecordIcon(tagName)}</span>
+          <strong>${escapeHtml(compactElementTitle(change))}</strong>
+        </div>
+        <span class="style-record-time">${context.formatTime(item.archivedAt)}</span>
+      </div>
+      ${renderSelectorPath(change.selector)}
+      <p>${escapeHtml(summarizeStyleChange(change, context))}</p>
+      <p class="style-record-status">${escapeHtml(archiveReasonLabel(item, context))}</p>
+    </article>
+  `;
+}
+
+function renderVerificationMeta(change: StyleChange, context: ElementTabContext): string {
+  const status = change.verificationStatus === "failed" ? context.t("verifyFailed") : context.t("verifyWaiting");
+  const reason = change.lastVerifyReason || context.t("waitingForPageUpdate");
+  return `<p class="style-record-status">${escapeHtml(status)} · ${escapeHtml(reason)}</p>`;
+}
+
+function archiveReasonLabel(item: ArchivedStyleChange, context: ElementTabContext): string {
+  const reason = item.archiveReason === "manual" ? context.t("archivedManually") : context.t("archivedVerified");
+  return item.verificationReason ? `${reason} · ${item.verificationReason}` : reason;
 }
 
 function styleRecordTagName(label: string): string {

@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { deflateSync } from "node:zlib";
 
 const root = resolve(import.meta.dirname, "..");
 const distDir = join(root, "dist");
@@ -13,7 +14,7 @@ const artifactsDir = join(tmpdir(), "devlite-qa");
 const chromeCacheDir = join(tmpdir(), "devlite-browsers/chrome");
 const execFileAsync = promisify(execFile);
 const chromePath = await findChromeExecutable();
-const replacementImagePath = join(artifactsDir, "replacement-image.svg");
+const replacementRasterPath = join(artifactsDir, "replacement-crop.png");
 
 class CdpSession {
   static async fromVersion(port) {
@@ -117,15 +118,7 @@ if (!existsSync(join(distDir, "manifest.json"))) {
 }
 
 await mkdir(artifactsDir, { recursive: true });
-await writeFile(
-  replacementImagePath,
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400">
-  <rect width="640" height="400" fill="#ffe7d1"/>
-  <path d="M84 308c70-104 154-156 252-156s170 52 220 156" fill="#d97757"/>
-  <circle cx="320" cy="142" r="76" fill="#b3261e"/>
-  <text x="320" y="350" text-anchor="middle" fill="#141413" font-family="Arial, sans-serif" font-size="30" font-weight="700">Replaced by QA</text>
-</svg>`
-);
+await writeFile(replacementRasterPath, pngFixtureBuffer(640, 400));
 
 const demoPort = await freePort();
 const cdpPort = await freePort();
@@ -175,7 +168,7 @@ try {
 
   await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "Chrome DevTools");
   browser = await CdpSession.fromVersion(cdpPort);
-  const extensionId = await waitForExtensionId(browser, profileDir, extensionDir);
+  const extensionId = await waitForExtensionId(browser, cdpPort, profileDir, extensionDir);
   record("extension loads in temporary Chrome profile", true, extensionId);
   const target = await waitForTarget(cdpPort, (item) => item.type === "page" && item.url.startsWith(demoUrl), "demo page target");
   page = await CdpSession.connect(target.webSocketDebuggerUrl);
@@ -189,8 +182,14 @@ try {
 
   await shadowClick(page, ".devlite-launcher");
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel opens");
+  await waitForEval(
+    page,
+    "document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.open-source-link')?.dataset.action === 'show-skill-install'",
+    "companion skill entry renders"
+  );
   await waitForCaptureStart(cdpPort, page, extensionId);
   record("panel opens and starts page capture", true);
+  record("panel shows companion skill entry", true);
 
   await shadowClick(page, ".locale-button");
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Performance')", "English locale applied");
@@ -244,8 +243,46 @@ try {
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Demo unhandled rejection')", "promise rejection visible");
   record("diagnostics panel shows console JS and Promise failures", true);
 
+  await evaluate(page, `
+    (() => {
+      const style = document.createElement("style");
+      style.id = "qa-diagnostic-hot-reset";
+      style.textContent = "body { --qa-diagnostic-hot-reset: 1; }";
+      document.head.appendChild(style);
+      return true;
+    })()
+  `);
+  await waitForEval(
+    page,
+    `
+      (() => {
+        const text = document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent || "";
+        return !text.includes('Demo console.error') && !text.includes('Demo JS error') && !text.includes('Demo unhandled rejection');
+      })()
+    `,
+    "hot update clears stale diagnostics",
+    10000
+  );
+  await waitForSessionState(
+    cdpPort,
+    extensionId,
+    (session) => {
+      const events = session?.events ?? [];
+      const hasDemoError = events.some((event) => `${event.message ?? ""}\n${event.stack ?? ""}`.includes("Demo "));
+      const hasSuccessfulNetworkHistory = events.some((event) => event.type === "network" && event.status === 200);
+      return !hasDemoError && hasSuccessfulNetworkHistory;
+    },
+    "hot update removes stale diagnostics from session but keeps successful network history",
+    10000
+  );
+  record("hot update clears stale diagnostics without deleting successful network history", true);
+
+  await evaluate(page, `document.getElementById("console-error").click(); true;`);
+  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Demo console.error')", "console error visible after diagnostic cleanup");
+  record("diagnostics panel captures recurring errors after cleanup", true);
+
   await shadowClick(page, 'button[data-tab="performance"]');
-  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('DOMContentLoaded')", "performance metrics visible");
+  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('FPS')", "performance metrics visible");
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('长任务') || document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('资源')", "performance evidence visible");
   await shadowClick(page, 'button[data-action="copy-performance-prompt"]');
   const performancePrompt = readClipboard();
@@ -256,6 +293,22 @@ try {
   await shadowClick(page, 'button[data-action="quick-select"]');
   await clickRelative(page, '[data-testid="editable-card"]', 0.88, 0.12);
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.style-editor-popover:not([hidden])')", "style editor appears");
+  await waitForEval(
+    page,
+    `
+      (() => {
+        const root = document.querySelector('#devlite-overlay-root')?.shadowRoot;
+        const select = root?.querySelector('.style-editor-head-actions [data-style-action="select"].primary');
+        const back = root?.querySelector('.style-editor-head-actions [data-style-action="back-panel"]');
+        const actions = Array.from(root?.querySelectorAll('.style-editor-actions [data-style-action]') ?? []).map((button) => button.dataset.styleAction);
+        if (!select || !back) return false;
+        const selectRect = select.getBoundingClientRect();
+        const backRect = back.getBoundingClientRect();
+        return selectRect.right <= backRect.left && actions.join('|') === 'text|replace-image|replace-icon|delete-element|copy-element|undo';
+      })()
+    `,
+    "style editor action layout matches requested order"
+  );
   await evaluate(page, `
     (() => {
       const shadow = document.querySelector("#devlite-overlay-root").shadowRoot;
@@ -294,10 +347,30 @@ try {
   const fileChooser = page.waitForEvent("Page.fileChooserOpened", (params) => Boolean(params.backendNodeId), 5000);
   await shadowClick(page, '[data-style-action="replace-image"]');
   const fileChooserEvent = await fileChooser;
-  await page.send("DOM.setFileInputFiles", { files: [replacementImagePath], backendNodeId: fileChooserEvent.backendNodeId });
+  await page.send("DOM.setFileInputFiles", { files: [replacementRasterPath], backendNodeId: fileChooserEvent.backendNodeId });
   await page.send("Page.setInterceptFileChooserDialog", { enabled: false });
-  await waitForEval(page, "document.querySelector('[data-testid=\"replaceable-image\"]')?.src.startsWith('data:image/svg+xml')", "image source replaced");
-  record("image replacement applies selected file", true);
+  await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.image-cropper-modal cropper-canvas')", "image cropper opens");
+  await waitForEval(page, cropperSelectionReadyExpression(), "image cropper selection is ready").catch(async (error) => {
+    const diagnostics = await evaluate(page, cropperDiagnosticsExpression()).catch((diagnosticError) => ({
+      diagnosticError: diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)
+    }));
+    throw new Error(`${error.message}: ${JSON.stringify(diagnostics, null, 2)}`);
+  });
+  await shadowClick(page, 'button[data-cropper-action="zoom-in"]');
+  await shadowClick(page, 'button[data-cropper-action="free-ratio"]');
+  await shadowClick(page, 'button[data-cropper-action="reset"]');
+  await shadowClick(page, 'button[data-cropper-action="apply"]');
+  await waitForEval(page, "document.querySelector('[data-testid=\"replaceable-image\"]')?.src.startsWith('data:image/png')", "cropped image source replaced");
+  record("image cropper edits and applies selected raster file", true);
+
+  await shadowClick(page, '[data-style-action="back-panel"]');
+  await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel opens from style editor");
+  await shadowClick(page, 'button[data-action="quick-select"]');
+  await clickCenter(page, ".muted-panel h3");
+  await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.style-editor-popover:not([hidden])')", "style editor appears for removable element");
+  await shadowClick(page, '[data-style-action="delete-element"]');
+  await waitForEval(page, "!document.querySelector('.muted-panel h3')", "selected element is deleted");
+  record("style editor records element deletion", true);
 
   await shadowClick(page, ".devlite-launcher");
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel reopens after image replacement");
@@ -306,25 +379,135 @@ try {
   await delay(300);
   const editPrompt = readClipboard();
   const parsedPrompt = JSON.parse(editPrompt);
-  assert(Array.isArray(parsedPrompt.changes) && parsedPrompt.changes.length >= 3, "edit prompt contains multiple selected changes");
+  assert(Array.isArray(parsedPrompt.changes) && parsedPrompt.changes.length >= 4, "edit prompt contains multiple selected changes");
   assert(editPrompt.includes("Updated by DevLite QA prompt export"), "edit prompt contains text change");
   assert(editPrompt.includes("font-size") || editPrompt.includes("color"), "edit prompt contains style change");
-  assert(editPrompt.includes("inline image data") || editPrompt.includes("Replaced by QA") || editPrompt.includes("替换图片"), "edit prompt contains image replacement");
+  const deletionModification = parsedPrompt.changes
+    .flatMap((change) => change.modifications ?? [])
+    .find((modification) => modification.type === "dom" && String(modification.property ?? "").includes("删除"));
+  assert(deletionModification?.after === "", "edit prompt contains element deletion DOM modification");
+  const imageCropModification = parsedPrompt.changes
+    .flatMap((change) => change.modifications ?? [])
+    .find((modification) => modification.type === "image" && modification.property === "cropReplacement");
+  assert(imageCropModification?.uploadedFile?.name === "replacement-crop.png", "edit prompt contains uploaded image metadata");
+  assert(imageCropModification?.source?.name === "replacement-crop.png", "edit prompt preserves image crop metadata compatibility");
+  assert(imageCropModification?.originalResource?.value?.includes("images.unsplash.com"), "edit prompt includes original page image resource");
+  assert(imageCropModification?.output?.type === "image/png", "edit prompt records crop output type");
+  assert((imageCropModification?.assetLookupHints ?? []).includes("replacement-crop.png"), "edit prompt includes local asset lookup hints");
+  assert(String(imageCropModification?.instruction ?? "").includes("本地项目"), "edit prompt instructs local project asset lookup");
+  assert(editPrompt.includes("[inline image data]"), "edit prompt redacts inline image data");
+  assert(!/data:image\/png;base64/i.test(editPrompt), "edit prompt omits cropped image base64");
   await writeFile(join(artifactsDir, "edit-prompt.json"), editPrompt);
   record("full edit prompt copies multiple modifications as structured JSON", true, join(artifactsDir, "edit-prompt.json"));
 
-  const popupTargetId = await browser.createTarget(`chrome-extension://${extensionId}/popup.html`);
-  const popupTarget = await waitForTarget(cdpPort, (item) => item.id === popupTargetId, "popup target");
-  extensionPage = await CdpSession.connect(popupTarget.webSocketDebuggerUrl);
+  await waitForSessionState(
+    cdpPort,
+    extensionId,
+    (session) => (session?.styleChanges ?? []).filter((change) => change.exportedAt).length >= 3,
+    "copied style changes are marked exported"
+  );
+  await waitForEval(
+    page,
+    "document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelectorAll('[data-style-record-section=\"verifying\"] .style-record').length >= 3",
+    "copied changes move to verifying section"
+  );
+  await waitForEval(
+    page,
+    "document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelectorAll('[data-style-record-section=\"pending\"] .style-record').length === 0",
+    "copied changes leave pending section"
+  );
+  record("copied edit records move from pending to verification", true);
+
+  await page.send("Page.reload", { ignoreCache: true });
+  await waitForEval(page, `location.href.startsWith(${JSON.stringify(demoUrl)}) && document.readyState === "complete"`, "demo page reloads after copying prompt", 10000);
+  await ensureLauncher(page, demoUrl);
+  await shadowClick(page, ".devlite-launcher");
+  await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel opens after reload");
+  await shadowClick(page, 'button[data-tab="diagnostics"]');
+  await waitForEval(
+    page,
+    `
+      (() => {
+        const text = document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent || "";
+        return !text.includes('Demo console.error') && !text.includes('Demo JS error') && !text.includes('Demo unhandled rejection');
+      })()
+    `,
+    "reload clears stale diagnostics from panel",
+    10000
+  );
+  await waitForSessionState(
+    cdpPort,
+    extensionId,
+    (session) => {
+      const events = session?.events ?? [];
+      return !events.some((event) => `${event.message ?? ""}\n${event.stack ?? ""}`.includes("Demo "));
+    },
+    "reload clears stale diagnostics from session",
+    10000
+  );
+  record("reload clears stale diagnostics from panel and session", true);
+  await shadowClick(page, 'button[data-tab="element"]');
+  await waitForSessionState(
+    cdpPort,
+    extensionId,
+    (session) => (session?.styleChanges ?? []).filter((change) => change.exportedAt).length >= 3 && (session?.archivedStyleChanges ?? []).length === 0,
+    "reload keeps exported changes unarchived before source fix"
+  );
+  record("reload does not auto-archive unfixed exported edits", true);
+
+  await evaluate(page, `
+    (() => {
+      const style = document.createElement("style");
+      style.id = "agent-hotfix-style";
+      style.textContent = '[data-testid="editable-card"] { color: rgb(179, 38, 30) !important; font-size: 23px !important; }';
+      document.head.appendChild(style);
+      const bodyCopy = document.querySelector(".body-copy");
+      if (bodyCopy) bodyCopy.textContent = "Updated by DevLite QA prompt export.";
+      document.querySelector(".muted-panel h3")?.remove();
+      return true;
+    })()
+  `);
+  await waitForSessionState(
+    cdpPort,
+    extensionId,
+    (session) => (session?.archivedStyleChanges ?? []).filter((item) => item.archiveReason === "verified").length >= 2,
+    "hot update auto-archives verified style and text edits",
+    10000
+  );
+  await waitForEval(
+    page,
+    "document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelectorAll('[data-style-record-section=\"archive\"] .style-record').length >= 2",
+    "verified records appear in archive section",
+    10000
+  );
+  record("hot-loaded source changes auto-archive matching exported edits", true);
+
+  await shadowClick(page, 'button[data-action="archive-style-record"]');
+  await waitForSessionState(
+    cdpPort,
+    extensionId,
+    (session) => (session?.archivedStyleChanges ?? []).some((item) => item.archiveReason === "manual") && (session?.styleChanges ?? []).filter((change) => change.exportedAt).length === 0,
+    "manual archive clears remaining verifying edit"
+  );
+  record("failed exported edit can be manually marked fixed", true);
+
+  const optionsTargetId = await browser.createTarget(`chrome-extension://${extensionId}/options.html`);
+  const optionsTarget = await waitForTarget(cdpPort, (item) => item.id === optionsTargetId, "options target");
+  extensionPage = await CdpSession.connect(optionsTarget.webSocketDebuggerUrl);
   await extensionPage.send("Runtime.enable");
-  await waitForEval(extensionPage, "document.body.innerText.includes('DevLite')", "popup renders");
-  record("popup page renders with current session state", true);
+  await waitForEval(extensionPage, "document.body.innerText.includes('DevLite')", "options page renders");
+  const manifestFromOptions = await evaluate(extensionPage, "chrome.runtime.getManifest()");
+  assert(!manifestFromOptions?.action?.default_popup, "toolbar action has no popup");
+  const configuredActionPopup = await evaluate(extensionPage, "new Promise((resolve) => chrome.action.getPopup({}, resolve))");
+  assert(configuredActionPopup === "", "chrome action popup is empty");
+  record("options page renders and toolbar action has no popup", true);
   await browser.send("Target.activateTarget", { targetId: target.id });
   const reportResponse = await evaluate(extensionPage, `
     new Promise((resolve) => chrome.runtime.sendMessage({ type: "generate-report" }, resolve))
   `);
   assert(reportResponse?.ok, "report generation succeeds");
   assert(reportResponse.report.includes("DevLite 页面诊断报告") || reportResponse.report.includes("DevLite Page Diagnostics Report"), "report has title");
+  assert(!reportResponse.report.includes("Demo console.error") && !reportResponse.report.includes("Demo JS error"), "report excludes cleared diagnostics");
   await writeFile(join(artifactsDir, "report.md"), reportResponse.report);
   record("background report generation works", true, join(artifactsDir, "report.md"));
 
@@ -336,12 +519,20 @@ try {
     new Promise((resolve) => chrome.runtime.sendMessage({ type: "generate-export", format: "json" }, resolve))
   `);
   const jsonSession = JSON.parse(jsonExport.text);
-  assert(jsonExport?.ok && Array.isArray(jsonSession.events) && Array.isArray(jsonSession.styleChanges), "json export succeeds");
+  assert(
+    jsonExport?.ok &&
+      Array.isArray(jsonSession.events) &&
+      Array.isArray(jsonSession.styleChanges) &&
+      Array.isArray(jsonSession.archivedStyleChanges) &&
+      jsonSession.archivedStyleChanges.length >= 3,
+    "json export succeeds with archived style changes"
+  );
   const promptExport = await evaluate(extensionPage, `
     new Promise((resolve) => chrome.runtime.sendMessage({ type: "generate-export", format: "prompt" }, resolve))
   `);
-  assert(promptExport?.ok && promptExport.text.includes("changes") && promptExport.text.includes("Updated by DevLite QA prompt export") && promptExport.text.includes("inline image data"), "repair prompt export succeeds");
-  record("popup/runtime exports markdown json and repair prompt", true);
+  const runtimePrompt = JSON.parse(promptExport.text);
+  assert(promptExport?.ok && Array.isArray(runtimePrompt.changes) && runtimePrompt.changes.length === 0, "repair prompt excludes archived/exported edits");
+  record("options/runtime exports markdown json and filtered repair prompt", true);
 
   const stopResponse = await evaluate(extensionPage, `
     new Promise((resolve) => chrome.runtime.sendMessage({ type: "stop-diagnosis" }, resolve))
@@ -389,6 +580,70 @@ function readClipboard() {
   } catch {
     return execFileSync("xclip", ["-selection", "clipboard", "-out"], { encoding: "utf8" });
   }
+}
+
+function cropperSelectionReadyExpression() {
+  return `
+    (() => {
+      const selection = document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.image-cropper-modal cropper-selection');
+      const rect = selection?.getBoundingClientRect();
+      return rect && rect.width > 20 && rect.height > 20;
+    })()
+  `;
+}
+
+function cropperDiagnosticsExpression() {
+  return `
+    (() => {
+      const root = document.querySelector('#devlite-overlay-root')?.shadowRoot;
+      const describe = (node) => {
+        if (!node) return { exists: false };
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        return {
+          exists: true,
+          tagName: node.tagName,
+          className: node.className || '',
+          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          offsetWidth: node.offsetWidth,
+          offsetHeight: node.offsetHeight,
+          display: style.display,
+          position: style.position,
+          width: style.width,
+          height: style.height,
+          minHeight: style.minHeight,
+          transform: style.transform,
+          hidden: node.hidden === true
+        };
+      };
+      const shell = root?.querySelector('.image-cropper-shell');
+      const stage = root?.querySelector('.image-cropper-stage');
+      const canvas = root?.querySelector('.image-cropper-modal cropper-canvas');
+      const image = root?.querySelector('.image-cropper-modal cropper-image');
+      const selection = root?.querySelector('.image-cropper-modal cropper-selection');
+      return {
+        shell: describe(shell),
+        stage: describe(stage),
+        canvas: describe(canvas),
+        image: {
+          ...describe(image),
+          srcPrefix: image?.getAttribute('src')?.slice(0, 40) || '',
+          imageWidth: image?.width,
+          imageHeight: image?.height
+        },
+        selection: {
+          ...describe(selection),
+          x: selection?.x,
+          y: selection?.y,
+          selectionWidth: selection?.width,
+          selectionHeight: selection?.height,
+          aspectRatio: selection?.aspectRatio,
+          html: selection?.outerHTML?.slice(0, 500) || ''
+        },
+        text: root?.textContent?.replace(/\\s+/g, ' ').trim().slice(0, 500) || ''
+      };
+    })()
+  `;
 }
 
 async function shadowClick(session, selector) {
@@ -509,7 +764,7 @@ async function findExtensionId(session) {
   const result = await session.send("Target.getTargets");
   const target = result.targetInfos.find(
     (item) => item.type === "service_worker" && /chrome-extension:\/\/[^/]+\/background\.js$/.test(item.url)
-  ) ?? result.targetInfos.find((item) => /chrome-extension:\/\/[^/]+\/(?:popup|options)\.html$/.test(item.url));
+  ) ?? result.targetInfos.find((item) => /chrome-extension:\/\/[^/]+\/options\.html$/.test(item.url));
   return target?.url.match(/^chrome-extension:\/\/([^/]+)\//)?.[1] || "";
 }
 
@@ -559,6 +814,17 @@ async function waitForCaptureStopped(cdpPort, extensionId) {
   );
 }
 
+async function waitForSessionState(cdpPort, extensionId, predicate, label, timeout = 8000) {
+  return waitFor(
+    async () => {
+      const state = await readBackgroundCaptureState(cdpPort, extensionId);
+      return predicate(state?.session ?? null, state) ? state : null;
+    },
+    label,
+    timeout
+  );
+}
+
 async function readBackgroundCaptureState(cdpPort, extensionId) {
   const workerTarget = (await listTargets(cdpPort)).find(
     (item) => item.type === "service_worker" && item.url.startsWith(`chrome-extension://${extensionId}/`)
@@ -573,7 +839,20 @@ async function readBackgroundCaptureState(cdpPort, extensionId) {
         (async () => {
           const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
           const tab = tabs[0] || null;
-          const storage = chrome.storage.session || chrome.storage.local;
+          const storage = chrome.storage?.session || chrome.storage?.local || null;
+          if (!storage) {
+            const response = await chrome.runtime?.sendMessage?.({ type: "get-current-session" }).catch((error) => ({
+              ok: false,
+              error: error instanceof Error ? error.message : String(error)
+            }));
+            return {
+              tab: tab ? { id: tab.id, url: tab.url, title: tab.title } : null,
+              sessionActive: response?.session?.active === true,
+              session: response?.session ?? null,
+              storageUnavailable: true,
+              runtimeResponse: response
+            };
+          }
           const data = await storage.get("devlite:sessions");
           const session = tab?.id ? data["devlite:sessions"]?.[String(tab.id)] || null : null;
           return {
@@ -617,8 +896,8 @@ async function collectCaptureDiagnostics(cdpPort, pageSession, extensionId) {
         (async () => {
           const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
           const tab = tabs[0] || null;
-          const storage = chrome.storage.session || chrome.storage.local;
-          const data = await storage.get("devlite:sessions");
+          const storage = chrome.storage?.session || chrome.storage?.local || null;
+          const data = storage ? await storage.get("devlite:sessions") : {};
           const session = tab?.id ? data["devlite:sessions"]?.[String(tab.id)] || null : null;
           const ping = tab?.id ? await chrome.tabs.sendMessage(tab.id, { type: "devlite-ping" }).catch((error) => ({
             ok: false,
@@ -629,7 +908,7 @@ async function collectCaptureDiagnostics(cdpPort, pageSession, extensionId) {
             tab: tab ? { id: tab.id, url: tab.url, title: tab.title } : null,
             session,
             ping,
-            registeredScripts: chrome.scripting.getRegisteredContentScripts
+            registeredScripts: chrome.scripting?.getRegisteredContentScripts
               ? await chrome.scripting.getRegisteredContentScripts().catch((error) => ({ error: error.message }))
               : "unavailable"
           };
@@ -685,10 +964,10 @@ async function waitForStyleEditApplied(pageSession) {
   throw new Error(`style edit was not applied to editable card: ${JSON.stringify(diagnostics, null, 2)}`);
 }
 
-async function waitForExtensionId(session, profileDir, extensionDir) {
+async function waitForExtensionId(session, cdpPort, profileDir, extensionDir) {
   try {
     return await waitFor(async () => {
-      const extensionId = findExtensionIdFromProfile(profileDir, extensionDir) || (await findExtensionId(session));
+      const extensionId = findExtensionIdFromProfile(profileDir, extensionDir) || (await findDevLiteExtensionIdFromTargets(cdpPort));
       return extensionId || null;
     }, "DevLite extension registration", 10000);
   } catch (error) {
@@ -706,6 +985,37 @@ async function waitForExtensionId(session, profileDir, extensionDir) {
   }
 }
 
+async function findDevLiteExtensionIdFromTargets(cdpPort) {
+  const targets = await listTargets(cdpPort).catch(() => []);
+  for (const target of targets) {
+    if (target.type !== "service_worker" || !/^chrome-extension:\/\/[^/]+\/.+/.test(target.url) || !target.webSocketDebuggerUrl) continue;
+    const worker = await CdpSession.connect(target.webSocketDebuggerUrl).catch(() => null);
+    if (!worker) continue;
+    try {
+      await worker.send("Runtime.enable");
+      const manifest = await evaluate(worker, "chrome.runtime.getManifest()").catch(() => null);
+      if (isDevLiteManifest(manifest)) {
+        return target.url.match(/^chrome-extension:\/\/([^/]+)\//)?.[1] || "";
+      }
+    } finally {
+      await worker.close().catch(() => null);
+    }
+  }
+  return "";
+}
+
+function isDevLiteManifest(manifest) {
+  return (
+    manifest?.manifest_version === 3 &&
+    manifest?.default_locale === "zh_CN" &&
+    !manifest?.action?.default_popup &&
+    manifest?.background?.service_worker === "background.js" &&
+    Array.isArray(manifest?.permissions) &&
+    manifest.permissions.includes("scripting") &&
+    manifest.permissions.includes("storage")
+  );
+}
+
 function findExtensionIdFromProfile(profileDir, extensionDir) {
   const preferencesPath = join(profileDir, "Default", "Preferences");
   if (!existsSync(preferencesPath)) return "";
@@ -717,8 +1027,7 @@ function findExtensionIdFromProfile(profileDir, extensionDir) {
       if (
         extension &&
         typeof extension === "object" &&
-        resolve(String(extension.path ?? "")) === expectedPath &&
-        extension.manifest?.name === "DevLite"
+        resolve(String(extension.path ?? "")) === expectedPath
       ) {
         return id;
       }
@@ -782,6 +1091,59 @@ async function waitFor(fn, label, timeout = 8000) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function pngFixtureBuffer(width, height) {
+  // Minimal RGBA PNG fixture generator used to avoid checking binary test assets into the repo.
+  const rowLength = width * 4 + 1;
+  const raw = Buffer.alloc(rowLength * height);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * rowLength;
+    raw[row] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const index = row + 1 + x * 4;
+      raw[index] = Math.round(217 - (x / width) * 38);
+      raw[index + 1] = Math.round(119 + (y / height) * 70);
+      raw[index + 2] = Math.round(87 + ((x + y) / (width + height)) * 92);
+      raw[index + 3] = 255;
+    }
+  }
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0))
+  ]);
+}
+
+function pngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, "ascii");
+  const length = Buffer.alloc(4);
+  const checksum = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  checksum.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), 0);
+  return Buffer.concat([length, typeBuffer, data, checksum]);
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 function freePort() {

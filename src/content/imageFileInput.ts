@@ -2,10 +2,19 @@ import { formatBytes } from "./utils";
 
 const MAX_IMAGE_FILE_BYTES = 5 * 1024 * 1024;
 
+export type ImageFilePayload = {
+  src: string;
+  label: string;
+  name: string;
+  type: string;
+  size: number;
+  isSvg: boolean;
+};
+
 type ImageFileInputOptions = {
   input: HTMLInputElement | null;
   onError: () => void;
-  onLoad: (src: string, label: string) => void;
+  onLoad: (payload: ImageFilePayload) => void;
 };
 
 export function bindImageFileInput(options: ImageFileInputOptions): void {
@@ -26,9 +35,26 @@ export function bindImageFileInput(options: ImageFileInputOptions): void {
         options.onError();
         return;
       }
-      options.onLoad(dataUrl, `${file.name} / ${file.type || "image"} / ${formatBytes(file.size)}`);
+      const type = file.type || inferImageType(file.name);
+      options.onLoad({
+        src: dataUrl,
+        label: `${file.name} / ${type || "image"} / ${formatBytes(file.size)}`,
+        name: file.name,
+        type,
+        size: file.size,
+        isSvg: type === "image/svg+xml" || /\.svg$/i.test(file.name)
+      });
     });
     reader.addEventListener("error", options.onError);
     reader.readAsDataURL(file);
   });
+}
+
+function inferImageType(name: string): string {
+  if (/\.svg$/i.test(name)) return "image/svg+xml";
+  if (/\.png$/i.test(name)) return "image/png";
+  if (/\.jpe?g$/i.test(name)) return "image/jpeg";
+  if (/\.webp$/i.test(name)) return "image/webp";
+  if (/\.gif$/i.test(name)) return "image/gif";
+  return "";
 }

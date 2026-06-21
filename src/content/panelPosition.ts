@@ -1,19 +1,26 @@
 type PanelPosition = {
   left: number | null;
   top: number;
+  width?: number;
+  height?: number;
 };
 
+const PANEL_POSITION_STORAGE_KEY = "devlite.panel.position";
+
 export class PanelPositionController {
-  private position: PanelPosition = { left: null, top: 16 };
+  private position: PanelPosition = loadPanelPosition();
 
   apply(panel: HTMLElement | null): void {
     if (!panel) return;
+    if (this.position.width) panel.style.width = `${clampPanelWidth(this.position.width)}px`;
+    if (this.position.height) panel.style.height = `${clampPanelHeight(this.position.height)}px`;
     const rect = panel.getBoundingClientRect();
     const width = Math.min(rect.width || 760, window.innerWidth - 16);
     const maxLeft = Math.max(8, window.innerWidth - width - 8);
     const maxTop = Math.max(8, window.innerHeight - Math.min(rect.height || 80, window.innerHeight - 16) - 8);
     const initialLeft = Math.max(8, window.innerWidth - width - 16);
     this.position = {
+      ...this.position,
       left: Math.min(Math.max(8, this.position.left ?? initialLeft), maxLeft),
       top: Math.min(Math.max(8, this.position.top), maxTop)
     };
@@ -22,12 +29,13 @@ export class PanelPositionController {
     panel.style.top = `${this.position.top}px`;
     if (rect.width > window.innerWidth - 16) panel.style.width = `${window.innerWidth - 16}px`;
     if (rect.height > window.innerHeight - 16) panel.style.height = `${window.innerHeight - 16}px`;
+    this.rememberSize(panel);
   }
 
   startDrag(panel: HTMLElement | null, event: PointerEvent, onEnd?: () => void): void {
     if (!panel) return;
     const target = event.target as HTMLElement | null;
-    if (target?.closest("button, input, select, textarea, summary, [data-panel-resize]")) return;
+    if (target?.closest("a, button, input, select, textarea, summary, [data-panel-resize]")) return;
     event.preventDefault();
     event.stopPropagation();
 
@@ -77,6 +85,8 @@ export class PanelPositionController {
       panel.removeEventListener("pointermove", onMove);
       panel.removeEventListener("pointerup", onUp);
       panel.removeEventListener("pointercancel", onUp);
+      this.rememberSize(panel);
+      savePanelPosition(this.position);
       onEnd?.();
     };
 
@@ -106,6 +116,15 @@ export class PanelPositionController {
       panel.style.width = `${pendingWidth}px`;
       panel.style.height = `${pendingHeight}px`;
     };
+    const updatePendingSize = (width: number, height: number) => {
+      pendingWidth = Math.round(width);
+      pendingHeight = Math.round(height);
+      this.position = {
+        ...this.position,
+        width: pendingWidth,
+        height: pendingHeight
+      };
+    };
     const scheduleSize = () => {
       if (frameId !== null) return;
       frameId = window.requestAnimationFrame(applySize);
@@ -114,8 +133,7 @@ export class PanelPositionController {
     const onMove = (moveEvent: PointerEvent) => {
       const nextWidth = Math.min(Math.max(320, rect.width + moveEvent.clientX - startX), maxWidth);
       const nextHeight = Math.min(Math.max(280, rect.height + moveEvent.clientY - startY), maxHeight);
-      pendingWidth = nextWidth;
-      pendingHeight = nextHeight;
+      updatePendingSize(nextWidth, nextHeight);
       scheduleSize();
     };
 
@@ -131,12 +149,54 @@ export class PanelPositionController {
       panel.removeEventListener("pointermove", onMove);
       panel.removeEventListener("pointerup", onUp);
       panel.removeEventListener("pointercancel", onUp);
+      this.rememberSize(panel);
       this.apply(panel);
+      savePanelPosition(this.position);
       onEnd?.();
     };
 
     panel.addEventListener("pointermove", onMove);
     panel.addEventListener("pointerup", onUp);
     panel.addEventListener("pointercancel", onUp);
+  }
+
+  private rememberSize(panel: HTMLElement): void {
+    const rect = panel.getBoundingClientRect();
+    this.position = {
+      ...this.position,
+      width: Math.round(clampPanelWidth(rect.width)),
+      height: Math.round(clampPanelHeight(rect.height))
+    };
+  }
+}
+
+function clampPanelWidth(width: number): number {
+  return Math.min(Math.max(320, width), window.innerWidth - 16);
+}
+
+function clampPanelHeight(height: number): number {
+  return Math.min(Math.max(280, height), window.innerHeight - 16);
+}
+
+function loadPanelPosition(): PanelPosition {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PANEL_POSITION_STORAGE_KEY) || "null") as PanelPosition | null;
+    if (!parsed || typeof parsed !== "object") return { left: null, top: 16 };
+    return {
+      left: typeof parsed.left === "number" ? parsed.left : null,
+      top: typeof parsed.top === "number" ? parsed.top : 16,
+      width: typeof parsed.width === "number" ? parsed.width : undefined,
+      height: typeof parsed.height === "number" ? parsed.height : undefined
+    };
+  } catch {
+    return { left: null, top: 16 };
+  }
+}
+
+function savePanelPosition(position: PanelPosition): void {
+  try {
+    localStorage.setItem(PANEL_POSITION_STORAGE_KEY, JSON.stringify(position));
+  } catch {
+    // Some pages block storage access; panel still works with in-memory position.
   }
 }

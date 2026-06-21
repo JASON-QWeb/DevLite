@@ -1,10 +1,11 @@
 import { ensureDomChangeBaseline, recordDomAfter } from "./changeManager";
 import { imageReplacementTarget, looksLikeImageUrl, parseSvgMarkup } from "./domMutations";
 import { cssStringEscape } from "./utils";
-import type { StyleChange } from "./types";
+import type { ImageEditMetadata, StyleChange } from "./types";
 
-export function applyImageReplacement(change: StyleChange, element: HTMLElement, src: string, action: string): void {
+export function applyImageReplacement(change: StyleChange, element: HTMLElement, src: string, action: string, imageEdit?: ImageEditMetadata): void {
   ensureDomChangeBaseline(change, element, action);
+  change.imageEdit = imageEdit;
 
   const imageTarget = imageReplacementTarget(element);
   if (imageTarget instanceof HTMLImageElement) {

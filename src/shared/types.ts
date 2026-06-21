@@ -10,7 +10,32 @@ export type DiagnosticEventType =
 
 export type Severity = "info" | "warning" | "error";
 export type UiLocale = "zh" | "en";
-export type UiTheme = "claude" | "saas" | "dark" | "cartoon";
+export type UiTheme = "system" | "claude" | "saas" | "dark";
+export type StyleChangeVerificationStatus = "waiting" | "failed";
+export type StyleChangeArchiveReason = "verified" | "manual";
+
+export interface ImageEditMetadata {
+  mode: "crop";
+  source: {
+    name: string;
+    type: string;
+    size: number;
+    width: number;
+    height: number;
+  };
+  crop: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    aspectRatio: number | null;
+  };
+  output: {
+    width: number;
+    height: number;
+    type: string;
+  };
+}
 
 export interface DiagnosticSettings {
   locale: UiLocale;
@@ -18,6 +43,12 @@ export interface DiagnosticSettings {
   collectResponseBody: boolean;
   maxResponseLength: number;
   slowRequestThreshold: number;
+  performanceTtfbWarning: number;
+  performanceTtfbError: number;
+  performanceDomReadyWarning: number;
+  performanceLoadWarning: number;
+  performanceLoadError: number;
+  performanceResourceSizeWarning: number;
   retainHours: number;
   extraRedactionKeys: string[];
 }
@@ -53,6 +84,14 @@ export interface DiagnosticEvent {
   metadata?: Record<string, unknown>;
 }
 
+export interface DiagnosticScope {
+  pageLoadId: string;
+  diagnosticGeneration: number;
+  mutationVersion: number;
+  updatedAt: number;
+  reason?: string;
+}
+
 export interface StyleChange {
   id: string;
   selector: string;
@@ -73,8 +112,24 @@ export interface StyleChange {
   domBefore?: string;
   domAfter?: string;
   domAction?: string;
+  domParentSelector?: string;
+  domChildIndex?: number;
+  imageEdit?: ImageEditMetadata;
+  exportedAt?: number;
+  exportedPageLoadId?: string;
+  exportedMutationVersion?: number;
+  verificationStatus?: StyleChangeVerificationStatus;
+  lastVerifiedAt?: number;
+  lastVerifyReason?: string;
   updatedAt: number;
   note?: string;
+}
+
+export interface ArchivedStyleChange {
+  change: StyleChange;
+  archivedAt: number;
+  archiveReason: StyleChangeArchiveReason;
+  verificationReason?: string;
 }
 
 export interface ElementLocator {
@@ -109,8 +164,10 @@ export interface DiagnosticSession {
   tabId: number;
   active: boolean;
   page: PageContext;
+  diagnosticScope?: DiagnosticScope;
   events: DiagnosticEvent[];
   styleChanges: StyleChange[];
+  archivedStyleChanges: ArchivedStyleChange[];
   createdAt: number;
   updatedAt: number;
 }

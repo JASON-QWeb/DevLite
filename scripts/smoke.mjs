@@ -10,8 +10,6 @@ const requiredFiles = [
   "background.js",
   "content.js",
   "injected.js",
-  "popup.html",
-  "popup.js",
   "options.html",
   "options.js",
   "_locales/zh_CN/messages.json",
@@ -34,7 +32,7 @@ assert(manifest.description === "__MSG_extensionDescription__", "extension descr
 assert(manifest.default_locale === "zh_CN", "default locale must be zh_CN");
 assert(manifest.background?.service_worker === "background.js", "background service worker path mismatch");
 assert(manifest.background?.type === "module", "background service worker must be a module");
-assert(manifest.action?.default_popup === "popup.html", "action default popup path mismatch");
+assert(!manifest.action?.default_popup, "toolbar action should open the in-page panel directly, not a popup");
 const contentScript = manifest.content_scripts?.find((script) => script.js?.includes("content.js"));
 assert(contentScript, "content.js must be declared as a static content script");
 assert(contentScript.run_at === "document_idle", "content.js should run at document_idle");

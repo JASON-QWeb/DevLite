@@ -13,6 +13,8 @@ type PerformanceText = {
 type PerformanceContext = {
   locale: UiLocale;
   slowThreshold: number;
+  thresholds: PerformanceThresholds;
+  revision: number;
   pageContext: PageContext;
   allEvents: LiveDiagnosticEvent[];
   networkEvents: LiveDiagnosticEvent[];
@@ -21,12 +23,31 @@ type PerformanceContext = {
   formatUrl: (value: string) => string;
 };
 
+type PerformanceThresholds = {
+  ttfbWarning: number;
+  ttfbError: number;
+  domReadyWarning: number;
+  loadWarning: number;
+  loadError: number;
+  resourceSizeWarning: number;
+};
+
+type WebVitals = {
+  lcp?: number;
+  cls?: number;
+  inp?: number;
+  fid?: number;
+  fps?: number;
+};
+
 export function getPerformanceInsights(context: PerformanceContext): PerformanceInsights {
   const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
   const resources = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
   const { locale, slowThreshold } = context;
+  const thresholds = context.thresholds;
+  const webVitals = collectWebVitals(context.allEvents);
   const largeResources = resources
-    .filter((resource) => resource.transferSize >= 512 * 1024 || resource.encodedBodySize >= 512 * 1024)
+    .filter((resource) => resource.transferSize >= thresholds.resourceSizeWarning || resource.encodedBodySize >= thresholds.resourceSizeWarning)
     .sort((a, b) => Math.max(b.transferSize, b.encodedBodySize) - Math.max(a.transferSize, a.encodedBodySize));
   const slowResources = resources.filter((resource) => resource.duration >= Math.max(1200, slowThreshold)).sort((a, b) => b.duration - a.duration);
   const longTasks = context.allEvents
@@ -34,17 +55,18 @@ export function getPerformanceInsights(context: PerformanceContext): Performance
     .sort((a, b) => (b.duration ?? 0) - (a.duration ?? 0));
   const slowNetwork = context.networkEvents.filter((event) => typeof event.duration === "number" && event.duration >= slowThreshold);
   const resourceErrors = context.allEvents.filter((event) => event.type === "resource-error");
-  const metrics = buildPerformanceMetrics(nav, resources, longTasks, context);
+  const metrics = buildPerformanceMetrics(nav, resources, longTasks, webVitals, context);
   const issues: PerformanceIssue[] = [];
+  const memory = getMemoryInfo();
 
   if (nav) {
     const ttfb = Math.round(nav.responseStart - nav.requestStart);
     const domReady = Math.round(nav.domContentLoadedEventEnd);
     const load = Math.round(nav.loadEventEnd || nav.duration);
-    if (ttfb >= 600) {
+    if (ttfb >= thresholds.ttfbWarning) {
       issues.push({
         title: locale === "en" ? "High TTFB" : "首包时间偏高",
-        severity: ttfb >= 1200 ? "error" : "warning",
+        severity: ttfb >= thresholds.ttfbError ? "error" : "warning",
         detail: locale === "en" ? `TTFB is about ${ttfb}ms. The page may be slowed by server response or network latency.` : `TTFB 约 ${ttfb}ms，页面启动可能被服务端响应或网络链路拖慢。`,
         evidence: [`TTFB: ${ttfb}ms`, `${locale === "en" ? "Page" : "页面"}: ${location.href}`],
         suggestion:
@@ -53,10 +75,10 @@ export function getPerformanceInsights(context: PerformanceContext): Performance
             : "检查 HTML 文档请求、服务端渲染耗时、CDN 缓存命中和接口网关延迟。"
       });
     }
-    if (domReady >= 2500 || load >= 4500) {
+    if (domReady >= thresholds.domReadyWarning || load >= thresholds.loadWarning) {
       issues.push({
         title: locale === "en" ? "Slow page load phase" : "页面加载阶段偏慢",
-        severity: load >= 8000 ? "error" : "warning",
+        severity: load >= thresholds.loadError ? "error" : "warning",
         detail: locale === "en" ? `DOMContentLoaded ${domReady}ms, Load ${load}ms.` : `DOMContentLoaded ${domReady}ms，Load ${load}ms。`,
         evidence: [`DOMContentLoaded: ${domReady}ms`, `Load: ${load}ms`],
         suggestion:
@@ -66,6 +88,9 @@ export function getPerformanceInsights(context: PerformanceContext): Performance
       });
     }
   }
+
+  pushWebVitalIssues(webVitals, issues, context);
+  pushRuntimePerformanceIssues(webVitals, memory, issues, context);
 
   if (longTasks.length > 0) {
     const total = longTasks.reduce((sum, event) => sum + Number(event.duration ?? 0), 0);
@@ -84,8 +109,11 @@ export function getPerformanceInsights(context: PerformanceContext): Performance
   if (largeResources.length > 0) {
     issues.push({
       title: locale === "en" ? "Large resource loading" : "存在大资源加载",
-      severity: largeResources.some((resource) => Math.max(resource.transferSize, resource.encodedBodySize) >= 2 * 1024 * 1024) ? "error" : "warning",
-      detail: locale === "en" ? `${largeResources.length} resources exceed 512KB.` : `${largeResources.length} 个资源超过 512KB。`,
+      severity: largeResources.some((resource) => Math.max(resource.transferSize, resource.encodedBodySize) >= thresholds.resourceSizeWarning * 4) ? "error" : "warning",
+      detail:
+        locale === "en"
+          ? `${largeResources.length} resources exceed ${formatBytes(thresholds.resourceSizeWarning)}.`
+          : `${largeResources.length} 个资源超过 ${formatBytes(thresholds.resourceSizeWarning)}。`,
       evidence: largeResources.slice(0, 6).map((resource) => formatResourceTiming(resource, context.formatUrl)),
       suggestion:
         locale === "en"
@@ -163,8 +191,15 @@ export function formatResourceTiming(resource: PerformanceResourceTiming, format
   return `${Math.round(resource.duration)}ms / ${size} / ${resource.initiatorType || "resource"} / ${url}`;
 }
 
-function buildPerformanceMetrics(nav: PerformanceNavigationTiming | undefined, resources: PerformanceResourceTiming[], longTasks: LiveDiagnosticEvent[], context: PerformanceContext): PerformanceInsights["metrics"] {
+function buildPerformanceMetrics(
+  nav: PerformanceNavigationTiming | undefined,
+  resources: PerformanceResourceTiming[],
+  longTasks: LiveDiagnosticEvent[],
+  webVitals: WebVitals,
+  context: PerformanceContext
+): PerformanceInsights["metrics"] {
   const totalTransfer = resources.reduce((sum, resource) => sum + Math.max(0, resource.transferSize || resource.encodedBodySize || 0), 0);
+  const memory = getMemoryInfo();
   return [
     {
       label: "DOMContentLoaded",
@@ -185,8 +220,137 @@ function buildPerformanceMetrics(nav: PerformanceNavigationTiming | undefined, r
       label: context.text.longTasks,
       value: String(longTasks.length),
       note: context.text.over50ms
+    },
+    {
+      label: "LCP",
+      value: typeof webVitals.lcp === "number" ? `${Math.round(webVitals.lcp)}ms` : "-",
+      note: context.locale === "en" ? "Largest Contentful Paint" : "最大内容绘制"
+    },
+    {
+      label: "CLS",
+      value: typeof webVitals.cls === "number" ? webVitals.cls.toFixed(3) : "-",
+      note: context.locale === "en" ? "Cumulative Layout Shift" : "累计布局偏移"
+    },
+    {
+      label: "INP",
+      value: typeof webVitals.inp === "number" ? `${Math.round(webVitals.inp)}ms` : "-",
+      note: context.locale === "en" ? "Interaction latency" : "交互延迟"
+    },
+    {
+      label: "FID",
+      value: typeof webVitals.fid === "number" ? `${Math.round(webVitals.fid)}ms` : "-",
+      note: context.locale === "en" ? "First input delay" : "首次输入延迟"
+    },
+    {
+      label: "FPS",
+      value: typeof webVitals.fps === "number" ? String(webVitals.fps) : "-",
+      note: context.locale === "en" ? "Recent frame rate" : "近期帧率"
+    },
+    {
+      label: "JS Heap",
+      value: memory ? formatBytes(memory.usedJSHeapSize) : "-",
+      note: memory ? `${Math.round((memory.usedJSHeapSize / memory.jsHeapSizeLimit) * 100)}%` : context.locale === "en" ? "Chrome only" : "仅 Chrome 支持"
     }
   ];
+}
+
+function collectWebVitals(events: LiveDiagnosticEvent[]): WebVitals {
+  const vitals: WebVitals = {};
+  for (const event of events) {
+    if (event.type !== "performance") continue;
+    const kind = event.metadata?.kind;
+    const value = Number(event.metadata?.value ?? event.duration);
+    if (!Number.isFinite(value)) continue;
+    if (kind === "lcp") vitals.lcp = Math.max(vitals.lcp ?? 0, value);
+    if (kind === "cls") vitals.cls = Math.max(vitals.cls ?? 0, value);
+    if (kind === "inp") vitals.inp = Math.max(vitals.inp ?? 0, value);
+    if (kind === "fid") vitals.fid = Math.max(vitals.fid ?? 0, value);
+    if (kind === "fps") vitals.fps = value;
+  }
+  return vitals;
+}
+
+function pushWebVitalIssues(webVitals: WebVitals, issues: PerformanceIssue[], context: PerformanceContext): void {
+  const { locale } = context;
+  if (typeof webVitals.lcp === "number" && webVitals.lcp >= 2500) {
+    issues.push({
+      title: locale === "en" ? "LCP needs attention" : "LCP 需要关注",
+      severity: webVitals.lcp >= 4000 ? "error" : "warning",
+      detail: locale === "en" ? `LCP is about ${Math.round(webVitals.lcp)}ms.` : `LCP 约 ${Math.round(webVitals.lcp)}ms。`,
+      evidence: [`LCP: ${Math.round(webVitals.lcp)}ms`],
+      suggestion:
+        locale === "en"
+          ? "Optimize the largest above-the-fold image or text block, reduce render-blocking work, and improve document or API response time."
+          : "优化首屏最大图片或文本块，减少阻塞渲染的资源，并检查文档或关键接口响应时间。"
+    });
+  }
+  if (typeof webVitals.cls === "number" && webVitals.cls >= 0.1) {
+    issues.push({
+      title: locale === "en" ? "Layout shifts detected" : "存在布局偏移",
+      severity: webVitals.cls >= 0.25 ? "error" : "warning",
+      detail: locale === "en" ? `CLS is ${webVitals.cls.toFixed(3)}.` : `CLS 为 ${webVitals.cls.toFixed(3)}。`,
+      evidence: [`CLS: ${webVitals.cls.toFixed(3)}`],
+      suggestion:
+        locale === "en"
+          ? "Reserve image, ad, iframe, and async content dimensions, and avoid inserting content above existing viewport content."
+          : "为图片、广告、iframe 和异步内容预留尺寸，避免在现有视口内容上方插入新内容。"
+    });
+  }
+  if (typeof webVitals.inp === "number" && webVitals.inp >= 200) {
+    issues.push({
+      title: locale === "en" ? "Slow interaction response" : "交互响应偏慢",
+      severity: webVitals.inp >= 500 ? "error" : "warning",
+      detail: locale === "en" ? `INP is about ${Math.round(webVitals.inp)}ms.` : `INP 约 ${Math.round(webVitals.inp)}ms。`,
+      evidence: [`INP: ${Math.round(webVitals.inp)}ms`],
+      suggestion:
+        locale === "en"
+          ? "Split input handlers, defer non-critical synchronous work, and check large renders triggered by user actions."
+          : "拆分输入处理逻辑、推迟非关键同步任务，并检查用户操作触发的大组件渲染。"
+    });
+  }
+}
+
+function pushRuntimePerformanceIssues(webVitals: WebVitals, memory: MemoryInfo | null, issues: PerformanceIssue[], context: PerformanceContext): void {
+  const { locale } = context;
+  if (typeof webVitals.fps === "number" && webVitals.fps < 50) {
+    issues.push({
+      title: locale === "en" ? "Low frame rate" : "帧率偏低",
+      severity: webVitals.fps < 30 ? "error" : "warning",
+      detail: locale === "en" ? `Recent FPS is ${webVitals.fps}.` : `近期 FPS 为 ${webVitals.fps}。`,
+      evidence: [`FPS: ${webVitals.fps}`],
+      suggestion:
+        locale === "en"
+          ? "Check animation, scroll, and input handlers for long synchronous work and reduce layout or paint pressure."
+          : "检查动画、滚动和输入处理中的长同步任务，降低布局和绘制压力。"
+    });
+  }
+  if (memory && memory.jsHeapSizeLimit > 0 && memory.usedJSHeapSize / memory.jsHeapSizeLimit >= 0.8) {
+    issues.push({
+      title: locale === "en" ? "High JS heap usage" : "JS 堆内存使用偏高",
+      severity: "warning",
+      detail:
+        locale === "en"
+          ? `JS heap uses ${formatBytes(memory.usedJSHeapSize)} of ${formatBytes(memory.jsHeapSizeLimit)}.`
+          : `JS 堆内存使用 ${formatBytes(memory.usedJSHeapSize)} / ${formatBytes(memory.jsHeapSizeLimit)}。`,
+      evidence: [`JS Heap: ${formatBytes(memory.usedJSHeapSize)} / ${formatBytes(memory.jsHeapSizeLimit)}`],
+      suggestion:
+        locale === "en"
+          ? "Check retained component trees, large caches, repeated subscriptions, and detached DOM nodes."
+          : "检查未释放的组件树、大缓存、重复订阅和游离 DOM 节点。"
+    });
+  }
+}
+
+type MemoryInfo = {
+  usedJSHeapSize: number;
+  totalJSHeapSize: number;
+  jsHeapSizeLimit: number;
+};
+
+function getMemoryInfo(): MemoryInfo | null {
+  const memory = (performance as Performance & { memory?: MemoryInfo }).memory;
+  if (!memory || !Number.isFinite(memory.usedJSHeapSize) || !Number.isFinite(memory.jsHeapSizeLimit)) return null;
+  return memory;
 }
 
 function resourceToPromptItem(resource: PerformanceResourceTiming): Record<string, unknown> {

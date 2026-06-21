@@ -11,9 +11,12 @@ import type { LiveDiagnosticEvent, NetworkDetailTab } from "../types";
 type NetworkTabContext = {
   events: LiveDiagnosticEvent[];
   totalCount: number;
+  matchedCount: number;
   selected: LiveDiagnosticEvent | null;
   detailTab: NetworkDetailTab;
   filterErrorsOnly: boolean;
+  showDevelopmentTraffic: boolean;
+  searchQuery: string;
   listWidth: number;
   slowThreshold: number;
   t: (key: ContentTextKey) => string;
@@ -28,29 +31,34 @@ export function pickSelectedNetworkEvent(events: LiveDiagnosticEvent[], selected
 }
 
 export function renderNetworkTabView(context: NetworkTabContext): string {
-  const { events, selected, t, slowThreshold, totalCount, filterErrorsOnly } = context;
+  const { events, matchedCount, selected, t, slowThreshold, totalCount, filterErrorsOnly, showDevelopmentTraffic, searchQuery } = context;
 
   const failed = events.filter((event) => event.severity === "error" || (typeof event.status === "number" && event.status >= 400)).length;
   const slow = events.filter((event) => typeof event.duration === "number" && event.duration >= slowThreshold).length;
+  const maxDuration = Math.max(1, ...events.map((event) => Number(event.duration ?? 0)));
 
   return `
       <div class="network-panel">
         <div class="toolbar network-toolbar">
           <button data-action="copy-selected-network" class="primary" ${selected ? "" : "disabled"}>${t("copySelectedRequest")}</button>
+          <button data-action="copy-selected-curl" ${selected ? "" : "disabled"}>${t("copyCurl")}</button>
           <button data-action="clear-network-events" ${totalCount === 0 ? "disabled" : ""}>${t("clearNetworkData")}</button>
           <button data-action="toggle-network-errors" class="${filterErrorsOnly ? "active" : ""}" ${totalCount === 0 ? "disabled" : ""}>${t("errorsOnly")}</button>
+          <button data-action="toggle-development-network" class="${showDevelopmentTraffic ? "active" : ""}" ${totalCount === 0 ? "disabled" : ""}>${t("developmentTraffic")}</button>
+          <input data-network-search type="search" value="${escapeHtml(searchQuery)}" placeholder="${t("searchRequests")}" ${totalCount === 0 ? "disabled" : ""} />
         </div>
         <div class="network-summary">
           <div><strong>${events.length}</strong><span>${t("latestRequests")}</span></div>
           <div><strong>${failed}</strong><span>${t("failed")}</span></div>
           <div><strong>${slow}</strong><span>${t("slow")}</span></div>
+          <div><strong>${matchedCount}</strong><span>${t("showingRequests")}</span></div>
         </div>
         ${
           events.length === 0
             ? `<div class="empty compact">${filterErrorsOnly ? t("noNetworkErrors") : t("noNetworkData")}</div>`
             : `<div class="network-workspace" style="--network-list-width: ${Math.round(context.listWidth)}px">
                 <div class="network-list" role="list">
-                  ${events.map((event) => renderNetworkListItem(event, selected?.id === event.id, context)).join("")}
+                  ${events.map((event) => renderNetworkListItem(event, selected?.id === event.id, maxDuration, context)).join("")}
                 </div>
                 <button type="button" class="network-splitter" data-network-splitter aria-label="${t("resizeNetworkList")}"></button>
                 <section class="network-detail">
@@ -62,12 +70,14 @@ export function renderNetworkTabView(context: NetworkTabContext): string {
     `;
 }
 
-function renderNetworkListItem(event: LiveDiagnosticEvent, selected: boolean, context: NetworkTabContext): string {
+function renderNetworkListItem(event: LiveDiagnosticEvent, selected: boolean, maxDuration: number, context: NetworkTabContext): string {
   const statusClass = networkStatusClass(event);
   const status = typeof event.status === "number" ? String(event.status) : event.severity;
   const duration = typeof event.duration === "number" ? `${event.duration}ms` : "-";
+  const barWidth = typeof event.duration === "number" ? Math.max(4, Math.round((event.duration / maxDuration) * 100)) : 0;
   return `
       <button type="button" class="network-row ${selected ? "selected" : ""}" data-network-id="${escapeHtml(event.id)}" role="listitem" aria-pressed="${selected}">
+        ${barWidth > 0 ? `<i class="network-waterfall" style="width:${barWidth}%"></i>` : ""}
         <span class="network-method-stack">
           <span class="network-method">${escapeHtml(event.method || "GET")}</span>
           <span class="network-code ${statusClass}">${escapeHtml(status)}</span>

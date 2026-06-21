@@ -1,7 +1,25 @@
 import type { ContentLocale } from "./i18n";
-import type { ElementAncestor, ElementLocator, MatchedCssRule, StyleChange } from "../shared/types";
+import type {
+  ArchivedStyleChange,
+  DiagnosticScope,
+  ElementAncestor,
+  ElementLocator,
+  ImageEditMetadata,
+  MatchedCssRule,
+  StyleChange,
+  StyleChangeArchiveReason
+} from "../shared/types";
 
-export type { ElementAncestor, ElementLocator, MatchedCssRule, StyleChange };
+export type {
+  ArchivedStyleChange,
+  DiagnosticScope,
+  ElementAncestor,
+  ElementLocator,
+  ImageEditMetadata,
+  MatchedCssRule,
+  StyleChange,
+  StyleChangeArchiveReason
+};
 
 export type InlineTextEditState = {
   element: HTMLElement;
@@ -12,11 +30,11 @@ export type InlineTextEditState = {
   onKeydown: (event: KeyboardEvent) => void;
 };
 
-export type OverlayTab = "element" | "diagnostics" | "network" | "performance" | "settings";
+export type OverlayTab = "element" | "diagnostics" | "network" | "performance" | "settings" | "skill";
 export type NetworkDetailTab = "preview" | "response" | "request" | "headers";
 export type DiagnosticFilter = "issues" | "logs";
 export type UiLocale = ContentLocale;
-export type UiTheme = "claude" | "saas" | "dark" | "cartoon";
+export type UiTheme = "system" | "claude" | "saas" | "dark";
 
 export type PanelSettings = {
   locale?: UiLocale;
@@ -24,6 +42,12 @@ export type PanelSettings = {
   collectResponseBody?: boolean;
   maxResponseLength?: number;
   slowRequestThreshold?: number;
+  performanceTtfbWarning?: number;
+  performanceTtfbError?: number;
+  performanceDomReadyWarning?: number;
+  performanceLoadWarning?: number;
+  performanceLoadError?: number;
+  performanceResourceSizeWarning?: number;
   retainHours?: number;
   extraRedactionKeys?: string[];
 };

@@ -100,8 +100,12 @@ export function sanitizeSession(session: DiagnosticSession, settings: Diagnostic
   return {
     ...session,
     page: redactObject(session.page, settings),
-    events: session.events.map((event) => sanitizeEvent(event, settings)),
-    styleChanges: session.styleChanges.map((change) => redactObject(change, settings))
+    events: (session.events ?? []).map((event) => sanitizeEvent(event, settings)),
+    styleChanges: (session.styleChanges ?? []).map((change) => redactObject(change, settings)),
+    archivedStyleChanges: (session.archivedStyleChanges ?? []).map((item) => ({
+      ...item,
+      change: redactObject(item.change, settings)
+    }))
   };
 }
 

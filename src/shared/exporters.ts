@@ -1,4 +1,6 @@
 import { generateMarkdownReport } from "./report";
+import { promptableStyleChanges } from "./styleChanges";
+import { truncateInlineImages } from "./textUtils";
 import type { DiagnosticSettings, DiagnosticSession, ExportFormat, UiLocale } from "./types";
 
 export function generateExport(session: DiagnosticSession, settings: DiagnosticSettings, format: ExportFormat): string {
@@ -14,7 +16,7 @@ export function generateExport(session: DiagnosticSession, settings: DiagnosticS
 }
 
 export function generateRepairPrompt(session: DiagnosticSession, locale: UiLocale = "zh"): string {
-  return generateRepairPromptForChanges(session.styleChanges, locale, session.page);
+  return generateRepairPromptForChanges(promptableStyleChanges(session.styleChanges), locale, session.page);
 }
 
 export function generateRepairPromptForChanges(
@@ -26,8 +28,18 @@ export function generateRepairPromptForChanges(
     {
       task:
         locale === "en"
-          ? "Modify the page in the current project that matches the current page URL. Locate the target components with selectors, DOM paths, text snippets, attributes, and matched CSS rules. Preserve the existing tech stack and code style."
-          : "请修改当前项目中匹配当前页面 URL 的页面。根据 selector、DOM 路径、文本片段、属性和命中的 CSS 规则定位目标组件，并保持现有技术栈和代码风格。",
+          ? "Modify the page in the current local development project that matches the current page URL, usually a localhost or 127.0.0.1 dev server. Locate target components, assets, copy, and styles with selectors, DOM paths, text snippets, attributes, and matched CSS rules. Preserve the existing tech stack and code style."
+          : "请修改当前本地开发项目中匹配当前页面 URL 的页面，通常是 localhost 或 127.0.0.1 启动的本地开发服务器。根据 selector、DOM 路径、文本片段、属性和命中的 CSS 规则定位目标组件、资源、文案和样式文件，并保持现有技术栈和代码风格。",
+      workflow:
+        locale === "en"
+          ? {
+              primaryUseCase: "DevLite is designed for iterative editing on pages served by a local development server.",
+              implementationRule: "Do not treat DOM selectors as the final implementation. Use them to find the real source files in the local project, then update components, styles, and assets."
+            }
+          : {
+              primaryUseCase: "DevLite 面向本地开发服务器上的页面迭代编辑，例如 localhost、127.0.0.1 或团队本地预览服务。",
+              implementationRule: "不要把 DOM selector 当成最终实现方案。请用这些定位信息在本地项目中找到真实源码文件，再修改组件、样式和资源。"
+            },
       page: page
         ? {
             url: page.url,
@@ -65,7 +77,8 @@ export function generateRepairPromptForChanges(
               after
             })),
           ...textModification(change),
-          ...domModification(change)
+          ...domModification(change),
+          ...imageEditModification(change, locale)
         ]
       }))
     },
@@ -105,8 +118,8 @@ function textModification(change: DiagnosticSession["styleChanges"][number]): Ar
       property: "textContent",
       before: change.textBefore ?? "",
       after: change.textAfter,
-      htmlBefore: truncate(change.htmlBefore ?? "", 1200),
-      htmlAfter: truncate(change.htmlAfter ?? "", 1200)
+      htmlBefore: truncateInlineImages(change.htmlBefore ?? "", 1200),
+      htmlAfter: truncateInlineImages(change.htmlAfter ?? "", 1200)
     }
   ];
 }
@@ -120,12 +133,112 @@ function domModification(change: DiagnosticSession["styleChanges"][number]): Arr
     {
       type: "dom",
       property: change.domAction ?? "outerHTML",
-      before: truncate(change.domBefore ?? "", 1200),
-      after: truncate(change.domAfter, 1200)
+      before: truncateInlineImages(change.domBefore ?? "", 1200),
+      after: truncateInlineImages(change.domAfter, 1200)
     }
   ];
 }
 
-function truncate(value: string, max: number): string {
-  return value.length <= max ? value : `${value.slice(0, max)}\n...[TRUNCATED ${value.length - max} chars]`;
+function imageEditModification(change: DiagnosticSession["styleChanges"][number], locale: UiLocale): Array<Record<string, unknown>> {
+  if (!change.imageEdit) {
+    return [];
+  }
+
+  const originalResource = imageOriginalResource(change);
+
+  return [
+    {
+      type: "image",
+      property: "cropReplacement",
+      action: change.domAction ?? "replace image",
+      note:
+        locale === "en"
+          ? "Inline image data is omitted. This prompt is intended for a local project agent: locate the original page resource or uploaded filename in the project, then implement the replacement from project assets."
+          : "已省略 inline 图片数据。这个 Prompt 面向本地项目 Agent：请优先根据原页面资源路径或上传文件名在项目中定位图片资源，再用项目资源完成替换。",
+      originalResource,
+      uploadedFile: change.imageEdit.source,
+      source: change.imageEdit.source,
+      crop: change.imageEdit.crop,
+      output: change.imageEdit.output,
+      assetLookupHints: imageAssetLookupHints(change, originalResource),
+      instruction:
+        locale === "en"
+          ? "First search the local project for originalResource.value and uploadedFile.name. If a matching asset exists, use crop/output metadata as the visual crop intent, then crop or reference the project asset and replace the image source in code. If no matching asset exists, keep the original page resource URL when appropriate or ask the user to add the uploaded file to the project assets; do not invent an unrelated image."
+          : "请先在本地项目中搜索 originalResource.value 和 uploadedFile.name。若找到匹配资源，把 crop/output 信息作为视觉裁剪意图参考，再裁剪或引用项目资源，并在源码中替换图片路径。若找不到匹配资源，可在合适时继续使用原页面资源 URL，或提示用户把上传文件加入项目 assets；不要凭空生成无关图片。"
+    }
+  ];
+}
+
+function imageOriginalResource(change: DiagnosticSession["styleChanges"][number]): Record<string, unknown> {
+  const value = firstPresentString(
+    change.locator?.attributes?.src,
+    firstSrcsetCandidate(change.locator?.attributes?.srcset),
+    change.locator?.attributes?.href,
+    change.locator?.attributes?.["xlink:href"],
+    extractCssUrl(change.before["background-image"]),
+    extractHtmlAttribute(change.domBefore ?? "", "src"),
+    extractHtmlAttribute(change.domBefore ?? "", "href")
+  );
+
+  return {
+    value: value.startsWith("data:image/") ? "[inline image data]" : value,
+    kind: imageResourceKind(value)
+  };
+}
+
+function imageAssetLookupHints(change: DiagnosticSession["styleChanges"][number], originalResource: Record<string, unknown>): string[] {
+  const hints = [
+    typeof originalResource.value === "string" ? originalResource.value : "",
+    fileNameFromPath(typeof originalResource.value === "string" ? originalResource.value : ""),
+    change.imageEdit?.source.name ?? "",
+    change.locator?.attributes?.alt ?? "",
+    change.selector,
+    change.domPath
+  ];
+  return Array.from(new Set(hints.filter(Boolean))).slice(0, 12);
+}
+
+function imageResourceKind(value: string): string {
+  if (!value) return "unknown";
+  if (value.startsWith("data:image/")) return "inline-data-redacted";
+  if (/^https?:\/\//i.test(value)) return "remote-url";
+  if (/^(\/|\.\/|\.\.\/|@\/|~\/)/.test(value)) return "project-or-page-path";
+  return "relative-or-attribute";
+}
+
+function firstPresentString(...values: Array<string | undefined>): string {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return "";
+}
+
+function firstSrcsetCandidate(value?: string): string | undefined {
+  return value?.split(",")[0]?.trim().split(/\s+/)[0];
+}
+
+function extractCssUrl(value?: string): string | undefined {
+  const match = value?.match(/url\((["']?)(.*?)\1\)/i);
+  return match?.[2];
+}
+
+function extractHtmlAttribute(html: string, attr: string): string | undefined {
+  const unquotedAttrValue = "([^\\s\"'=<>`]+)";
+  const match = html.match(new RegExp(`\\s${escapeRegExp(attr)}\\s*=\\s*(?:(["'])(.*?)\\1|${unquotedAttrValue})`, "i"));
+  return match?.[2] ?? match?.[3];
+}
+
+function fileNameFromPath(value: string): string {
+  if (!value || value === "[inline image data]") return "";
+  try {
+    const parsed = /^https?:\/\//i.test(value) ? new URL(value).pathname : value;
+    return parsed.split("/").filter(Boolean).pop() ?? "";
+  } catch {
+    return value.split("/").filter(Boolean).pop() ?? "";
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
