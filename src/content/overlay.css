@@ -46,7 +46,6 @@
   max-width: calc(100vw - 32px);
   max-height: calc(100dvh - 32px);
   overflow: hidden;
-  resize: both;
   pointer-events: auto;
   box-sizing: border-box;
   border: 1px solid var(--dl-borderStrong);
@@ -332,6 +331,7 @@
   height: 18px;
   cursor: nwse-resize;
   pointer-events: auto;
+  touch-action: none;
 }
 .panel-resize-handle::before {
   content: "";

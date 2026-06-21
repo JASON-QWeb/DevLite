@@ -243,6 +243,44 @@ try {
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Demo unhandled rejection')", "promise rejection visible");
   record("diagnostics panel shows console JS and Promise failures", true);
 
+  await evaluate(page, `
+    (() => {
+      const style = document.createElement("style");
+      style.id = "qa-diagnostic-hot-reset";
+      style.textContent = "body { --qa-diagnostic-hot-reset: 1; }";
+      document.head.appendChild(style);
+      return true;
+    })()
+  `);
+  await waitForEval(
+    page,
+    `
+      (() => {
+        const text = document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent || "";
+        return !text.includes('Demo console.error') && !text.includes('Demo JS error') && !text.includes('Demo unhandled rejection');
+      })()
+    `,
+    "hot update clears stale diagnostics",
+    10000
+  );
+  await waitForSessionState(
+    cdpPort,
+    extensionId,
+    (session) => {
+      const events = session?.events ?? [];
+      const hasDemoError = events.some((event) => `${event.message ?? ""}\n${event.stack ?? ""}`.includes("Demo "));
+      const hasSuccessfulNetworkHistory = events.some((event) => event.type === "network" && event.status === 200);
+      return !hasDemoError && hasSuccessfulNetworkHistory;
+    },
+    "hot update removes stale diagnostics from session but keeps successful network history",
+    10000
+  );
+  record("hot update clears stale diagnostics without deleting successful network history", true);
+
+  await evaluate(page, `document.getElementById("console-error").click(); true;`);
+  await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('Demo console.error')", "console error visible after diagnostic cleanup");
+  record("diagnostics panel captures recurring errors after cleanup", true);
+
   await shadowClick(page, 'button[data-tab="performance"]');
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('FPS')", "performance metrics visible");
   await waitForEval(page, "document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('长任务') || document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent.includes('资源')", "performance evidence visible");
@@ -385,6 +423,29 @@ try {
   await ensureLauncher(page, demoUrl);
   await shadowClick(page, ".devlite-launcher");
   await waitForEval(page, "!!document.querySelector('#devlite-overlay-root')?.shadowRoot?.querySelector('.devlite-panel:not([hidden])')", "panel opens after reload");
+  await shadowClick(page, 'button[data-tab="diagnostics"]');
+  await waitForEval(
+    page,
+    `
+      (() => {
+        const text = document.querySelector('#devlite-overlay-root')?.shadowRoot?.textContent || "";
+        return !text.includes('Demo console.error') && !text.includes('Demo JS error') && !text.includes('Demo unhandled rejection');
+      })()
+    `,
+    "reload clears stale diagnostics from panel",
+    10000
+  );
+  await waitForSessionState(
+    cdpPort,
+    extensionId,
+    (session) => {
+      const events = session?.events ?? [];
+      return !events.some((event) => `${event.message ?? ""}\n${event.stack ?? ""}`.includes("Demo "));
+    },
+    "reload clears stale diagnostics from session",
+    10000
+  );
+  record("reload clears stale diagnostics from panel and session", true);
   await shadowClick(page, 'button[data-tab="element"]');
   await waitForSessionState(
     cdpPort,
@@ -446,6 +507,7 @@ try {
   `);
   assert(reportResponse?.ok, "report generation succeeds");
   assert(reportResponse.report.includes("DevLite 页面诊断报告") || reportResponse.report.includes("DevLite Page Diagnostics Report"), "report has title");
+  assert(!reportResponse.report.includes("Demo console.error") && !reportResponse.report.includes("Demo JS error"), "report excludes cleared diagnostics");
   await writeFile(join(artifactsDir, "report.md"), reportResponse.report);
   record("background report generation works", true, join(artifactsDir, "report.md"));
 

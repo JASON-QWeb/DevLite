@@ -15,6 +15,7 @@ type NetworkTabContext = {
   selected: LiveDiagnosticEvent | null;
   detailTab: NetworkDetailTab;
   filterErrorsOnly: boolean;
+  showDevelopmentTraffic: boolean;
   searchQuery: string;
   listWidth: number;
   slowThreshold: number;
@@ -30,7 +31,7 @@ export function pickSelectedNetworkEvent(events: LiveDiagnosticEvent[], selected
 }
 
 export function renderNetworkTabView(context: NetworkTabContext): string {
-  const { events, matchedCount, selected, t, slowThreshold, totalCount, filterErrorsOnly, searchQuery } = context;
+  const { events, matchedCount, selected, t, slowThreshold, totalCount, filterErrorsOnly, showDevelopmentTraffic, searchQuery } = context;
 
   const failed = events.filter((event) => event.severity === "error" || (typeof event.status === "number" && event.status >= 400)).length;
   const slow = events.filter((event) => typeof event.duration === "number" && event.duration >= slowThreshold).length;
@@ -43,6 +44,7 @@ export function renderNetworkTabView(context: NetworkTabContext): string {
           <button data-action="copy-selected-curl" ${selected ? "" : "disabled"}>${t("copyCurl")}</button>
           <button data-action="clear-network-events" ${totalCount === 0 ? "disabled" : ""}>${t("clearNetworkData")}</button>
           <button data-action="toggle-network-errors" class="${filterErrorsOnly ? "active" : ""}" ${totalCount === 0 ? "disabled" : ""}>${t("errorsOnly")}</button>
+          <button data-action="toggle-development-network" class="${showDevelopmentTraffic ? "active" : ""}" ${totalCount === 0 ? "disabled" : ""}>${t("developmentTraffic")}</button>
           <input data-network-search type="search" value="${escapeHtml(searchQuery)}" placeholder="${t("searchRequests")}" ${totalCount === 0 ? "disabled" : ""} />
         </div>
         <div class="network-summary">

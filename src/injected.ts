@@ -273,22 +273,29 @@ type ImageCropperSession = {
     const startedAt = performance.now();
     const socket = protocols === undefined ? new OriginalWebSocket(url) : new OriginalWebSocket(url, protocols);
     const targetUrl = String(url);
+    const protocolList = normalizeWebSocketProtocols(protocols);
+    const transportMetadata: Record<string, unknown> = {
+      protocols: protocolList,
+      ...classifyWebSocketTransport(protocolList)
+    };
     socket.addEventListener("open", () => {
-      emitTransportEvent("websocket", "open", targetUrl, "WS", Math.round(performance.now() - startedAt), "info");
+      emitTransportEvent("websocket", "open", targetUrl, "WS", Math.round(performance.now() - startedAt), "info", transportMetadata);
     });
     socket.addEventListener("error", () => {
-      emitTransportEvent("websocket", "error", targetUrl, "WS", Math.round(performance.now() - startedAt), "error");
+      emitTransportEvent("websocket", "error", targetUrl, "WS", Math.round(performance.now() - startedAt), "error", transportMetadata);
     });
     socket.addEventListener("close", (event) => {
       const severity = event.wasClean ? "info" : "warning";
       emitTransportEvent("websocket", `close:${event.code}`, targetUrl, "WS", Math.round(performance.now() - startedAt), severity, {
+        ...transportMetadata,
         reason: event.reason,
         wasClean: event.wasClean
       });
     });
     socket.addEventListener("message", (event) => {
       if (!settings.collectResponseBody) return;
-      emitTransportEvent("websocket", "message", targetUrl, "WS", undefined, "info", undefined, summarizeBody(event.data));
+      if (transportMetadata.devTransport) return;
+      emitTransportEvent("websocket", "message", targetUrl, "WS", undefined, "info", transportMetadata, summarizeBody(event.data));
     });
     return socket;
   } as unknown as typeof WebSocket;
@@ -755,6 +762,15 @@ type ImageCropperSession = {
         ...metadata
       }
     });
+  }
+
+  function normalizeWebSocketProtocols(protocols?: string | string[]): string[] {
+    if (Array.isArray(protocols)) return protocols.filter((protocol) => typeof protocol === "string" && protocol.length > 0);
+    return typeof protocols === "string" && protocols.length > 0 ? [protocols] : [];
+  }
+
+  function classifyWebSocketTransport(protocols: string[]): Record<string, unknown> {
+    return protocols.includes("vite-hmr") ? { devTransport: "vite-hmr" } : {};
   }
 
   function collectFetchRequestHeaders(request: Request | null, init?: RequestInit): Record<string, string> {

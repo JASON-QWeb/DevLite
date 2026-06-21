@@ -59,6 +59,11 @@ import { renderSettingsTabView } from "./content/views/settingsTab";
 import { renderSkillTabView } from "./content/views/skillTab";
 import { renderStyleEditorView } from "./content/views/styleEditorView";
 import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
+import {
+  diagnosticScopeMetadata,
+  isStaleDiagnosticScopeEvent,
+  type DiagnosticScope
+} from "./shared/diagnosticScope";
 import { generateRepairPromptForChanges } from "./shared/exporters";
 import type {
   DiagnosticFilter,
@@ -88,6 +93,7 @@ type PanelUiState = {
 
 const PANEL_SCROLL_SELECTORS = [".panel-content", ".network-list", ".network-detail", ".payload-preview", ".payload-raw", "pre"];
 const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "performance", "settings", "skill"];
+const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
 (() => {
   const isolatedWindow = window as any;
@@ -99,6 +105,8 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
   const pageMessageToken = randomId();
   const pageLoadId = randomId();
   let pageMutationVersion = 0;
+  let diagnosticGeneration = 0;
+  let diagnosticScopeResetTimer: number | null = null;
   let verificationTimer: number | null = null;
   let verificationPromise: Promise<void> | null = null;
   let verificationRerunRequested = false;
@@ -125,6 +133,7 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
   let networkDetailTab: NetworkDetailTab = "preview";
   let networkErrorOnly = false;
   let networkSearchQuery = "";
+  let showDevelopmentNetworkTraffic = false;
   let networkListWidth = 260;
   let panelGestureActive = false;
   let diagnosticFilter: DiagnosticFilter = "issues";
@@ -137,7 +146,12 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
   const diagnosticEvents = new DiagnosticEventStore();
   let diagnosticRevision = 0;
   let performanceInsightsCache: { key: string; time: number; value: PerformanceInsights } | null = null;
-  let sessionSnapshot: { events?: LiveDiagnosticEvent[]; styleChanges?: StyleChange[]; archivedStyleChanges?: ArchivedStyleChange[] } | null = null;
+  let sessionSnapshot: {
+    diagnosticScope?: DiagnosticScope;
+    events?: LiveDiagnosticEvent[];
+    styleChanges?: StyleChange[];
+    archivedStyleChanges?: ArchivedStyleChange[];
+  } | null = null;
   let styleChangeSyncPromise: Promise<any> | null = null;
   let imageReplaceInput: HTMLInputElement | null = null;
   let imageCropperController: ImageCropperController | null = null;
@@ -196,8 +210,10 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
     if (imageCropperController?.handlePageMessage(data)) return;
     if (!data.event) return;
     if (!captureActive) return;
-    rememberDiagnosticEvent(data.event);
-    diagnosticEventBatcher.enqueue(data.event);
+    const diagnosticEvent = stampDiagnosticEvent(data.event as LiveDiagnosticEvent);
+    if (shouldDropDiagnosticEvent(diagnosticEvent)) return;
+    rememberDiagnosticEvent(diagnosticEvent);
+    diagnosticEventBatcher.enqueue(diagnosticEvent);
     updateLauncherStatus();
     schedulePanelRender();
   });
@@ -315,12 +331,16 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
     if (message?.type === "devlite-start-capture") {
       captureGeneration += 1;
       captureActive = true;
+      diagnosticGeneration += 1;
       sessionSettings = mergePanelSettings(message.settings ?? {});
       uiLocale = normalizeLocale(sessionSettings.locale);
       applyOverlayTheme();
+      pruneStaleDiagnosticEventsForCurrentScope();
+      void sendRuntime({ type: "reset-diagnostic-scope", diagnosticScope: currentDiagnosticScope("capture-start") }).catch(handleAsyncError);
       void sendRuntime({ type: "page-context", page: getPageContext() }).catch(handleAsyncError);
       postControlMessage({ type: "start", settings: sessionSettings });
       performanceMonitor.start();
+      schedulePanelRender();
       return { ok: true };
     }
 
@@ -328,6 +348,7 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
       captureGeneration += 1;
       captureStartPromise = null;
       captureActive = false;
+      clearDiagnosticScopeResetTimer();
       flushDiagnosticEvents();
       postControlMessage({ type: "stop" });
       performanceMonitor.stop();
@@ -378,6 +399,9 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
       if (!hasPageMutation) return;
       pageMutationVersion += 1;
       scheduleExportedStyleVerification();
+      if (captureActive && hasSignificantDiagnosticMutation(mutations)) {
+        scheduleDiagnosticScopeReset("page-update");
+      }
     });
     observer.observe(document.documentElement, {
       attributes: true,
@@ -385,6 +409,120 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
       characterData: true,
       subtree: true
     });
+  }
+
+  function hasSignificantDiagnosticMutation(mutations: MutationRecord[]): boolean {
+    return mutations.some((mutation) => {
+      const target = mutation.target;
+      if (target instanceof Node && overlayHost?.contains(target)) return false;
+
+      if (mutation.type === "childList") {
+        if (target === document.head) return true;
+        const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
+        return changedNodes.some(isSignificantDiagnosticNode);
+      }
+
+      if (mutation.type === "attributes" && target instanceof Element) {
+        const tagName = target.tagName.toLowerCase();
+        return (tagName === "link" || tagName === "script") && ["href", "src", "rel", "type"].includes(mutation.attributeName ?? "");
+      }
+
+      if (mutation.type === "characterData") {
+        const parent = target.parentElement;
+        const tagName = parent?.tagName.toLowerCase();
+        return tagName === "style" || tagName === "script";
+      }
+
+      return false;
+    });
+  }
+
+  function isSignificantDiagnosticNode(node: Node): boolean {
+    if (node instanceof Element && overlayHost?.contains(node)) return false;
+    if (!(node instanceof HTMLElement)) return false;
+    const tagName = node.tagName.toLowerCase();
+    if (tagName === "style" || tagName === "script" || tagName === "link") return true;
+    if (node.querySelector("style, script, link")) return true;
+    if (node.matches("main, section, article, [data-root], #root, #__next")) return true;
+    return node.querySelectorAll("*").length >= 3;
+  }
+
+  function scheduleDiagnosticScopeReset(reason: string): void {
+    if (diagnosticScopeResetTimer !== null) {
+      window.clearTimeout(diagnosticScopeResetTimer);
+    }
+    diagnosticScopeResetTimer = window.setTimeout(() => {
+      diagnosticScopeResetTimer = null;
+      void resetDiagnosticScope(reason).catch(handleAsyncError);
+    }, DIAGNOSTIC_SCOPE_RESET_DELAY);
+  }
+
+  function clearDiagnosticScopeResetTimer(): void {
+    if (diagnosticScopeResetTimer === null) return;
+    window.clearTimeout(diagnosticScopeResetTimer);
+    diagnosticScopeResetTimer = null;
+  }
+
+  async function resetDiagnosticScope(reason: string): Promise<void> {
+    if (!captureActive) return;
+    diagnosticGeneration += 1;
+    const scope = currentDiagnosticScope(reason);
+    const changed = pruneStaleDiagnosticEventsForCurrentScope();
+    const response = await sendRuntime({ type: "reset-diagnostic-scope", diagnosticScope: scope });
+    if (response?.session) {
+      sessionSnapshot = response.session;
+      mergeSessionEvents(sessionSnapshot?.events ?? []);
+    }
+    if (changed) {
+      schedulePanelRender();
+    }
+  }
+
+  function currentDiagnosticScope(reason?: string): DiagnosticScope {
+    const scope: DiagnosticScope = {
+      pageLoadId,
+      diagnosticGeneration,
+      mutationVersion: pageMutationVersion,
+      updatedAt: Date.now()
+    };
+    if (reason) scope.reason = reason;
+    return scope;
+  }
+
+  function stampDiagnosticEvent(event: LiveDiagnosticEvent): LiveDiagnosticEvent {
+    return {
+      ...event,
+      metadata: {
+        ...(event.metadata ?? {}),
+        ...diagnosticScopeMetadata(currentDiagnosticScope())
+      }
+    };
+  }
+
+  function pruneStaleDiagnosticEventsForCurrentScope(): boolean {
+    const scope = currentDiagnosticScope();
+    const isStale = (event: LiveDiagnosticEvent) => isStaleDiagnosticScopeEvent(event, scope);
+    diagnosticEventBatcher.removeWhere(isStale);
+    const removed = diagnosticEvents.removeWhere(isStale);
+    const previousSelectedNetworkEventId = selectedNetworkEventId;
+    let removedFromSnapshot = 0;
+    if (sessionSnapshot) {
+      const nextEvents = (sessionSnapshot.events ?? []).filter((event) => !isStale(event));
+      removedFromSnapshot = (sessionSnapshot.events ?? []).length - nextEvents.length;
+      sessionSnapshot = {
+        ...sessionSnapshot,
+        diagnosticScope: scope,
+        events: nextEvents
+      };
+    }
+    if (removed === 0 && removedFromSnapshot === 0) return false;
+    if (previousSelectedNetworkEventId && !diagnosticEvents.all.some((event) => event.id === previousSelectedNetworkEventId)) {
+      selectedNetworkEventId = null;
+    }
+    diagnosticRevision += 1;
+    invalidatePerformanceInsights();
+    updateLauncherStatus();
+    return true;
   }
 
   function t(key: ContentTextKey): string {
@@ -694,6 +832,12 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
     }
     if (action === "toggle-network-errors") {
       networkErrorOnly = !networkErrorOnly;
+      selectedNetworkEventId = null;
+      renderPanel();
+      return;
+    }
+    if (action === "toggle-development-network") {
+      showDevelopmentNetworkTraffic = !showDevelopmentNetworkTraffic;
       selectedNetworkEventId = null;
       renderPanel();
       return;
@@ -1216,17 +1360,19 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
   }
 
   function renderNetworkTab(): string {
-    const allEvents = getNetworkEvents();
-    const matchedEvents = getVisibleNetworkEvents(allEvents);
+    const storedEvents = getStoredNetworkEvents();
+    const tabEvents = getNetworkTabEvents(storedEvents);
+    const matchedEvents = getVisibleNetworkEvents(tabEvents);
     const events = matchedEvents.slice(0, 100);
     const selected = getSelectedNetworkEvent(events);
     return renderNetworkTabView({
       events,
-      totalCount: allEvents.length,
+      totalCount: storedEvents.length,
       matchedCount: matchedEvents.length,
       selected,
       detailTab: networkDetailTab,
       filterErrorsOnly: networkErrorOnly,
+      showDevelopmentTraffic: showDevelopmentNetworkTraffic,
       searchQuery: networkSearchQuery,
       listWidth: networkListWidth,
       slowThreshold: Number(sessionSettings.slowRequestThreshold ?? 2000),
@@ -1245,12 +1391,28 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
   }
 
   function getSelectedNetworkEventForAction(): LiveDiagnosticEvent | null {
-    const events = getVisibleNetworkEvents(getNetworkEvents()).slice(0, 100);
+    const events = getVisibleNetworkEvents(getNetworkTabEvents(getStoredNetworkEvents())).slice(0, 100);
     return getSelectedNetworkEvent(events);
   }
 
   function isNetworkErrorEvent(event: LiveDiagnosticEvent): boolean {
     return event.severity === "error" || (typeof event.status === "number" && event.status >= 400);
+  }
+
+  function shouldDropDiagnosticEvent(event: LiveDiagnosticEvent): boolean {
+    return isStaleDiagnosticScopeEvent(event, currentDiagnosticScope()) || (isDevelopmentNetworkEvent(event) && event.metadata?.event === "message");
+  }
+
+  function isDevelopmentNetworkEvent(event: LiveDiagnosticEvent): boolean {
+    if (event.type !== "network") return false;
+    const metadata = event.metadata ?? {};
+    if (metadata.devTransport) return true;
+    return metadataStringList(metadata.protocols).includes("vite-hmr");
+  }
+
+  function metadataStringList(value: unknown): string[] {
+    if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+    return typeof value === "string" ? [value] : [];
   }
 
   function filterDiagnosticEvents(events: LiveDiagnosticEvent[]): LiveDiagnosticEvent[] {
@@ -1270,7 +1432,10 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
     return filtered.filter((event) => {
       const status = typeof event.status === "number" ? String(event.status) : event.severity;
       const contentType = typeof event.metadata?.contentType === "string" ? event.metadata.contentType : "";
-      return [event.method ?? "GET", event.url ?? "", status, contentType, event.message ?? ""].some((value) =>
+      const source = typeof event.metadata?.source === "string" ? event.metadata.source : "";
+      const devTransport = typeof event.metadata?.devTransport === "string" ? event.metadata.devTransport : "";
+      const eventName = typeof event.metadata?.event === "string" ? event.metadata.event : "";
+      return [event.method ?? "GET", event.url ?? "", status, contentType, source, devTransport, eventName, event.message ?? ""].some((value) =>
         value.toLowerCase().includes(query)
       );
     });
@@ -1607,11 +1772,11 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
   }
 
   function sendDiagnosticEvent(event: Record<string, unknown>): void {
-    const diagnosticEvent = {
+    const diagnosticEvent = stampDiagnosticEvent({
       id: randomId(),
       timestamp: Date.now(),
       ...event
-    } as LiveDiagnosticEvent;
+    } as LiveDiagnosticEvent);
     rememberDiagnosticEvent(diagnosticEvent);
     diagnosticEventBatcher.enqueue(diagnosticEvent);
     updateLauncherStatus();
@@ -1642,7 +1807,11 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
     captureGeneration = generation;
 
     captureStartPromise = (async () => {
-      const response = await sendRuntime({ type: "start-page-capture", page: getPageContext() });
+      const response = await sendRuntime({
+        type: "start-page-capture",
+        page: getPageContext(),
+        diagnosticScope: currentDiagnosticScope("page-load")
+      });
       if (generation !== captureGeneration) return;
       if (!response?.ok) {
         toast(response?.error || t("startCaptureFailed"));
@@ -1652,6 +1821,7 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
       uiLocale = normalizeLocale(sessionSettings.locale);
       sessionSnapshot = response.session ?? null;
       captureActive = true;
+      pruneStaleDiagnosticEventsForCurrentScope();
       mergeSessionEvents(sessionSnapshot?.events ?? []);
       void sendRuntime({ type: "page-context", page: getPageContext() }).catch(handleAsyncError);
       postControlMessage({ type: "start", settings: sessionSettings });
@@ -1698,6 +1868,7 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
     uiLocale = normalizeLocale(sessionSettings.locale);
     applyOverlayTheme();
     sessionSnapshot = response.session ?? null;
+    pruneStaleDiagnosticEventsForCurrentScope();
     mergeSessionEvents(sessionSnapshot?.events ?? []);
     if (shouldSyncSettings) syncInjectedSettings();
     scheduleExportedStyleVerification();
@@ -1740,8 +1911,9 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
   }
 
   function mergeSessionEvents(events: LiveDiagnosticEvent[]): void {
-    diagnosticEvents.merge(events);
-    if (events.length > 0) {
+    const nextEvents = events.filter((event) => !shouldDropDiagnosticEvent(event));
+    diagnosticEvents.merge(nextEvents);
+    if (nextEvents.length > 0) {
       diagnosticRevision += 1;
       invalidatePerformanceInsights();
       updateLauncherStatus();
@@ -1749,11 +1921,19 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
   }
 
   function getProblemEvents(): LiveDiagnosticEvent[] {
-    return diagnosticEvents.getProblemEvents();
+    return diagnosticEvents.getProblemEvents().filter((event) => !shouldDropDiagnosticEvent(event) && !isDevelopmentNetworkEvent(event));
   }
 
   function getNetworkEvents(): LiveDiagnosticEvent[] {
-    return diagnosticEvents.getNetworkEvents();
+    return getStoredNetworkEvents().filter((event) => !isDevelopmentNetworkEvent(event));
+  }
+
+  function getStoredNetworkEvents(): LiveDiagnosticEvent[] {
+    return diagnosticEvents.getNetworkEvents().filter((event) => !shouldDropDiagnosticEvent(event));
+  }
+
+  function getNetworkTabEvents(events: LiveDiagnosticEvent[]): LiveDiagnosticEvent[] {
+    return showDevelopmentNetworkTraffic ? events : events.filter((event) => !isDevelopmentNetworkEvent(event));
   }
 
   async function clearNetworkEvents(): Promise<void> {
@@ -1776,7 +1956,7 @@ const PANEL_TAB_ORDER: OverlayTab[] = ["element", "diagnostics", "network", "per
   }
 
   function getConsoleLogEvents(): LiveDiagnosticEvent[] {
-    return diagnosticEvents.getConsoleLogEvents();
+    return diagnosticEvents.getConsoleLogEvents().filter((event) => !shouldDropDiagnosticEvent(event));
   }
 
   function groupDiagnosticEvents(events: LiveDiagnosticEvent[]): DiagnosticGroup[] {

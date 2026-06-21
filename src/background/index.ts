@@ -4,6 +4,7 @@ import { generateExport } from "../shared/exporters";
 import { generateMarkdownReport } from "../shared/report";
 import { sanitizeEvent, sanitizeSession } from "../shared/redaction";
 import { normalizeUiTheme } from "../shared/themes";
+import { isStaleDiagnosticScopeEvent, type DiagnosticScope } from "../shared/diagnosticScope";
 import { sessionStore } from "./sessionStore";
 import type {
   DiagnosticEvent,
@@ -140,6 +141,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     await ensureInjectedScript(tabId);
     const page = message.page ?? (tab ? createFallbackPageContext(tab) : undefined);
     if (!page) return { ok: false, error: await backgroundText("missingPageInfo") };
+    const diagnosticScope = normalizeDiagnosticScope(message.diagnosticScope);
     const session = await sessionStore.update(tabId, (current) => {
       const next = current ?? createSession(tabId, page as PageContext);
       next.active = true;
@@ -148,6 +150,9 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
         ...(page as PageContext),
         startedAt: next.page.startedAt
       };
+      if (diagnosticScope) {
+        applyDiagnosticScopeReset(next, diagnosticScope);
+      }
       next.updatedAt = Date.now();
       return next;
     });
@@ -222,6 +227,15 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
       events.map((event: unknown) => sanitizeEvent(event as DiagnosticEvent, settings))
     );
     return { ok: true };
+  }
+
+  if (type === "reset-diagnostic-scope") {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
+    const diagnosticScope = normalizeDiagnosticScope(message.diagnosticScope);
+    if (!diagnosticScope) return { ok: false, error: await backgroundText("invalidMessage") };
+    const session = await resetDiagnosticScope(tabId, diagnosticScope);
+    return { ok: true, session: session ?? null };
   }
 
   if (type === "page-context") {
@@ -364,7 +378,9 @@ async function upsertEvents(tabId: number, events: DiagnosticEvent[]): Promise<v
   if (events.length === 0) return;
   await sessionStore.update(tabId, (session) => {
     if (!session) return undefined;
-    for (const event of events) {
+    const acceptedEvents = events.filter((event) => !session.diagnosticScope || !isStaleDiagnosticScopeEvent(event, session.diagnosticScope));
+    if (acceptedEvents.length === 0) return session;
+    for (const event of acceptedEvents) {
       session.events.push(event);
     }
     if (session.events.length > 500) {
@@ -373,6 +389,37 @@ async function upsertEvents(tabId: number, events: DiagnosticEvent[]): Promise<v
     session.updatedAt = Date.now();
     return session;
   });
+}
+
+async function resetDiagnosticScope(tabId: number, diagnosticScope: DiagnosticScope): Promise<DiagnosticSession | undefined> {
+  return sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    applyDiagnosticScopeReset(session, diagnosticScope);
+    return session;
+  });
+}
+
+function applyDiagnosticScopeReset(session: DiagnosticSession, diagnosticScope: DiagnosticScope): void {
+  session.diagnosticScope = diagnosticScope;
+  session.events = (session.events ?? []).filter((event) => !isStaleDiagnosticScopeEvent(event, diagnosticScope));
+  session.updatedAt = Date.now();
+}
+
+function normalizeDiagnosticScope(value: unknown): DiagnosticScope | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as Record<string, unknown>;
+  if (typeof input.pageLoadId !== "string" || input.pageLoadId.length === 0) return null;
+  const diagnosticGeneration = typeof input.diagnosticGeneration === "number" ? input.diagnosticGeneration : NaN;
+  const mutationVersion = typeof input.mutationVersion === "number" ? input.mutationVersion : NaN;
+  const updatedAt = typeof input.updatedAt === "number" ? input.updatedAt : NaN;
+  if (!Number.isFinite(diagnosticGeneration) || !Number.isFinite(mutationVersion)) return null;
+  return {
+    pageLoadId: input.pageLoadId,
+    diagnosticGeneration,
+    mutationVersion,
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+    reason: typeof input.reason === "string" ? input.reason : undefined
+  };
 }
 
 async function upsertStyleChange(tabId: number, change: StyleChange): Promise<void> {

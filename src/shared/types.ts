@@ -84,6 +84,14 @@ export interface DiagnosticEvent {
   metadata?: Record<string, unknown>;
 }
 
+export interface DiagnosticScope {
+  pageLoadId: string;
+  diagnosticGeneration: number;
+  mutationVersion: number;
+  updatedAt: number;
+  reason?: string;
+}
+
 export interface StyleChange {
   id: string;
   selector: string;
@@ -156,6 +164,7 @@ export interface DiagnosticSession {
   tabId: number;
   active: boolean;
   page: PageContext;
+  diagnosticScope?: DiagnosticScope;
   events: DiagnosticEvent[];
   styleChanges: StyleChange[];
   archivedStyleChanges: ArchivedStyleChange[];

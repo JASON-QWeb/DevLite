@@ -16,7 +16,8 @@ export function summarizeNetworkData(event: LiveDiagnosticEvent, text: NetworkSu
   if (body) return summarizePayload(body, text, locale);
   const contentType = typeof event.metadata?.contentType === "string" ? event.metadata.contentType : "";
   const source = typeof event.metadata?.source === "string" ? event.metadata.source : "network";
-  return [contentType, source, typeof event.duration === "number" ? `${event.duration}ms` : ""].filter(Boolean).join(" / ") || text.noResponseBodyCollected;
+  const transportEvent = typeof event.metadata?.event === "string" ? event.metadata.event : "";
+  return [contentType, source, transportEvent, typeof event.duration === "number" ? `${event.duration}ms` : ""].filter(Boolean).join(" / ") || text.noResponseBodyCollected;
 }
 
 export function renderPayloadPanel(value: string | undefined, emptyText: string, locale: UiLocale): string {

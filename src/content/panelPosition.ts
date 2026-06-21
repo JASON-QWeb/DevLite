@@ -12,14 +12,15 @@ export class PanelPositionController {
 
   apply(panel: HTMLElement | null): void {
     if (!panel) return;
-    if (this.position.width) panel.style.width = `${this.position.width}px`;
-    if (this.position.height) panel.style.height = `${this.position.height}px`;
+    if (this.position.width) panel.style.width = `${clampPanelWidth(this.position.width)}px`;
+    if (this.position.height) panel.style.height = `${clampPanelHeight(this.position.height)}px`;
     const rect = panel.getBoundingClientRect();
     const width = Math.min(rect.width || 760, window.innerWidth - 16);
     const maxLeft = Math.max(8, window.innerWidth - width - 8);
     const maxTop = Math.max(8, window.innerHeight - Math.min(rect.height || 80, window.innerHeight - 16) - 8);
     const initialLeft = Math.max(8, window.innerWidth - width - 16);
     this.position = {
+      ...this.position,
       left: Math.min(Math.max(8, this.position.left ?? initialLeft), maxLeft),
       top: Math.min(Math.max(8, this.position.top), maxTop)
     };
@@ -115,6 +116,15 @@ export class PanelPositionController {
       panel.style.width = `${pendingWidth}px`;
       panel.style.height = `${pendingHeight}px`;
     };
+    const updatePendingSize = (width: number, height: number) => {
+      pendingWidth = Math.round(width);
+      pendingHeight = Math.round(height);
+      this.position = {
+        ...this.position,
+        width: pendingWidth,
+        height: pendingHeight
+      };
+    };
     const scheduleSize = () => {
       if (frameId !== null) return;
       frameId = window.requestAnimationFrame(applySize);
@@ -123,8 +133,7 @@ export class PanelPositionController {
     const onMove = (moveEvent: PointerEvent) => {
       const nextWidth = Math.min(Math.max(320, rect.width + moveEvent.clientX - startX), maxWidth);
       const nextHeight = Math.min(Math.max(280, rect.height + moveEvent.clientY - startY), maxHeight);
-      pendingWidth = nextWidth;
-      pendingHeight = nextHeight;
+      updatePendingSize(nextWidth, nextHeight);
       scheduleSize();
     };
 
@@ -140,8 +149,8 @@ export class PanelPositionController {
       panel.removeEventListener("pointermove", onMove);
       panel.removeEventListener("pointerup", onUp);
       panel.removeEventListener("pointercancel", onUp);
-      this.apply(panel);
       this.rememberSize(panel);
+      this.apply(panel);
       savePanelPosition(this.position);
       onEnd?.();
     };
@@ -155,10 +164,18 @@ export class PanelPositionController {
     const rect = panel.getBoundingClientRect();
     this.position = {
       ...this.position,
-      width: Math.round(Math.min(Math.max(320, rect.width), window.innerWidth - 16)),
-      height: Math.round(Math.min(Math.max(280, rect.height), window.innerHeight - 16))
+      width: Math.round(clampPanelWidth(rect.width)),
+      height: Math.round(clampPanelHeight(rect.height))
     };
   }
+}
+
+function clampPanelWidth(width: number): number {
+  return Math.min(Math.max(320, width), window.innerWidth - 16);
+}
+
+function clampPanelHeight(height: number): number {
+  return Math.min(Math.max(280, height), window.innerHeight - 16);
 }
 
 function loadPanelPosition(): PanelPosition {

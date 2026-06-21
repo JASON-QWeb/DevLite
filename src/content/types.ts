@@ -1,7 +1,25 @@
 import type { ContentLocale } from "./i18n";
-import type { ArchivedStyleChange, ElementAncestor, ElementLocator, ImageEditMetadata, MatchedCssRule, StyleChange, StyleChangeArchiveReason } from "../shared/types";
+import type {
+  ArchivedStyleChange,
+  DiagnosticScope,
+  ElementAncestor,
+  ElementLocator,
+  ImageEditMetadata,
+  MatchedCssRule,
+  StyleChange,
+  StyleChangeArchiveReason
+} from "../shared/types";
 
-export type { ArchivedStyleChange, ElementAncestor, ElementLocator, ImageEditMetadata, MatchedCssRule, StyleChange, StyleChangeArchiveReason };
+export type {
+  ArchivedStyleChange,
+  DiagnosticScope,
+  ElementAncestor,
+  ElementLocator,
+  ImageEditMetadata,
+  MatchedCssRule,
+  StyleChange,
+  StyleChangeArchiveReason
+};
 
 export type InlineTextEditState = {
   element: HTMLElement;
