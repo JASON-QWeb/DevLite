@@ -1,8 +1,8 @@
 {
   "extensionName": {
-    "message": "DevLite"
+    "message": "DevLite: Real-time HTML Editing and Page Diagnostics"
   },
   "extensionDescription": {
-    "message": "Diagnose pages, record live edits, and generate repair prompts for agents directly in the browser."
+    "message": "Edit HTML in real time, diagnose page issues, and generate Agent repair tasks directly in the browser."
   }
 }

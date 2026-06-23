@@ -1,8 +1,8 @@
 {
   "extensionName": {
-    "message": "DevLite"
+    "message": "DevLite：实时 HTML 编辑与页面诊断"
   },
   "extensionDescription": {
-    "message": "直接在浏览器中诊断页面、记录改动，并生成 Agent 修复任务。"
+    "message": "在浏览器中实时编辑 HTML、诊断页面问题，并生成 Agent 修复任务"
   }
 }
