@@ -13,7 +13,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "readme:images": "npm run build && node scripts/generate-readme-covers.mjs",
     "store:images": "npm run build && node scripts/generate-store-images.mjs",
-    "zip": "npm run build && rm -f devlite.zip && cd dist && zip -r ../devlite.zip ."
+    "zip": "npm run build && rm -f devlite-v$npm_package_version.zip && cd dist && zip -r ../devlite-v$npm_package_version.zip ."
   },
   "devDependencies": {
     "@types/chrome": "^0.0.306",
