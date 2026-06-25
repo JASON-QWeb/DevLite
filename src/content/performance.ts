@@ -313,7 +313,7 @@ function pushWebVitalIssues(webVitals: WebVitals, issues: PerformanceIssue[], co
 
 function pushRuntimePerformanceIssues(webVitals: WebVitals, memory: MemoryInfo | null, issues: PerformanceIssue[], context: PerformanceContext): void {
   const { locale } = context;
-  if (typeof webVitals.fps === "number" && webVitals.fps < 50) {
+  if (typeof webVitals.fps === "number" && webVitals.fps < 40) {
     issues.push({
       title: locale === "en" ? "Low frame rate" : "帧率偏低",
       severity: webVitals.fps < 30 ? "error" : "warning",

@@ -18,6 +18,7 @@ export class PerformanceMonitor {
   private fpsWindowStarted = 0;
   private fpsFrames = 0;
   private memoryTimerId: number | null = null;
+  private lastMemoryWarningAt = 0;
 
   constructor(private readonly options: PerformanceMonitorOptions) {}
 
@@ -52,6 +53,7 @@ export class PerformanceMonitor {
       window.clearInterval(this.memoryTimerId);
       this.memoryTimerId = null;
     }
+    this.lastMemoryWarningAt = 0;
     this.fpsWindowStarted = 0;
     this.fpsFrames = 0;
   }
@@ -190,7 +192,7 @@ export class PerformanceMonitor {
         const fps = Math.round((this.fpsFrames * 1000) / elapsed);
         this.options.sendDiagnosticEvent({
           type: "performance",
-          severity: fps < 30 ? "error" : fps < 50 ? "warning" : "info",
+          severity: fps < 30 ? "error" : fps < 40 ? "warning" : "info",
           message: webVitalMessage(this.options.getLocale(), "FPS", String(fps)),
           metadata: {
             kind: "fps",
@@ -220,19 +222,25 @@ export class PerformanceMonitor {
       const memory = getMemoryInfo();
       if (!memory) return;
       const ratio = memory.jsHeapSizeLimit > 0 ? memory.usedJSHeapSize / memory.jsHeapSizeLimit : 0;
-      this.options.sendDiagnosticEvent({
-        type: "performance",
-        severity: ratio >= 0.8 ? "warning" : "info",
-        message: memoryMessage(this.options.getLocale(), memory.usedJSHeapSize, memory.jsHeapSizeLimit),
-        metadata: {
-          kind: "memory",
-          value: Math.round((memory.usedJSHeapSize / 1024 / 1024) * 10) / 10,
-          usedJSHeapSize: memory.usedJSHeapSize,
-          totalJSHeapSize: memory.totalJSHeapSize,
-          jsHeapSizeLimit: memory.jsHeapSizeLimit,
-          ratio: Math.round(ratio * 1000) / 1000
+      const now = Date.now();
+      if (ratio < 0.8 || now - this.lastMemoryWarningAt >= 30000) {
+        if (ratio >= 0.8) {
+          this.lastMemoryWarningAt = now;
         }
-      });
+        this.options.sendDiagnosticEvent({
+          type: "performance",
+          severity: ratio >= 0.8 ? "warning" : "info",
+          message: memoryMessage(this.options.getLocale(), memory.usedJSHeapSize, memory.jsHeapSizeLimit),
+          metadata: {
+            kind: "memory",
+            value: Math.round((memory.usedJSHeapSize / 1024 / 1024) * 10) / 10,
+            usedJSHeapSize: memory.usedJSHeapSize,
+            totalJSHeapSize: memory.totalJSHeapSize,
+            jsHeapSizeLimit: memory.jsHeapSizeLimit,
+            ratio: Math.round(ratio * 1000) / 1000
+          }
+        });
+      }
     };
     reportMemory();
     this.memoryTimerId = window.setInterval(reportMemory, 5000);
