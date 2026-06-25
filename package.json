@@ -8,11 +8,9 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build && node scripts/build-classic-scripts.mjs",
-    "smoke": "npm run build && node scripts/smoke.mjs",
-    "qa": "npm run build && node scripts/qa-extension.mjs",
+    "smoke": "npm run build && node tests/smoke.mjs",
+    "test": "npm run smoke",
     "preview": "vite preview --host 127.0.0.1",
-    "readme:images": "npm run build && node scripts/generate-readme-covers.mjs",
-    "store:images": "npm run build && node scripts/generate-store-images.mjs",
     "zip": "npm run build && rm -f devlite-v$npm_package_version.zip && cd dist && zip -r ../devlite-v$npm_package_version.zip ."
   },
   "devDependencies": {
