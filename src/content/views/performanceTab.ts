@@ -6,6 +6,7 @@ type PerformanceTabContext = {
   insights: PerformanceInsights;
   settings: Required<PanelSettings>;
   settingsOpen: boolean;
+  openIssueKeys: Set<string>;
   performanceEvents: LiveDiagnosticEvent[];
   resourceEntries: PerformanceResourceTiming[];
   t: (key: ContentTextKey) => string;
@@ -15,6 +16,10 @@ type PerformanceTabContext = {
 };
 
 type MetricLookup = Map<string, { label: string; value: string; note: string }>;
+
+export function performanceIssueKey(issue: PerformanceIssue): string {
+  return `issue-${stableHash(JSON.stringify([issue.severity, issue.title, issue.detail, issue.evidence]))}`;
+}
 
 export function renderPerformanceTabView(context: PerformanceTabContext): string {
   const { insights, settingsOpen, t } = context;
@@ -188,15 +193,16 @@ function renderPerformanceIssues(context: PerformanceTabContext): string {
           <strong>${t("performanceIssues")}</strong>
           <span>${insights.issues.length}</span>
         </div>
-        ${insights.issues.map(renderPerformanceIssue).join("")}
+        ${insights.issues.map((issue) => renderPerformanceIssue(issue, context.openIssueKeys.has(performanceIssueKey(issue)))).join("")}
       </section>
     `;
 }
 
-function renderPerformanceIssue(issue: PerformanceIssue): string {
+function renderPerformanceIssue(issue: PerformanceIssue, open: boolean): string {
+  const key = performanceIssueKey(issue);
   return `
-      <details class="perf-issue-row ${issue.severity}">
-        <summary>
+      <details class="perf-issue-row ${issue.severity}" data-performance-issue-key="${escapeHtml(key)}" ${open ? "open" : ""}>
+        <summary data-performance-issue-toggle="${escapeHtml(key)}">
           <b>${escapeHtml(issue.severity)}</b>
           <span>${escapeHtml(issue.title)}</span>
           <small>${escapeHtml(issue.detail)}</small>
@@ -205,6 +211,15 @@ function renderPerformanceIssue(issue: PerformanceIssue): string {
         <p>${escapeHtml(issue.suggestion)}</p>
       </details>
     `;
+}
+
+function stableHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function renderPerformanceEvidence(context: PerformanceTabContext): string {

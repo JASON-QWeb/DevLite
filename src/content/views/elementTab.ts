@@ -40,6 +40,9 @@ export function summarizeStyleChange(change: StyleChange, context: Pick<ElementT
   if (change.domAfter !== undefined) {
     parts.unshift(change.domAction || context.t("elementDom"));
   }
+  if (change.requirement?.text.trim()) {
+    parts.unshift(context.t("requirementDescription"));
+  }
   return parts.length > 0 ? parts.join(context.locale === "en" ? ", " : "、") : context.t("selectedNoEdits");
 }
 
@@ -112,6 +115,7 @@ function renderStyleChangeRecord(change: StyleChange, index: number, context: El
         </div>
         ${renderSelectorPath(change.selector)}
         <p>${escapeHtml(summarizeStyleChange(change, context))}</p>
+        ${renderRequirementSummary(change, context)}
         ${mode === "verifying" ? renderVerificationMeta(change, context) : ""}
       </article>
     `;
@@ -132,9 +136,17 @@ function renderArchivedStyleChangeRecord(item: ArchivedStyleChange, index: numbe
       </div>
       ${renderSelectorPath(change.selector)}
       <p>${escapeHtml(summarizeStyleChange(change, context))}</p>
+      ${renderRequirementSummary(change, context)}
       <p class="style-record-status">${escapeHtml(archiveReasonLabel(item, context))}</p>
     </article>
   `;
+}
+
+function renderRequirementSummary(change: StyleChange, context: Pick<ElementTabContext, "locale" | "t">): string {
+  const text = change.requirement?.text.trim();
+  if (!text) return "";
+  const separator = context.locale === "en" ? ": " : "：";
+  return `<p class="style-record-requirement">${escapeHtml(context.t("requirementDescription"))}${separator}${escapeHtml(truncateLabel(text, 160))}</p>`;
 }
 
 function renderVerificationMeta(change: StyleChange, context: ElementTabContext): string {

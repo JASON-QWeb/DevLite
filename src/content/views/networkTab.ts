@@ -22,7 +22,7 @@ type NetworkTabContext = {
   t: (key: ContentTextKey) => string;
   formatUrl: (value: string) => string;
   summarizeNetworkData: (event: LiveDiagnosticEvent) => string;
-  renderPayloadPanel: (value: string | undefined, emptyText: string) => string;
+  renderPayloadPanel: (value: string | undefined, emptyText: string, mode?: "preview" | "raw") => string;
 };
 
 export function pickSelectedNetworkEvent(events: LiveDiagnosticEvent[], selectedId: string | null): LiveDiagnosticEvent | null {
@@ -103,6 +103,7 @@ function renderNetworkDetail(event: LiveDiagnosticEvent, context: NetworkTabCont
         ${networkDetailButton("response", context.t("response"), context.detailTab)}
         ${networkDetailButton("request", context.t("request"), context.detailTab)}
         ${networkDetailButton("headers", context.t("headers"), context.detailTab)}
+        <button type="button" class="detail-copy-button primary" data-action="copy-selected-network-detail">${context.t("copyCurrentView")}</button>
       </div>
       ${renderNetworkDetailBody(event, context)}
     `;
@@ -114,7 +115,7 @@ function networkDetailButton(tab: NetworkDetailTab, label: string, activeTab: Ne
 
 function renderNetworkDetailBody(event: LiveDiagnosticEvent, context: NetworkTabContext): string {
   if (context.detailTab === "response") {
-    return context.renderPayloadPanel(event.responseBody, context.t("responseAutoCollecting"));
+    return context.renderPayloadPanel(event.responseBody, context.t("responseAutoCollecting"), "raw");
   }
   if (context.detailTab === "request") {
     const requestHeaders = formatMetadataValue(event.metadata?.requestHeaders);

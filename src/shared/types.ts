@@ -37,6 +37,10 @@ export interface ImageEditMetadata {
   };
 }
 
+export interface RequirementDescription {
+  text: string;
+}
+
 export interface DiagnosticSettings {
   locale: UiLocale;
   uiTheme: UiTheme;
@@ -115,6 +119,7 @@ export interface StyleChange {
   domParentSelector?: string;
   domChildIndex?: number;
   imageEdit?: ImageEditMetadata;
+  requirement?: RequirementDescription;
   exportedAt?: number;
   exportedPageLoadId?: string;
   exportedMutationVersion?: number;
@@ -165,6 +170,7 @@ export interface DiagnosticSession {
   active: boolean;
   page: PageContext;
   diagnosticScope?: DiagnosticScope;
+  collectResponseBody?: boolean;
   events: DiagnosticEvent[];
   styleChanges: StyleChange[];
   archivedStyleChanges: ArchivedStyleChange[];

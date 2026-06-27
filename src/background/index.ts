@@ -21,10 +21,15 @@ const responseBodyCaptureTabs = new Set<number>();
 const LEGACY_CONTENT_SCRIPT_ID = "devlite-content";
 const MAIN_WORLD_SCRIPT_ID = "devlite-main-world-injected";
 const OPEN_SOURCE_URL = "https://github.com/JASON-QWeb/DevLite";
+const ICONIFY_API_URL = "https://api.iconify.design";
+const ICONIFY_REQUEST_TIMEOUT = 8000;
 let settingsCache: DiagnosticSettings | null = null;
 const BACKGROUND_TEXT = {
   zh: {
     invalidMessage: "无效消息",
+    invalidIconifyIcon: "无效 Iconify 图标",
+    iconifySearchFailed: "在线素材加载失败",
+    iconifySvgFailed: "图标加载失败",
     missingTabId: "缺少 tabId",
     missingTabInfo: "缺少 tab 信息",
     missingPageInfo: "缺少页面信息",
@@ -35,6 +40,9 @@ const BACKGROUND_TEXT = {
   },
   en: {
     invalidMessage: "Invalid message",
+    invalidIconifyIcon: "Invalid Iconify icon",
+    iconifySearchFailed: "Could not load online assets",
+    iconifySvgFailed: "Could not load icon",
     missingTabId: "Missing tabId",
     missingTabInfo: "Missing tab information",
     missingPageInfo: "Missing page information",
@@ -46,6 +54,14 @@ const BACKGROUND_TEXT = {
 } as const;
 
 type BackgroundTextKey = keyof typeof BACKGROUND_TEXT.zh;
+
+type IconifyIconAsset = {
+  id: string;
+  prefix: string;
+  name: string;
+  label: string;
+  svg: string;
+};
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(SETTINGS_KEY, (result) => {
@@ -73,9 +89,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   void sessionStore.delete(tabId).catch((error) => console.warn("[DevLite] delete closed tab session failed", error));
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === "loading") {
-    responseBodyCaptureTabs.delete(tabId);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "loading" || changeInfo.url) {
+    void reconcileTabNavigation(tabId, changeInfo.url ?? tab.url).catch((error) => console.warn("[DevLite] reconcile tab navigation failed", error));
   }
 });
 
@@ -118,6 +134,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "get-tab-session") {
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
+    await reconcileTabNavigation(tabId, sender.tab?.url);
     return { ok: true, session: (await sessionStore.get(tabId)) ?? null, settings: await getTabSettings(tabId) };
   }
 
@@ -157,6 +174,9 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
         ...(page as PageContext),
         startedAt: next.page.startedAt
       };
+      if (responseBodyCaptureTabs.has(tabId) || current?.collectResponseBody) {
+        next.collectResponseBody = true;
+      }
       if (diagnosticScope) {
         applyDiagnosticScopeReset(next, diagnosticScope);
       }
@@ -170,6 +190,12 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     responseBodyCaptureTabs.add(tabId);
+    await sessionStore.update(tabId, (session) => {
+      if (!session) return undefined;
+      session.collectResponseBody = true;
+      session.updatedAt = Date.now();
+      return session;
+    });
     return { ok: true, settings: await getTabSettings(tabId) };
   }
 
@@ -179,6 +205,9 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     await ensurePageScripts(tab.id);
     const settings = await getTabSettings(tab.id);
     const session = createSession(tab.id, message.page ?? createFallbackPageContext(tab));
+    if (settings.collectResponseBody) {
+      session.collectResponseBody = true;
+    }
     await sessionStore.set(tab.id, session);
     await chrome.tabs.sendMessage(tab.id, { type: "devlite-start-capture", sessionId: session.id, settings });
     return { ok: true, session };
@@ -187,9 +216,11 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "stop-diagnosis") {
     const tab = await getActiveTab();
     if (typeof tab.id !== "number") throw new Error(await backgroundText("activeTabUnavailable"));
+    responseBodyCaptureTabs.delete(tab.id);
     const session = await sessionStore.update(tab.id, (current) => {
       if (!current) return undefined;
       current.active = false;
+      current.collectResponseBody = false;
       current.page.endedAt = Date.now();
       current.updatedAt = Date.now();
       return current;
@@ -328,6 +359,14 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     return { ok: true, text: generateExport(safeSession, settings, message.format as ExportFormat) };
   }
 
+  if (type === "iconify-search") {
+    return searchIconifyIcons(message);
+  }
+
+  if (type === "iconify-svg") {
+    return fetchIconifyIcon(message);
+  }
+
   if (type === "open-options") {
     await chrome.runtime.openOptionsPage();
     return { ok: true };
@@ -345,6 +384,160 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   }
 
   return { ok: false, error: `${await backgroundText("unknownMessage")}: ${type}` };
+}
+
+async function searchIconifyIcons(message: any): Promise<any> {
+  const queries = normalizeStringList(message.queries ?? message.query, 6, 64);
+  const prefixes = normalizeStringList(message.prefixes, 10, 32).filter(isIconifyName);
+  const limit = clampNumber(message.limit, 1, 24, 18);
+  if (queries.length === 0) return { ok: true, icons: [] };
+
+  try {
+    const iconIds: string[] = [];
+    for (const query of queries) {
+      const ids = await fetchIconifySearchIds(query);
+      iconIds.push(...ids);
+    }
+
+    const firstSeen = new Map<string, number>();
+    for (const id of iconIds) {
+      if (splitIconifyId(id) && !firstSeen.has(id)) {
+        firstSeen.set(id, firstSeen.size);
+      }
+    }
+
+    const rankedIds = Array.from(firstSeen.keys()).sort((a, b) => {
+      const aPrefix = splitIconifyId(a)?.prefix ?? "";
+      const bPrefix = splitIconifyId(b)?.prefix ?? "";
+      const aPrefixRank = preferredPrefixRank(prefixes, aPrefix);
+      const bPrefixRank = preferredPrefixRank(prefixes, bPrefix);
+      return aPrefixRank - bPrefixRank || (firstSeen.get(a) ?? 0) - (firstSeen.get(b) ?? 0);
+    });
+
+    const candidates = rankedIds.slice(0, Math.max(limit * 2, limit));
+    const icons: IconifyIconAsset[] = [];
+    for (const icon of await Promise.all(candidates.map(fetchIconifyAsset))) {
+      if (icon) icons.push(icon);
+      if (icons.length >= limit) break;
+    }
+    return { ok: true, icons };
+  } catch (error) {
+    console.warn("[DevLite] iconify search failed", error);
+    return { ok: false, error: await backgroundText("iconifySearchFailed") };
+  }
+}
+
+async function fetchIconifyIcon(message: any): Promise<any> {
+  const prefix = typeof message.prefix === "string" ? message.prefix.trim() : "";
+  const name = typeof message.name === "string" ? message.name.trim() : "";
+  if (!isIconifyName(prefix) || !isIconifyName(name)) {
+    return { ok: false, error: await backgroundText("invalidIconifyIcon") };
+  }
+
+  try {
+    const svg = await fetchIconifySvg(prefix, name);
+    return { ok: true, icon: { id: `${prefix}:${name}`, prefix, name, label: iconifyLabel(name), svg } };
+  } catch (error) {
+    console.warn("[DevLite] iconify svg failed", error);
+    return { ok: false, error: await backgroundText("iconifySvgFailed") };
+  }
+}
+
+async function fetchIconifySearchIds(query: string): Promise<string[]> {
+  const url = new URL(`${ICONIFY_API_URL}/search`);
+  url.searchParams.set("query", query);
+  const data = await fetchJsonWithTimeout(url.toString());
+  const icons = (data as { icons?: unknown[] }).icons;
+  return Array.isArray(icons) ? icons.filter((item): item is string => typeof item === "string" && splitIconifyId(item) !== null) : [];
+}
+
+async function fetchIconifyAsset(id: string): Promise<IconifyIconAsset | null> {
+  const parsed = splitIconifyId(id);
+  if (!parsed) return null;
+  try {
+    const svg = await fetchIconifySvg(parsed.prefix, parsed.name);
+    return {
+      id: `${parsed.prefix}:${parsed.name}`,
+      prefix: parsed.prefix,
+      name: parsed.name,
+      label: iconifyLabel(parsed.name),
+      svg
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchIconifySvg(prefix: string, name: string): Promise<string> {
+  if (!isIconifyName(prefix) || !isIconifyName(name)) {
+    throw new Error(await backgroundText("invalidIconifyIcon"));
+  }
+  const url = `${ICONIFY_API_URL}/${encodeURIComponent(prefix)}/${encodeURIComponent(name)}.svg`;
+  const svg = await fetchTextWithTimeout(url, "image/svg+xml");
+  if (!/^<svg[\s>]/i.test(svg.trim())) {
+    throw new Error(await backgroundText("iconifySvgFailed"));
+  }
+  return svg;
+}
+
+async function fetchJsonWithTimeout(url: string): Promise<unknown> {
+  const text = await fetchTextWithTimeout(url, "application/json");
+  return JSON.parse(text);
+}
+
+async function fetchTextWithTimeout(url: string, accept: string): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ICONIFY_REQUEST_TIMEOUT);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { accept }
+    });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizeStringList(value: unknown, maxItems: number, maxLength: number): string[] {
+  const source = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const item of source) {
+    if (typeof item !== "string") continue;
+    const normalized = item.trim().replace(/\s+/g, " ").slice(0, maxLength);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= maxItems) break;
+  }
+  return result;
+}
+
+function splitIconifyId(id: string): { prefix: string; name: string } | null {
+  const separatorIndex = id.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex !== id.lastIndexOf(":")) return null;
+  const prefix = id.slice(0, separatorIndex);
+  const name = id.slice(separatorIndex + 1);
+  return isIconifyName(prefix) && isIconifyName(name) ? { prefix, name } : null;
+}
+
+function isIconifyName(value: string): boolean {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(value);
+}
+
+function preferredPrefixRank(prefixes: string[], prefix: string): number {
+  const rank = prefixes.indexOf(prefix);
+  return rank >= 0 ? rank : prefixes.length + 1;
+}
+
+function iconifyLabel(name: string): string {
+  return name
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function createSession(tabId: number, page: PageContext): DiagnosticSession {
@@ -564,6 +757,42 @@ async function clearNetworkEvents(tabId: number): Promise<void> {
   });
 }
 
+async function reconcileTabNavigation(tabId: number, nextUrl?: string): Promise<void> {
+  if (!nextUrl) return;
+  const session = await sessionStore.get(tabId);
+  if (!session) {
+    responseBodyCaptureTabs.delete(tabId);
+    return;
+  }
+  if (!session.active) {
+    responseBodyCaptureTabs.delete(tabId);
+    return;
+  }
+  if (!isInjectableUrl(nextUrl) || !isSameOriginUrl(session.page.url, nextUrl)) {
+    responseBodyCaptureTabs.delete(tabId);
+    await deactivateTabSession(tabId);
+  }
+}
+
+async function deactivateTabSession(tabId: number): Promise<void> {
+  await sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    session.active = false;
+    session.collectResponseBody = false;
+    session.page.endedAt = Date.now();
+    session.updatedAt = Date.now();
+    return session;
+  });
+}
+
+function isSameOriginUrl(left: string, right: string): boolean {
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
+}
+
 async function requireSession(tabId: number): Promise<DiagnosticSession> {
   const session = await sessionStore.get(tabId);
   if (!session) {
@@ -690,7 +919,9 @@ async function backgroundText(key: BackgroundTextKey): Promise<string> {
 
 async function getTabSettings(tabId: number): Promise<DiagnosticSettings> {
   const settings = await getSettings();
-  return responseBodyCaptureTabs.has(tabId)
+  const session = await sessionStore.get(tabId);
+  const collectResponseBody = responseBodyCaptureTabs.has(tabId) || (session?.active === true && session.collectResponseBody === true);
+  return collectResponseBody
     ? {
         ...settings,
         collectResponseBody: true
