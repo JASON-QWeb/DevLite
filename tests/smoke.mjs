@@ -59,6 +59,19 @@ assert(!/^\s*export\b/m.test(contentJs), "content.js must not contain top-level 
 assert(!/^\s*import\b/m.test(injectedJs), "injected.js must not contain top-level import");
 assert(!/^\s*export\b/m.test(injectedJs), "injected.js must not contain top-level export");
 
+// These bundle-level checks map to the request-description UI in src/content/views/styleEditorView.ts
+// and the archive/export metadata wired from src/content.ts and src/shared/exporters.ts.
+assert(contentJs.includes("describe-requirement"), "content bundle must expose the requirement description entry action");
+assert(contentJs.includes("requirement-inline"), "content bundle must render the inline request description editor");
+assert(contentJs.includes("data-requirement-input"), "content bundle must render the request description input");
+assert(contentJs.includes("style-editor-resize-handle"), "style editor must include a resize handle");
+assert(contentJs.includes("Describe your request"), "request description placeholder should be concise");
+assert(!contentJs.includes("requirement-modal"), "request description editor should not render as a popup modal");
+assert(contentJs.includes("copy-now"), "content bundle must support immediate requirement prompt copy");
+assert(contentJs.includes("copy-later"), "content bundle must support deferred requirement prompt copy");
+assert(contentJs.includes("requirementDescription"), "content bundle must include structured requirement prompt metadata");
+assert(contentJs.includes("requirementManualArchive"), "content bundle must keep requirement records under manual archive confirmation");
+
 execFileSync(process.execPath, ["--check", join(dist, "content.js")], { stdio: "inherit" });
 execFileSync(process.execPath, ["--check", join(dist, "injected.js")], { stdio: "inherit" });
 execFileSync(process.execPath, ["--check", join(dist, "background.js")], { stdio: "inherit" });

@@ -3,6 +3,7 @@ import {
   applyStyleChange,
   createStyleChange,
   ensureDomChangeBaseline,
+  hasRecordedChange,
   ensureTextChangeBaseline as ensureTextChangeRecordBaseline,
   getPromptableStyleChangeRecords as getPromptableRecordedStyleChanges,
   getStyleChangeRecords as getRecordedStyleChanges,
@@ -22,6 +23,13 @@ import { canEditTextContent as canEditTextContentBase } from "./content/editable
 import { ImageCropperController } from "./content/imageCropper";
 import { bindImageFileInput, type ImageFilePayload } from "./content/imageFileInput";
 import { applyIconReplacement, applyImageReplacement } from "./content/imageReplacement";
+import {
+  DEFAULT_ICON_ASSET_CATEGORY,
+  getIconAssetCategory,
+  getLocalIconAsset,
+  type IconAssetCategoryId,
+  type OnlineIconAsset
+} from "./content/iconAssets";
 import { InlineTextEditor } from "./content/inlineTextEditor";
 import { LauncherDockController } from "./content/launcherDock";
 import { overlayStyles } from "./content/overlayStyles";
@@ -54,11 +62,13 @@ import { renderDiagnosticsTabView } from "./content/views/diagnosticsTab";
 import { renderElementTabView } from "./content/views/elementTab";
 import { pickSelectedNetworkEvent, renderNetworkTabView } from "./content/views/networkTab";
 import { renderPanelShell } from "./content/views/panelShell";
-import { renderPerformanceTabView } from "./content/views/performanceTab";
+import { performanceIssueKey, renderPerformanceTabView } from "./content/views/performanceTab";
 import { renderSettingsTabView } from "./content/views/settingsTab";
 import { renderSkillTabView } from "./content/views/skillTab";
 import { renderStyleEditorView } from "./content/views/styleEditorView";
 import { CONTROL_CHANNEL, PAGE_CHANNEL } from "./shared/channels";
+import { parseSvgMarkup } from "./content/domMutations";
+import { isDevelopmentNetworkEvent as isDevelopmentTrafficEvent } from "./shared/developmentTraffic";
 import {
   diagnosticScopeMetadata,
   isStaleDiagnosticScopeEvent,
@@ -139,6 +149,15 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   let shadow: ShadowRoot | null = null;
   let highlighter: HTMLDivElement | null = null;
   let styleEditor: HTMLDivElement | null = null;
+  let requirementEditorOpen = false;
+  let iconAssetPanelOpen = false;
+  let iconAssetCategory: IconAssetCategoryId = DEFAULT_ICON_ASSET_CATEGORY;
+  let iconAssetSearchQuery = "";
+  let iconAssetOnlineIcons: OnlineIconAsset[] = [];
+  let iconAssetLoading = false;
+  let iconAssetError = "";
+  let iconAssetOnlineSearched = false;
+  let iconAssetRequestVersion = 0;
   let launcherDockController: LauncherDockController | null = null;
   let panel: HTMLDivElement | null = null;
   let panelOpen = false;
@@ -155,6 +174,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   let diagnosticFilter: DiagnosticFilter = "issues";
   let diagnosticSearchQuery = "";
   let performanceSettingsOpen = false;
+  const openPerformanceIssueKeys = new Set<string>();
   let selectedNetworkEventId: string | null = null;
   let uiLocale: UiLocale = "zh";
   let captureStartPromise: Promise<void> | null = null;
@@ -219,7 +239,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     return true;
   });
 
-  void loadUiLocale();
+  void initializeContentState();
 
   window.addEventListener("message", (event) => {
     if (!isTrustedPageMessage(event)) return;
@@ -386,6 +406,11 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     return { ok: false };
   }
 
+  async function initializeContentState(): Promise<void> {
+    await loadUiLocale();
+    await restoreCaptureAfterReload();
+  }
+
   async function loadUiLocale(): Promise<void> {
     try {
       const response = await sendRuntime({ type: "get-settings" });
@@ -396,6 +421,21 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       syncLauncherLabels();
       if (panelOpen) renderPanel();
       if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+    } catch (error) {
+      handleAsyncError(error);
+    }
+  }
+
+  async function restoreCaptureAfterReload(): Promise<void> {
+    try {
+      const response = await sendRuntime({ type: "get-tab-session" });
+      if (!response?.ok || !response.session?.active) return;
+      sessionSettings = mergePanelSettings(response.settings ?? sessionSettings);
+      uiLocale = normalizeLocale(sessionSettings.locale);
+      sessionSnapshot = response.session ?? null;
+      applyOverlayTheme();
+      syncLauncherLabels();
+      await ensureCapture();
     } catch (error) {
       handleAsyncError(error);
     }
@@ -578,6 +618,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     inspectorActive = true;
     ensureOverlay();
     activePanelTab = "element";
+    closeRequirementEditor();
     hideStyleEditor();
     hidePanel();
     void ensureCapture().catch(handleAsyncError);
@@ -713,8 +754,21 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   function hideStyleEditor(): void {
     if (!styleEditor) return;
     styleEditorPositionController.reset();
+    requirementEditorOpen = false;
+    iconAssetPanelOpen = false;
+    iconAssetLoading = false;
+    iconAssetError = "";
+    iconAssetOnlineSearched = false;
+    iconAssetRequestVersion += 1;
     styleEditor.hidden = true;
     styleEditor.innerHTML = "";
+  }
+
+  function closeRequirementEditor(render = false): void {
+    requirementEditorOpen = false;
+    if (render && styleEditor && !styleEditor.hidden) {
+      renderStyleEditor();
+    }
   }
 
   function hidePanel(): void {
@@ -743,10 +797,14 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   function selectElement(element: HTMLElement): void {
     stopInlineTextEdit();
+    closeRequirementEditor();
+    iconAssetPanelOpen = false;
+    iconAssetRequestVersion += 1;
     styleEditorPositionController.reset();
     selectedElement = element;
     updateHighlighter(element);
     currentChange = createStyleChange(element, EDITABLE_PROPS);
+    requirementEditorOpen = true;
     inspectorActive = false;
     document.documentElement.style.cursor = "";
     activePanelTab = "element";
@@ -822,6 +880,9 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
         networkSearchQuery = value;
         selectedNetworkEventId = null;
         renderPanel();
+      },
+      onPerformanceIssueToggle: (key) => {
+        togglePerformanceIssue(key);
       },
       onError: showInteractionError,
       onStartDrag: startPanelDrag,
@@ -904,6 +965,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       ensureResponseBodyCapture,
       eventTypeLabel,
       getCurrentChange: () => currentChange,
+      getNetworkDetailTab: () => networkDetailTab,
       getPanel: () => panel,
       getPendingStyleSync: () => styleChangeSyncPromise,
       getProblemEvents,
@@ -1151,6 +1213,24 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       }, 0);
 
       if (result.status === "verified") {
+        if (hasRequirementDescription(change)) {
+          if (change.verificationStatus !== "waiting" || change.lastVerifyReason !== t("requirementManualArchive")) {
+            updateLocalStyleChanges([change.id], (item) => ({
+              ...item,
+              verificationStatus: "waiting",
+              lastVerifiedAt: Date.now(),
+              lastVerifyReason: t("requirementManualArchive")
+            }));
+            await sendRuntime({
+              type: "style-change-verification-update",
+              id: change.id,
+              status: "waiting",
+              reason: t("requirementManualArchive")
+            });
+            changed = true;
+          }
+          continue;
+        }
         await archiveStyleChangeById(change.id, "verified", result.reason, false);
         changed = true;
         continue;
@@ -1176,6 +1256,10 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     if ((changed || forceRender) && panelOpen && activePanelTab === "element") {
       renderPanel();
     }
+  }
+
+  function hasRequirementDescription(change: StyleChange): boolean {
+    return Boolean(change.requirement?.text.trim());
   }
 
   async function archiveStyleChangeById(
@@ -1253,10 +1337,21 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     const element = getConnectedSelectedElement();
     if (!styleEditor || !element || !currentChange) return;
     styleEditor.hidden = false;
+    styleEditor.classList.toggle("asset-panel-open", iconAssetPanelOpen);
     styleEditor.innerHTML = renderStyleEditorView({
       element,
       change: currentChange,
       canEditText: canEditTextContent(element),
+      requirementOpen: requirementEditorOpen,
+      assetPanel: {
+        open: iconAssetPanelOpen,
+        activeCategory: iconAssetCategory,
+        loading: iconAssetLoading,
+        error: iconAssetError,
+        searchQuery: iconAssetSearchQuery,
+        onlineSearched: iconAssetOnlineSearched,
+        onlineIcons: iconAssetOnlineIcons
+      },
       t
     });
     bindStyleEditorEvents({
@@ -1264,20 +1359,34 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       onAction: handleStyleEditorAction,
       onError: showInteractionError,
       onStartDrag: startStyleEditorDrag,
+      onStartResize: startStyleEditorResize,
       onStyleInput: applyStyle
     });
     updateStyleEditorPosition();
   }
 
-  async function handleStyleEditorAction(action: string): Promise<void> {
+  async function handleStyleEditorAction(action: string, source?: HTMLElement): Promise<void> {
     if (action === "back-panel") {
       hideStyleEditor();
+      closeRequirementEditor();
       hideHighlighter();
       openPanel("element");
       return;
     }
-    if (action === "copy-element") {
-      await copySelectedElement();
+    if (action === "describe-requirement") {
+      openRequirementEditor();
+      return;
+    }
+    if (action === "requirement-cancel") {
+      closeRequirementEditor(true);
+      return;
+    }
+    if (action === "requirement-copy-now") {
+      await handleRequirementEditorAction("copy-now");
+      return;
+    }
+    if (action === "requirement-copy-later") {
+      await handleRequirementEditorAction("copy-later");
       return;
     }
     if (action === "replace-image") {
@@ -1285,7 +1394,31 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       return;
     }
     if (action === "replace-icon") {
-      replaceSelectedIcon();
+      openIconAssetPanel();
+      return;
+    }
+    if (action === "close-icon-assets") {
+      closeIconAssetPanel();
+      return;
+    }
+    if (action === "icon-asset-category") {
+      await selectIconAssetCategory(source?.dataset.assetCategory);
+      return;
+    }
+    if (action === "icon-asset-search") {
+      await searchIconAssetsFromEditor();
+      return;
+    }
+    if (action === "apply-local-icon") {
+      applyLocalIconAsset(source?.dataset.assetId);
+      return;
+    }
+    if (action === "apply-online-icon") {
+      await applyOnlineIconAsset(source?.dataset.iconId);
+      return;
+    }
+    if (action === "apply-manual-icon") {
+      applyManualIconAsset();
       return;
     }
     if (action === "delete-element") {
@@ -1305,11 +1438,91 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     }
   }
 
-  async function copySelectedElement(): Promise<void> {
+  function openRequirementEditor(): void {
     const element = getConnectedSelectedElement();
-    if (!element) return;
-    await copyText(element.outerHTML);
-    toast(t("elementCopied"));
+    if (!element || !currentChange) return;
+    iconAssetPanelOpen = false;
+    iconAssetRequestVersion += 1;
+    requirementEditorOpen = true;
+    renderStyleEditor();
+    window.requestAnimationFrame(() => {
+      styleEditor?.querySelector<HTMLTextAreaElement>("[data-requirement-input]")?.focus();
+    });
+  }
+
+  async function handleRequirementEditorAction(action: "copy-now" | "copy-later"): Promise<void> {
+    const text = styleEditor?.querySelector<HTMLTextAreaElement>("[data-requirement-input]")?.value.trim() ?? "";
+    const change = await prepareRequirementActionChange(text);
+    if (!change) return;
+
+    if (action === "copy-now") {
+      const promptChange = text ? change : styleChangeWithoutRequirement(change);
+      await copyText(generateRepairPromptForChanges([promptChange], uiLocale, getPageContext()));
+      if (hasRecordedChange(promptChange)) {
+        await markStyleChangesExported([promptChange]);
+      }
+      closeRequirementEditor(true);
+      if (panelOpen && activePanelTab === "element") renderPanel();
+      toast(t("requirementPromptCopied"));
+      return;
+    }
+
+    if (action === "copy-later") {
+      closeRequirementEditor();
+      hideStyleEditor();
+      hideHighlighter();
+      openPanel("element");
+      toast(text ? t("requirementSaved") : t("requirementPanelOpened"));
+    }
+  }
+
+  async function prepareRequirementActionChange(text: string): Promise<StyleChange | null> {
+    if (text) return saveRequirementDescription(text);
+    if (!currentChange) return null;
+    const hadRequirement = hasRequirementDescription(currentChange);
+    const nextChange = styleChangeWithoutRequirement({
+      ...currentChange,
+      updatedAt: Date.now()
+    });
+    currentChange = nextChange;
+    if (hasRecordedChange(nextChange)) {
+      syncCurrentChange();
+      if (styleChangeSyncPromise) {
+        await styleChangeSyncPromise.catch(() => null);
+      }
+    } else if (hadRequirement) {
+      await sendRuntime({ type: "style-change-delete", id: nextChange.id });
+      if (sessionSnapshot) {
+        sessionSnapshot = {
+          ...sessionSnapshot,
+          styleChanges: (sessionSnapshot.styleChanges ?? []).filter((change) => change.id !== nextChange.id)
+        };
+      }
+      exportedElementRefs.delete(nextChange.id);
+    }
+    return nextChange;
+  }
+
+  function styleChangeWithoutRequirement(change: StyleChange): StyleChange {
+    const nextChange: StyleChange = {
+      ...change
+    };
+    delete nextChange.requirement;
+    return nextChange;
+  }
+
+  async function saveRequirementDescription(text: string): Promise<StyleChange | null> {
+    if (!currentChange) return null;
+    currentChange = {
+      ...currentChange,
+      requirement: { text },
+      updatedAt: Date.now()
+    };
+    syncCurrentChange();
+    if (styleChangeSyncPromise) {
+      await styleChangeSyncPromise.catch(() => null);
+    }
+    return currentChange;
   }
 
   function deleteSelectedElement(): void {
@@ -1337,6 +1550,9 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   function startImageReplacement(): void {
     if (!getConnectedSelectedElement() || !currentChange || !imageReplaceInput) return;
+    iconAssetPanelOpen = false;
+    iconAssetRequestVersion += 1;
+    if (styleEditor && !styleEditor.hidden) renderStyleEditor();
     imageCropperController?.close(false);
     imageReplaceInput.click();
   }
@@ -1362,17 +1578,172 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     toast(t("imageReplaced"));
   }
 
-  function replaceSelectedIcon(): void {
+  function openIconAssetPanel(): void {
     const element = getConnectedSelectedElement();
     if (!element || !currentChange) return;
-    const value = window.prompt(t("replaceIconPrompt"), "");
-    const next = value?.trim();
+    requirementEditorOpen = false;
+    iconAssetPanelOpen = true;
+    iconAssetError = "";
+    iconAssetLoading = false;
+    iconAssetSearchQuery = "";
+    iconAssetOnlineIcons = [];
+    iconAssetOnlineSearched = false;
+    iconAssetRequestVersion += 1;
+    styleEditor?.style.removeProperty("width");
+    renderStyleEditor();
+  }
+
+  function closeIconAssetPanel(): void {
+    iconAssetPanelOpen = false;
+    iconAssetLoading = false;
+    iconAssetError = "";
+    iconAssetOnlineSearched = false;
+    iconAssetRequestVersion += 1;
+    if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+  }
+
+  async function selectIconAssetCategory(value: string | undefined): Promise<void> {
+    iconAssetCategory = getIconAssetCategory(value).id;
+    iconAssetSearchQuery = "";
+    iconAssetOnlineIcons = [];
+    iconAssetLoading = false;
+    iconAssetError = "";
+    iconAssetOnlineSearched = false;
+    iconAssetRequestVersion += 1;
+    if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+  }
+
+  async function searchIconAssetsFromEditor(): Promise<void> {
+    const query = styleEditor?.querySelector<HTMLInputElement>("[data-icon-asset-search]")?.value.trim() ?? "";
+    iconAssetSearchQuery = query;
+    await loadIconAssetCategory(iconAssetCategory, query);
+  }
+
+  async function loadIconAssetCategory(categoryId: IconAssetCategoryId, queryOverride = ""): Promise<void> {
+    const category = getIconAssetCategory(categoryId);
+    const requestVersion = iconAssetRequestVersion + 1;
+    iconAssetRequestVersion = requestVersion;
+    iconAssetPanelOpen = true;
+    iconAssetLoading = true;
+    iconAssetError = "";
+    iconAssetOnlineSearched = true;
+    iconAssetOnlineIcons = [];
+    if (styleEditor && !styleEditor.hidden) renderStyleEditor();
+
+    const queries = queryOverride ? [queryOverride] : category.queries;
+    let response: any;
+    try {
+      response = await sendRuntime({
+        type: "iconify-search",
+        queries,
+        prefixes: category.prefixes,
+        limit: 18
+      });
+    } catch (error) {
+      if (requestVersion !== iconAssetRequestVersion) return;
+      iconAssetLoading = false;
+      iconAssetError = t("iconAssetLoadFailed");
+      iconAssetOnlineIcons = [];
+      renderStyleEditor();
+      handleAsyncError(error);
+      return;
+    }
+
+    if (requestVersion !== iconAssetRequestVersion) return;
+    iconAssetLoading = false;
+
+    if (!response?.ok) {
+      iconAssetError = response?.error || t("iconAssetLoadFailed");
+      iconAssetOnlineIcons = [];
+      renderStyleEditor();
+      return;
+    }
+
+    const icons: unknown[] = Array.isArray(response.icons) ? response.icons : [];
+    iconAssetOnlineIcons = icons
+      .map((value): OnlineIconAsset | null => {
+        const asset = value as Partial<OnlineIconAsset>;
+        const svg = typeof asset.svg === "string" ? sanitizeIconSvg(asset.svg) : null;
+        if (!svg || typeof asset.id !== "string" || typeof asset.prefix !== "string" || typeof asset.name !== "string") return null;
+        return {
+          id: asset.id,
+          prefix: asset.prefix,
+          name: asset.name,
+          label: typeof asset.label === "string" && asset.label ? asset.label : asset.name,
+          svg
+        };
+      })
+      .filter((asset): asset is OnlineIconAsset => asset !== null);
+    iconAssetError = "";
+    renderStyleEditor();
+  }
+
+  function applyLocalIconAsset(id: string | undefined): void {
+    const asset = getLocalIconAsset(id);
+    if (!asset) {
+      toast(t("iconAssetSvgFailed"));
+      return;
+    }
+    applyIconAssetValue(asset.svg, asset.label);
+  }
+
+  async function applyOnlineIconAsset(id: string | undefined): Promise<void> {
+    if (!id) return;
+    const cached = iconAssetOnlineIcons.find((asset) => asset.id === id);
+    if (cached?.svg) {
+      applyIconAssetValue(cached.svg, cached.label);
+      return;
+    }
+
+    const [prefix, name] = id.split(":");
+    if (!prefix || !name) {
+      toast(t("iconAssetSvgFailed"));
+      return;
+    }
+    let response: any;
+    try {
+      response = await sendRuntime({ type: "iconify-svg", prefix, name });
+    } catch (error) {
+      handleAsyncError(error);
+      toast(t("iconAssetSvgFailed"));
+      return;
+    }
+    const svg = response?.ok && typeof response.icon?.svg === "string" ? sanitizeIconSvg(response.icon.svg) : null;
+    if (!svg) {
+      toast(response?.error || t("iconAssetSvgFailed"));
+      return;
+    }
+    applyIconAssetValue(svg, response.icon.label ?? name);
+  }
+
+  function applyManualIconAsset(): void {
+    const value = styleEditor?.querySelector<HTMLTextAreaElement>("[data-icon-asset-input]")?.value.trim() ?? "";
+    if (!value) {
+      toast(t("iconReplaceEmpty"));
+      return;
+    }
+    applyIconAssetValue(sanitizeManualIconValue(value), t("iconAssetManual"));
+  }
+
+  function sanitizeManualIconValue(value: string): string {
+    if (!/^<svg[\s>]/i.test(value)) return value;
+    return sanitizeIconSvg(value) ?? value;
+  }
+
+  function sanitizeIconSvg(value: string): string | null {
+    return parseSvgMarkup(value)?.outerHTML ?? null;
+  }
+
+  function applyIconAssetValue(value: string, label = ""): void {
+    const element = getConnectedSelectedElement();
+    if (!element || !currentChange) return;
+    const next = value.trim();
     if (!next) {
       toast(t("iconReplaceEmpty"));
       return;
     }
 
-    applyIconReplacement(currentChange, element, next, t("replaceIcon"));
+    applyIconReplacement(currentChange, element, next, label ? `${t("replaceIcon")}: ${label}` : t("replaceIcon"));
     syncCurrentChange();
     updateHighlighter(element);
     updateStyleEditorPosition();
@@ -1386,6 +1757,10 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   function startStyleEditorDrag(event: PointerEvent): void {
     styleEditorPositionController.startDrag(styleEditor, event);
+  }
+
+  function startStyleEditorResize(event: PointerEvent): void {
+    styleEditorPositionController.startResize(styleEditor, event);
   }
 
   function renderDiagnosticsTab(): string {
@@ -1448,15 +1823,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function isDevelopmentNetworkEvent(event: LiveDiagnosticEvent): boolean {
-    if (event.type !== "network") return false;
-    const metadata = event.metadata ?? {};
-    if (metadata.devTransport) return true;
-    return metadataStringList(metadata.protocols).includes("vite-hmr");
-  }
-
-  function metadataStringList(value: unknown): string[] {
-    if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
-    return typeof value === "string" ? [value] : [];
+    return isDevelopmentTrafficEvent(event);
   }
 
   function filterDiagnosticEvents(events: LiveDiagnosticEvent[]): LiveDiagnosticEvent[] {
@@ -1568,10 +1935,16 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function renderPerformanceTab(): string {
+    const insights = getPerformanceInsights();
+    const currentIssueKeys = new Set(insights.issues.map(performanceIssueKey));
+    openPerformanceIssueKeys.forEach((key) => {
+      if (!currentIssueKeys.has(key)) openPerformanceIssueKeys.delete(key);
+    });
     return renderPerformanceTabView({
-      insights: getPerformanceInsights(),
+      insights,
       settings: mergedPanelSettings(),
       settingsOpen: performanceSettingsOpen,
+      openIssueKeys: openPerformanceIssueKeys,
       performanceEvents: getPerformanceEvents(),
       resourceEntries: performance.getEntriesByType("resource") as PerformanceResourceTiming[],
       t,
@@ -1579,6 +1952,16 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       formatUrl,
       formatTime
     });
+  }
+
+  function togglePerformanceIssue(key: string): void {
+    if (!key) return;
+    if (openPerformanceIssueKeys.has(key)) {
+      openPerformanceIssueKeys.delete(key);
+    } else {
+      openPerformanceIssueKeys.add(key);
+    }
+    renderPanel();
   }
 
   async function resetPerformanceSettings(): Promise<void> {
@@ -1726,6 +2109,9 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       toast(t("noEditableText"));
       return;
     }
+    iconAssetPanelOpen = false;
+    iconAssetRequestVersion += 1;
+    if (styleEditor && !styleEditor.hidden) renderStyleEditor();
     inlineTextEditor.start(element);
   }
 
@@ -2104,8 +2490,8 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     );
   }
 
-  function renderPayloadPanel(value: string | undefined, emptyText: string): string {
-    return renderNetworkPayloadPanel(value, emptyText, uiLocale);
+  function renderPayloadPanel(value: string | undefined, emptyText: string, mode: "preview" | "raw" = "preview"): string {
+    return renderNetworkPayloadPanel(value, emptyText, uiLocale, mode);
   }
 
   function formatTime(timestamp: number): string {

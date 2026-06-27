@@ -90,9 +90,13 @@ export function generateMarkdownReport(session: DiagnosticSession, settings: Dia
       const hasTextChange = change.textAfter !== undefined && change.textAfter !== (change.textBefore ?? "");
       const hasDomChange = change.domAfter !== undefined && change.domAfter !== (change.domBefore ?? "");
       const hasImageEdit = Boolean(change.imageEdit);
+      const requirementText = change.requirement?.text.trim() ?? "";
       lines.push(`### ${index + 1}. ${change.elementLabel}`);
       lines.push(`- Selector: \`${change.selector}\``);
       lines.push(`- ${l("文本", "Text")}: ${change.textSnippet || l("无文本", "No text")}`);
+      if (requirementText) {
+        lines.push(`- ${l("描述需求", "Request description")}: ${truncate(requirementText, 800)}`);
+      }
       if (hasImageEdit && change.imageEdit) {
         const { source, crop, output } = change.imageEdit;
         lines.push(

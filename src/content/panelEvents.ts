@@ -10,6 +10,7 @@ type PanelEventsOptions = {
   onNetworkEvent: (id: string | null) => void;
   onNetworkListResize: (event: PointerEvent) => void;
   onNetworkSearch: (value: string) => void;
+  onPerformanceIssueToggle: (key: string) => void;
   onStartDrag: (event: PointerEvent) => void;
   onStartResize: (event: PointerEvent) => void;
   onStyleInput: (prop: string, value: string) => void;
@@ -57,6 +58,14 @@ export function bindPanelEvents(options: PanelEventsOptions): void {
       event.stopPropagation();
       const tab = button.dataset.networkDetail as NetworkDetailTab | undefined;
       if (tab) options.onNetworkDetail(tab);
+    });
+  });
+
+  panel.querySelectorAll<HTMLElement>("[data-performance-issue-toggle]").forEach((summary) => {
+    summary.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      options.onPerformanceIssueToggle(summary.dataset.performanceIssueToggle ?? "");
     });
   });
 

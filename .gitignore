@@ -1,9 +1,12 @@
 node_modules/
 dist/
-demo
+demo/
+store-assets/
+assets/xiaohongshu/
+docs/assets/
+videos/
+.playwright-cli/
+output/
 *.zip
-.DS_Store
 *.log
-output
-.playwright-cli
-videos
+.DS_Store

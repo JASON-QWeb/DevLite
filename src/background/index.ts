@@ -5,6 +5,14 @@ import { generateMarkdownReport } from "../shared/report";
 import { sanitizeEvent, sanitizeSession } from "../shared/redaction";
 import { normalizeUiTheme } from "../shared/themes";
 import { isStaleDiagnosticScopeEvent, type DiagnosticScope } from "../shared/diagnosticScope";
+import {
+  fetchIconifyAsset,
+  fetchIconifySearchIds,
+  fetchIconifySvg,
+  iconifyLabel,
+  isIconifyName,
+  searchIconifyIconAssets
+} from "../shared/iconify";
 import { sessionStore } from "./sessionStore";
 import type {
   DiagnosticEvent,
@@ -18,6 +26,7 @@ import type {
 } from "../shared/types";
 
 const responseBodyCaptureTabs = new Set<number>();
+const lastReconciledTabUrls = new Map<number, string>();
 const LEGACY_CONTENT_SCRIPT_ID = "devlite-content";
 const MAIN_WORLD_SCRIPT_ID = "devlite-main-world-injected";
 const OPEN_SOURCE_URL = "https://github.com/JASON-QWeb/DevLite";
@@ -25,6 +34,9 @@ let settingsCache: DiagnosticSettings | null = null;
 const BACKGROUND_TEXT = {
   zh: {
     invalidMessage: "无效消息",
+    invalidIconifyIcon: "无效 Iconify 图标",
+    iconifySearchFailed: "在线素材加载失败",
+    iconifySvgFailed: "图标加载失败",
     missingTabId: "缺少 tabId",
     missingTabInfo: "缺少 tab 信息",
     missingPageInfo: "缺少页面信息",
@@ -35,6 +47,9 @@ const BACKGROUND_TEXT = {
   },
   en: {
     invalidMessage: "Invalid message",
+    invalidIconifyIcon: "Invalid Iconify icon",
+    iconifySearchFailed: "Could not load online assets",
+    iconifySvgFailed: "Could not load icon",
     missingTabId: "Missing tabId",
     missingTabInfo: "Missing tab information",
     missingPageInfo: "Missing page information",
@@ -70,12 +85,13 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   responseBodyCaptureTabs.delete(tabId);
+  lastReconciledTabUrls.delete(tabId);
   void sessionStore.delete(tabId).catch((error) => console.warn("[DevLite] delete closed tab session failed", error));
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === "loading") {
-    responseBodyCaptureTabs.delete(tabId);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "loading" || changeInfo.url) {
+    void reconcileTabNavigation(tabId, changeInfo.url ?? tab.url).catch((error) => console.warn("[DevLite] reconcile tab navigation failed", error));
   }
 });
 
@@ -118,6 +134,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "get-tab-session") {
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
+    await reconcileTabNavigation(tabId, sender.tab?.url);
     return { ok: true, session: (await sessionStore.get(tabId)) ?? null, settings: await getTabSettings(tabId) };
   }
 
@@ -157,6 +174,9 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
         ...(page as PageContext),
         startedAt: next.page.startedAt
       };
+      if (responseBodyCaptureTabs.has(tabId) || current?.collectResponseBody) {
+        next.collectResponseBody = true;
+      }
       if (diagnosticScope) {
         applyDiagnosticScopeReset(next, diagnosticScope);
       }
@@ -170,6 +190,12 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     responseBodyCaptureTabs.add(tabId);
+    await sessionStore.update(tabId, (session) => {
+      if (!session) return undefined;
+      session.collectResponseBody = true;
+      session.updatedAt = Date.now();
+      return session;
+    });
     return { ok: true, settings: await getTabSettings(tabId) };
   }
 
@@ -179,6 +205,9 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     await ensurePageScripts(tab.id);
     const settings = await getTabSettings(tab.id);
     const session = createSession(tab.id, message.page ?? createFallbackPageContext(tab));
+    if (settings.collectResponseBody) {
+      session.collectResponseBody = true;
+    }
     await sessionStore.set(tab.id, session);
     await chrome.tabs.sendMessage(tab.id, { type: "devlite-start-capture", sessionId: session.id, settings });
     return { ok: true, session };
@@ -187,9 +216,11 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (type === "stop-diagnosis") {
     const tab = await getActiveTab();
     if (typeof tab.id !== "number") throw new Error(await backgroundText("activeTabUnavailable"));
+    responseBodyCaptureTabs.delete(tab.id);
     const session = await sessionStore.update(tab.id, (current) => {
       if (!current) return undefined;
       current.active = false;
+      current.collectResponseBody = false;
       current.page.endedAt = Date.now();
       current.updatedAt = Date.now();
       return current;
@@ -328,6 +359,14 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     return { ok: true, text: generateExport(safeSession, settings, message.format as ExportFormat) };
   }
 
+  if (type === "iconify-search") {
+    return searchIconifyIcons(message);
+  }
+
+  if (type === "iconify-svg") {
+    return fetchIconifyIcon(message);
+  }
+
   if (type === "open-options") {
     await chrome.runtime.openOptionsPage();
     return { ok: true };
@@ -345,6 +384,35 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   }
 
   return { ok: false, error: `${await backgroundText("unknownMessage")}: ${type}` };
+}
+
+async function searchIconifyIcons(message: any): Promise<any> {
+  try {
+    const icons = await searchIconifyIconAssets(message, {
+      fetchSearchIds: fetchIconifySearchIds,
+      fetchAsset: fetchIconifyAsset
+    });
+    return { ok: true, icons };
+  } catch (error) {
+    console.warn("[DevLite] iconify search failed", error);
+    return { ok: false, error: await backgroundText("iconifySearchFailed") };
+  }
+}
+
+async function fetchIconifyIcon(message: any): Promise<any> {
+  const prefix = typeof message.prefix === "string" ? message.prefix.trim() : "";
+  const name = typeof message.name === "string" ? message.name.trim() : "";
+  if (!isIconifyName(prefix) || !isIconifyName(name)) {
+    return { ok: false, error: await backgroundText("invalidIconifyIcon") };
+  }
+
+  try {
+    const svg = await fetchIconifySvg(prefix, name);
+    return { ok: true, icon: { id: `${prefix}:${name}`, prefix, name, label: iconifyLabel(name), svg } };
+  } catch (error) {
+    console.warn("[DevLite] iconify svg failed", error);
+    return { ok: false, error: await backgroundText("iconifySvgFailed") };
+  }
 }
 
 function createSession(tabId: number, page: PageContext): DiagnosticSession {
@@ -564,6 +632,45 @@ async function clearNetworkEvents(tabId: number): Promise<void> {
   });
 }
 
+async function reconcileTabNavigation(tabId: number, nextUrl?: string): Promise<void> {
+  if (!nextUrl) return;
+  const previousUrl = lastReconciledTabUrls.get(tabId);
+  if (previousUrl === nextUrl) return;
+  lastReconciledTabUrls.set(tabId, nextUrl);
+  const session = await sessionStore.get(tabId);
+  if (!session) {
+    responseBodyCaptureTabs.delete(tabId);
+    return;
+  }
+  if (!session.active) {
+    responseBodyCaptureTabs.delete(tabId);
+    return;
+  }
+  if (!isInjectableUrl(nextUrl) || !isSameOriginUrl(session.page.url, nextUrl)) {
+    responseBodyCaptureTabs.delete(tabId);
+    await deactivateTabSession(tabId);
+  }
+}
+
+async function deactivateTabSession(tabId: number): Promise<void> {
+  await sessionStore.update(tabId, (session) => {
+    if (!session) return undefined;
+    session.active = false;
+    session.collectResponseBody = false;
+    session.page.endedAt = Date.now();
+    session.updatedAt = Date.now();
+    return session;
+  });
+}
+
+function isSameOriginUrl(left: string, right: string): boolean {
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
+}
+
 async function requireSession(tabId: number): Promise<DiagnosticSession> {
   const session = await sessionStore.get(tabId);
   if (!session) {
@@ -690,7 +797,9 @@ async function backgroundText(key: BackgroundTextKey): Promise<string> {
 
 async function getTabSettings(tabId: number): Promise<DiagnosticSettings> {
   const settings = await getSettings();
-  return responseBodyCaptureTabs.has(tabId)
+  const session = await sessionStore.get(tabId);
+  const collectResponseBody = responseBodyCaptureTabs.has(tabId) || (session?.active === true && session.collectResponseBody === true);
+  return collectResponseBody
     ? {
         ...settings,
         collectResponseBody: true

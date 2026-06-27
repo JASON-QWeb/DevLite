@@ -7,6 +7,8 @@ export type NetworkSummaryText = {
   noResponseBodyCollected: string;
 };
 
+export type PayloadPanelMode = "preview" | "raw";
+
 export function hasResponseBody(event: LiveDiagnosticEvent): boolean {
   return typeof event.responseBody === "string" && event.responseBody.length > 0;
 }
@@ -20,12 +22,15 @@ export function summarizeNetworkData(event: LiveDiagnosticEvent, text: NetworkSu
   return [contentType, source, transportEvent, typeof event.duration === "number" ? `${event.duration}ms` : ""].filter(Boolean).join(" / ") || text.noResponseBodyCollected;
 }
 
-export function renderPayloadPanel(value: string | undefined, emptyText: string, locale: UiLocale): string {
+export function renderPayloadPanel(value: string | undefined, emptyText: string, locale: UiLocale, mode: PayloadPanelMode = "preview"): string {
   if (!value) return `<div class="empty compact">${escapeHtml(emptyText)}</div>`;
   const trimmed = value.trim();
   if (!trimmed) return `<div class="empty compact">${escapeHtml(emptyText)}</div>`;
   const parsed = parseJsonPayload(trimmed);
   if (parsed.ok) {
+    if (mode === "raw") {
+      return `<pre class="payload-raw json-raw">${escapeHtml(truncate(JSON.stringify(parsed.value, null, 2), 12000))}</pre>`;
+    }
     return `<div class="payload-preview">${renderJsonPreview(parsed.value, 0, locale)}</div>`;
   }
   return `<pre class="payload-raw">${escapeHtml(truncate(trimmed, 6000))}</pre>`;
@@ -96,9 +101,9 @@ function renderJsonPreview(value: unknown, depth: number, locale: UiLocale): str
     if (value.length === 0) return `<span class="json-muted">[]</span>`;
     const visible = value.slice(0, 8);
     return `
-        <div class="json-node">
-          <strong>Array(${value.length})</strong>
-          ${visible.map((item, index) => `<div class="json-row"><span>${index}</span>${renderJsonPreview(item, depth + 1, locale)}</div>`).join("")}
+        <div class="json-node json-array">
+          <div class="json-node-head"><span class="json-type">Array(${value.length})</span></div>
+          ${visible.map((item, index) => `<div class="json-row"><span class="json-key">${index}</span><div class="json-value">${renderJsonPreview(item, depth + 1, locale)}</div></div>`).join("")}
           ${value.length > visible.length ? `<div class="json-muted">${locale === "en" ? `${value.length - visible.length} more items` : `还有 ${value.length - visible.length} 项`}</div>` : ""}
         </div>
       `;
@@ -107,16 +112,18 @@ function renderJsonPreview(value: unknown, depth: number, locale: UiLocale): str
     const entries = Object.entries(value as Record<string, unknown>);
     if (entries.length === 0) return `<span class="json-muted">{}</span>`;
     return `
-        <div class="json-node">
+        <div class="json-node json-object">
           ${entries
             .slice(0, 18)
-            .map(([key, item]) => `<div class="json-row"><span>${escapeHtml(key)}</span>${renderJsonPreview(item, depth + 1, locale)}</div>`)
+            .map(([key, item]) => `<div class="json-row"><span class="json-key">${escapeHtml(key)}</span><div class="json-value">${renderJsonPreview(item, depth + 1, locale)}</div></div>`)
             .join("")}
           ${entries.length > 18 ? `<div class="json-muted">${locale === "en" ? `${entries.length - 18} more fields` : `还有 ${entries.length - 18} 个字段`}</div>` : ""}
         </div>
       `;
   }
-  if (typeof value === "string") return `<code>${escapeHtml(truncate(value, 360))}</code>`;
-  if (value === null) return `<span class="json-muted">null</span>`;
-  return `<code>${escapeHtml(String(value))}</code>`;
+  if (typeof value === "string") return `<code class="json-token json-string">"${escapeHtml(truncate(value, 800))}"</code>`;
+  if (typeof value === "number") return `<code class="json-token json-number">${escapeHtml(String(value))}</code>`;
+  if (typeof value === "boolean") return `<code class="json-token json-boolean">${String(value)}</code>`;
+  if (value === null) return `<span class="json-token json-null">null</span>`;
+  return `<code class="json-token">${escapeHtml(String(value))}</code>`;
 }

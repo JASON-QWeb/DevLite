@@ -48,7 +48,13 @@ export function getVerifyingStyleChangeRecords(sessionChanges: StyleChange[] | u
 }
 
 export function hasRecordedChange(change: StyleChange): boolean {
-  return Object.keys(change.after).length > 0 || change.textAfter !== undefined || change.htmlAfter !== undefined || change.domAfter !== undefined;
+  return (
+    Object.keys(change.after).length > 0 ||
+    change.textAfter !== undefined ||
+    change.htmlAfter !== undefined ||
+    change.domAfter !== undefined ||
+    Boolean(change.requirement?.text.trim())
+  );
 }
 
 export function applyStyleChange(change: StyleChange, element: HTMLElement, prop: string, value: string): void {

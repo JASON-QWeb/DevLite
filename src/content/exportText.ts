@@ -1,4 +1,4 @@
-import type { LiveDiagnosticEvent } from "./types";
+import type { LiveDiagnosticEvent, NetworkDetailTab } from "./types";
 
 export function buildNetworkEventText(event: LiveDiagnosticEvent): string {
   return [
@@ -15,6 +15,49 @@ export function buildNetworkEventText(event: LiveDiagnosticEvent): string {
     "",
     "[Response headers]",
     formatUnknown(event.metadata?.responseHeaders) || "-",
+    "",
+    "[Response body]",
+    event.responseBody || "-"
+  ].join("\n");
+}
+
+export function buildNetworkDetailText(event: LiveDiagnosticEvent, tab: NetworkDetailTab): string {
+  if (tab === "response") {
+    return event.responseBody || "-";
+  }
+  if (tab === "request") {
+    return [
+      `[Request]`,
+      `${event.method ?? "GET"} ${event.url ?? ""}`,
+      "",
+      "[Request headers]",
+      formatUnknown(event.metadata?.requestHeaders) || "-",
+      "",
+      "[Request body]",
+      event.requestBody || "-"
+    ].join("\n");
+  }
+  if (tab === "headers") {
+    return [
+      "[Request headers]",
+      formatUnknown(event.metadata?.requestHeaders) || "-",
+      "",
+      "[Response headers]",
+      formatUnknown(event.metadata?.responseHeaders) || "-",
+      "",
+      "[Meta]",
+      formatUnknown(event.metadata) || "-"
+    ].join("\n");
+  }
+  const contentType = typeof event.metadata?.contentType === "string" ? event.metadata.contentType : "";
+  const source = typeof event.metadata?.source === "string" ? event.metadata.source : "network";
+  return [
+    `[Preview]`,
+    `${event.method ?? "GET"} ${event.url ?? ""}`,
+    `Source: ${source}`,
+    `Content-Type: ${contentType || "unknown"}`,
+    `Duration: ${typeof event.duration === "number" ? `${event.duration}ms` : "-"}`,
+    `Status: ${typeof event.status === "number" ? event.status : event.severity}`,
     "",
     "[Response body]",
     event.responseBody || "-"

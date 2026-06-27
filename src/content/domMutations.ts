@@ -1,5 +1,71 @@
-const DANGEROUS_SVG_ELEMENTS = "script, foreignObject, use, animate, animateMotion, animateTransform, set";
-const URL_ATTRS = new Set(["href", "xlink:href", "src"]);
+const SAFE_SVG_ELEMENTS = new Set([
+  "svg",
+  "g",
+  "path",
+  "circle",
+  "rect",
+  "line",
+  "polyline",
+  "polygon",
+  "ellipse",
+  "defs",
+  "clippath",
+  "mask",
+  "lineargradient",
+  "radialgradient",
+  "stop",
+  "title",
+  "desc"
+]);
+const SAFE_SVG_ATTRS = new Set([
+  "aria-hidden",
+  "class",
+  "clip-path",
+  "clip-rule",
+  "cx",
+  "cy",
+  "d",
+  "fill",
+  "fill-opacity",
+  "fill-rule",
+  "focusable",
+  "fx",
+  "fy",
+  "gradienttransform",
+  "gradientunits",
+  "height",
+  "id",
+  "mask",
+  "offset",
+  "opacity",
+  "points",
+  "r",
+  "role",
+  "rx",
+  "ry",
+  "spreadmethod",
+  "stop-color",
+  "stop-opacity",
+  "stroke",
+  "stroke-dasharray",
+  "stroke-dashoffset",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "stroke-miterlimit",
+  "stroke-opacity",
+  "stroke-width",
+  "transform",
+  "viewbox",
+  "width",
+  "x",
+  "x1",
+  "x2",
+  "xmlns",
+  "y",
+  "y1",
+  "y2"
+]);
+const SAFE_SVG_URL_ATTRS = new Set(["clip-path", "mask"]);
 
 export function imageReplacementTarget(element: HTMLElement): HTMLImageElement | HTMLSourceElement | SVGImageElement | null {
   if (element instanceof HTMLImageElement || element instanceof HTMLSourceElement) return element;
@@ -11,9 +77,11 @@ export function parseSvgMarkup(value: string): SVGSVGElement | null {
   const parsed = new DOMParser().parseFromString(value, "image/svg+xml");
   const svg = parsed.documentElement;
   if (parsed.querySelector("parsererror")) return null;
-  if (!(svg instanceof SVGSVGElement) || svg.tagName.toLowerCase() !== "svg") return null;
-  sanitizeSvg(svg);
-  return document.importNode(svg, true);
+  if (svg.tagName.toLowerCase() !== "svg") return null;
+  const imported = document.importNode(svg, true) as unknown as SVGSVGElement;
+  sanitizeSvg(imported);
+  normalizeSvgViewBox(imported);
+  return imported;
 }
 
 export function looksLikeImageUrl(value: string): boolean {
@@ -27,24 +95,65 @@ export function snapshotElementHtml(element: HTMLElement, redactInlineImages: bo
 }
 
 function sanitizeSvg(svg: SVGSVGElement): void {
-  svg.querySelectorAll(DANGEROUS_SVG_ELEMENTS).forEach((node) => node.remove());
   svg.querySelectorAll("*").forEach((element) => {
-    for (const attr of Array.from(element.attributes)) {
-      const name = attr.name.toLowerCase();
-      const value = attr.value.trim();
-      const lowerValue = value.toLowerCase();
-      if (
-        name.startsWith("on") ||
-        lowerValue.startsWith("javascript:") ||
-        lowerValue.includes("url(javascript:") ||
-        (URL_ATTRS.has(name) && !isSafeSvgUrl(value))
-      ) {
-        element.removeAttribute(attr.name);
-      }
+    if (!SAFE_SVG_ELEMENTS.has(element.tagName.toLowerCase())) {
+      element.remove();
+      return;
     }
+    sanitizeSvgAttributes(element);
   });
+  sanitizeSvgAttributes(svg);
 }
 
-function isSafeSvgUrl(value: string): boolean {
-  return /^(#|https?:\/\/|data:image\/|blob:|\/|\.\/|\.\.\/)/i.test(value);
+function sanitizeSvgAttributes(element: Element): void {
+  for (const attr of Array.from(element.attributes)) {
+    const name = attr.name.toLowerCase();
+    const value = attr.value.trim();
+    const lowerValue = value.toLowerCase();
+    if (
+      name.startsWith("on") ||
+      !isSafeSvgAttributeName(name) ||
+      lowerValue.startsWith("javascript:") ||
+      hasUnsafeCssUrl(lowerValue) ||
+      (SAFE_SVG_URL_ATTRS.has(name) && !isSafeSvgFragmentReference(value))
+    ) {
+      element.removeAttribute(attr.name);
+    }
+  }
+}
+
+function isSafeSvgAttributeName(name: string): boolean {
+  return SAFE_SVG_ATTRS.has(name) || name.startsWith("aria-");
+}
+
+function isSafeSvgFragmentReference(value: string): boolean {
+  return /^url\(\s*#[^)]+\s*\)$/i.test(value);
+}
+
+function hasUnsafeCssUrl(value: string): boolean {
+  const urlMatches = value.match(/url\(([^)]+)\)/gi) ?? [];
+  return urlMatches.some((match) => !/^url\(\s*#[^)]+\s*\)$/i.test(match));
+}
+
+function normalizeSvgViewBox(svg: SVGSVGElement): void {
+  if (svg.hasAttribute("viewBox") || svg.hasAttribute("viewbox")) return;
+  const width = parseSvgLength(svg.getAttribute("width"));
+  const height = parseSvgLength(svg.getAttribute("height"));
+  if (width && height) {
+    svg.setAttribute("viewBox", `0 0 ${formatSvgNumber(width)} ${formatSvgNumber(height)}`);
+    return;
+  }
+  svg.setAttribute("viewBox", "0 0 24 24");
+}
+
+function parseSvgLength(value: string | null): number | null {
+  if (!value) return null;
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)/);
+  if (!match) return null;
+  const number = Number(match[1]);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function formatSvgNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
 }

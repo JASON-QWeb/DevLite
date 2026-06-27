@@ -1,12 +1,12 @@
 import { copyText } from "./clipboard";
 import { editableTextValue } from "./editableText";
-import { buildAllErrorsText, buildCurlCommand, buildNetworkEventText } from "./exportText";
+import { buildAllErrorsText, buildCurlCommand, buildNetworkDetailText, buildNetworkEventText } from "./exportText";
 import type { ContentTextKey } from "./i18n";
 import { DEFAULT_PANEL_SETTINGS } from "./panelConfig";
 import { collectPanelSettingsForm } from "./settings";
 import { SKILL_INSTALL_PROMPT } from "./skillInstall";
 import { cssBlock } from "./utils";
-import type { LiveDiagnosticEvent, PanelSettings, StyleChange } from "./types";
+import type { LiveDiagnosticEvent, NetworkDetailTab, PanelSettings, StyleChange } from "./types";
 
 type PanelActionContext = {
   applyStyle: (prop: string, value: string) => void;
@@ -19,6 +19,7 @@ type PanelActionContext = {
   getPanel: () => ParentNode | null;
   getPendingStyleSync: () => Promise<any> | null;
   getProblemEvents: () => LiveDiagnosticEvent[];
+  getNetworkDetailTab: () => NetworkDetailTab;
   getSelectedNetworkEvent: () => LiveDiagnosticEvent | null;
   getSelectedElement: () => HTMLElement | null;
   getSettings: () => Required<PanelSettings>;
@@ -158,6 +159,17 @@ export async function handlePanelAction(action: string, context: PanelActionCont
     }
     await copyText(buildNetworkEventText(selectedNetworkEvent));
     toast(t("requestCopied"));
+    return;
+  }
+
+  if (action === "copy-selected-network-detail") {
+    const selectedNetworkEvent = context.getSelectedNetworkEvent();
+    if (!selectedNetworkEvent) {
+      toast(t("noRequestToCopy"));
+      return;
+    }
+    await copyText(buildNetworkDetailText(selectedNetworkEvent, context.getNetworkDetailTab()));
+    toast(t("networkDetailCopied"));
     return;
   }
 
