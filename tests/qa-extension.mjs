@@ -141,6 +141,16 @@ try {
   await ensureLauncher(page, demoUrl, cdpPort, extensionId);
   await shadowClick(page, ".devlite-launcher");
   await waitForEval(page, "!!shadowRoot()?.querySelector('.devlite-panel:not([hidden])')", "panel opens");
+  const panelRect = await evaluate(
+    page,
+    `(() => {
+      const rect = shadowRoot()?.querySelector('.devlite-panel:not([hidden])')?.getBoundingClientRect();
+      return rect ? { width: Math.round(rect.width), height: Math.round(rect.height) } : null;
+    })()`
+  );
+  assert(panelRect?.width >= 900, `default panel width should be at least 900px, got ${panelRect?.width ?? "none"}`);
+  assert(panelRect?.height >= 660, `default panel height should be at least 660px, got ${panelRect?.height ?? "none"}`);
+  record("panel opens at the larger default size", true, `${panelRect.width} x ${panelRect.height}`);
   await waitForSessionState(cdpPort, extensionId, (session) => session?.active === true, "capture session starts").catch(async (error) => {
     const diagnostics = await collectCaptureDiagnostics(cdpPort, extensionId, page).catch((diagnosticError) => ({
       diagnosticError: diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)

@@ -11,6 +11,7 @@ const tempDir = await mkdtemp(join(tmpdir(), "devlite-unit-"));
 try {
   const modules = await bundleSharedModules();
   testDevelopmentTraffic(modules);
+  testPanelPosition(modules);
   await testIconifySearch(modules);
   console.log("DevLite unit checks passed");
 } finally {
@@ -22,11 +23,13 @@ async function bundleSharedModules() {
   const outfile = join(tempDir, "entry.mjs");
   const developmentTrafficPath = moduleSpecifier(entry, join(root, "src/shared/developmentTraffic.ts"));
   const iconifyPath = moduleSpecifier(entry, join(root, "src/shared/iconify.ts"));
+  const panelPositionPath = moduleSpecifier(entry, join(root, "src/content/panelPosition.ts"));
   await writeFile(
     entry,
     `
       export { classifyDevelopmentTransport, isDevelopmentNetworkEvent } from ${JSON.stringify(developmentTrafficPath)};
       export { rankIconifyIds, searchIconifyIconAssets } from ${JSON.stringify(iconifyPath)};
+      export { DEFAULT_PANEL_HEIGHT, DEFAULT_PANEL_WIDTH, clampPanelHeight, clampPanelWidth, resolvePanelSize } from ${JSON.stringify(panelPositionPath)};
     `
   );
   await build({
@@ -80,6 +83,28 @@ function testDevelopmentTraffic(modules) {
     true,
     "pre-classified development traffic should remain development traffic"
   );
+}
+
+function testPanelPosition(modules) {
+  assert.deepEqual(
+    modules.resolvePanelSize({}, { width: 1440, height: 900 }),
+    { width: 920, height: 680 },
+    "initial panel size should use the larger desktop default when no saved size exists"
+  );
+  assert.equal(modules.DEFAULT_PANEL_WIDTH, 920, "default panel width should stay large enough for two-column content");
+  assert.equal(modules.DEFAULT_PANEL_HEIGHT, 680, "default panel height should show enough tab content on first open");
+  assert.deepEqual(
+    modules.resolvePanelSize({ width: 640, height: 500 }, { width: 1440, height: 900 }),
+    { width: 640, height: 500 },
+    "saved user-resized panel dimensions should be preserved"
+  );
+  assert.deepEqual(
+    modules.resolvePanelSize({}, { width: 800, height: 600 }),
+    { width: 768, height: 568 },
+    "initial panel size should clamp to the viewport with a 16px edge gap"
+  );
+  assert.equal(modules.clampPanelWidth(100, 1440), 320, "panel width should not shrink below the desktop minimum");
+  assert.equal(modules.clampPanelHeight(100, 900), 280, "panel height should not shrink below the desktop minimum");
 }
 
 async function testIconifySearch(modules) {

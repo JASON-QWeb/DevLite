@@ -6,30 +6,41 @@ type PanelPosition = {
 };
 
 const PANEL_POSITION_STORAGE_KEY = "devlite.panel.position";
+const PANEL_EDGE_GAP = 16;
+const PANEL_MIN_WIDTH = 320;
+const PANEL_MIN_HEIGHT = 280;
+
+export const DEFAULT_PANEL_WIDTH = 920;
+export const DEFAULT_PANEL_HEIGHT = 680;
+
+type PanelViewport = {
+  width: number;
+  height: number;
+};
 
 export class PanelPositionController {
   private position: PanelPosition = loadPanelPosition();
 
   apply(panel: HTMLElement | null): void {
     if (!panel) return;
-    if (this.position.width) panel.style.width = `${clampPanelWidth(this.position.width)}px`;
-    if (this.position.height) panel.style.height = `${clampPanelHeight(this.position.height)}px`;
+    const viewport = currentViewport();
+    const size = resolvePanelSize(this.position, viewport);
+    panel.style.width = `${size.width}px`;
+    panel.style.height = `${size.height}px`;
     const rect = panel.getBoundingClientRect();
-    const width = Math.min(rect.width || 760, window.innerWidth - 16);
-    const maxLeft = Math.max(8, window.innerWidth - width - 8);
-    const maxTop = Math.max(8, window.innerHeight - Math.min(rect.height || 80, window.innerHeight - 16) - 8);
-    const initialLeft = Math.max(8, window.innerWidth - width - 16);
+    const width = rect.width || size.width;
+    const height = rect.height || size.height;
+    const maxLeft = Math.max(PANEL_EDGE_GAP, viewport.width - width - PANEL_EDGE_GAP);
+    const maxTop = Math.max(PANEL_EDGE_GAP, viewport.height - height - PANEL_EDGE_GAP);
+    const initialLeft = Math.max(PANEL_EDGE_GAP, viewport.width - width - PANEL_EDGE_GAP);
     this.position = {
       ...this.position,
-      left: Math.min(Math.max(8, this.position.left ?? initialLeft), maxLeft),
-      top: Math.min(Math.max(8, this.position.top), maxTop)
+      left: Math.min(Math.max(PANEL_EDGE_GAP, this.position.left ?? initialLeft), maxLeft),
+      top: Math.min(Math.max(PANEL_EDGE_GAP, this.position.top), maxTop)
     };
     panel.style.left = `${this.position.left}px`;
     panel.style.right = "auto";
     panel.style.top = `${this.position.top}px`;
-    if (rect.width > window.innerWidth - 16) panel.style.width = `${window.innerWidth - 16}px`;
-    if (rect.height > window.innerHeight - 16) panel.style.height = `${window.innerHeight - 16}px`;
-    this.rememberSize(panel);
   }
 
   startDrag(panel: HTMLElement | null, event: PointerEvent, onEnd?: () => void): void {
@@ -45,8 +56,8 @@ export class PanelPositionController {
     const pointerId = event.pointerId;
     panel.setPointerCapture(pointerId);
     panel.classList.add("dragging");
-    const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
-    const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
+    const maxLeft = Math.max(PANEL_EDGE_GAP, window.innerWidth - rect.width - PANEL_EDGE_GAP);
+    const maxTop = Math.max(PANEL_EDGE_GAP, window.innerHeight - rect.height - PANEL_EDGE_GAP);
     let frameId: number | null = null;
     let pendingLeft = rect.left;
     let pendingTop = rect.top;
@@ -62,9 +73,10 @@ export class PanelPositionController {
     };
 
     const onMove = (moveEvent: PointerEvent) => {
-      const nextLeft = Math.min(Math.max(8, moveEvent.clientX - offsetX), maxLeft);
-      const nextTop = Math.min(Math.max(8, moveEvent.clientY - offsetY), maxTop);
+      const nextLeft = Math.min(Math.max(PANEL_EDGE_GAP, moveEvent.clientX - offsetX), maxLeft);
+      const nextTop = Math.min(Math.max(PANEL_EDGE_GAP, moveEvent.clientY - offsetY), maxTop);
       this.position = {
+        ...this.position,
         left: nextLeft,
         top: nextTop
       };
@@ -85,7 +97,6 @@ export class PanelPositionController {
       panel.removeEventListener("pointermove", onMove);
       panel.removeEventListener("pointerup", onUp);
       panel.removeEventListener("pointercancel", onUp);
-      this.rememberSize(panel);
       savePanelPosition(this.position);
       onEnd?.();
     };
@@ -106,8 +117,10 @@ export class PanelPositionController {
     const pointerId = event.pointerId;
     panel.setPointerCapture(pointerId);
     panel.classList.add("resizing");
-    const maxWidth = Math.max(320, window.innerWidth - rect.left - 8);
-    const maxHeight = Math.max(280, window.innerHeight - rect.top - 8);
+    const maxWidth = Math.max(0, window.innerWidth - rect.left - PANEL_EDGE_GAP);
+    const maxHeight = Math.max(0, window.innerHeight - rect.top - PANEL_EDGE_GAP);
+    const minWidth = Math.min(PANEL_MIN_WIDTH, maxWidth);
+    const minHeight = Math.min(PANEL_MIN_HEIGHT, maxHeight);
     let frameId: number | null = null;
     let pendingWidth = rect.width;
     let pendingHeight = rect.height;
@@ -131,8 +144,8 @@ export class PanelPositionController {
     };
 
     const onMove = (moveEvent: PointerEvent) => {
-      const nextWidth = Math.min(Math.max(320, rect.width + moveEvent.clientX - startX), maxWidth);
-      const nextHeight = Math.min(Math.max(280, rect.height + moveEvent.clientY - startY), maxHeight);
+      const nextWidth = Math.min(Math.max(minWidth, rect.width + moveEvent.clientX - startX), maxWidth);
+      const nextHeight = Math.min(Math.max(minHeight, rect.height + moveEvent.clientY - startY), maxHeight);
       updatePendingSize(nextWidth, nextHeight);
       scheduleSize();
     };
@@ -149,7 +162,6 @@ export class PanelPositionController {
       panel.removeEventListener("pointermove", onMove);
       panel.removeEventListener("pointerup", onUp);
       panel.removeEventListener("pointercancel", onUp);
-      this.rememberSize(panel);
       this.apply(panel);
       savePanelPosition(this.position);
       onEnd?.();
@@ -160,22 +172,32 @@ export class PanelPositionController {
     panel.addEventListener("pointercancel", onUp);
   }
 
-  private rememberSize(panel: HTMLElement): void {
-    const rect = panel.getBoundingClientRect();
-    this.position = {
-      ...this.position,
-      width: Math.round(clampPanelWidth(rect.width)),
-      height: Math.round(clampPanelHeight(rect.height))
-    };
-  }
 }
 
-function clampPanelWidth(width: number): number {
-  return Math.min(Math.max(320, width), window.innerWidth - 16);
+export function resolvePanelSize(position: Pick<PanelPosition, "width" | "height">, viewport: PanelViewport): { width: number; height: number } {
+  return {
+    width: clampPanelWidth(position.width ?? DEFAULT_PANEL_WIDTH, viewport.width),
+    height: clampPanelHeight(position.height ?? DEFAULT_PANEL_HEIGHT, viewport.height)
+  };
 }
 
-function clampPanelHeight(height: number): number {
-  return Math.min(Math.max(280, height), window.innerHeight - 16);
+export function clampPanelWidth(width: number, viewportWidth: number): number {
+  const maxWidth = Math.max(0, viewportWidth - PANEL_EDGE_GAP * 2);
+  const minWidth = Math.min(PANEL_MIN_WIDTH, maxWidth);
+  return Math.round(Math.min(Math.max(minWidth, width), maxWidth));
+}
+
+export function clampPanelHeight(height: number, viewportHeight: number): number {
+  const maxHeight = Math.max(0, viewportHeight - PANEL_EDGE_GAP * 2);
+  const minHeight = Math.min(PANEL_MIN_HEIGHT, maxHeight);
+  return Math.round(Math.min(Math.max(minHeight, height), maxHeight));
+}
+
+function currentViewport(): PanelViewport {
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight
+  };
 }
 
 function loadPanelPosition(): PanelPosition {
