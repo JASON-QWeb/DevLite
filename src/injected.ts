@@ -277,7 +277,7 @@ type ImageCropperSession = {
     const protocolList = normalizeWebSocketProtocols(protocols);
     const transportMetadata: Record<string, unknown> = {
       protocols: protocolList,
-      ...classifyDevelopmentTransport(targetUrl, protocolList, "websocket")
+      ...classifyDevelopmentTransport(targetUrl, protocolList, "websocket", window.location.href)
     };
     socket.addEventListener("open", () => {
       emitTransportEvent("websocket", "open", targetUrl, "WS", Math.round(performance.now() - startedAt), "info", transportMetadata);
@@ -308,7 +308,7 @@ type ImageCropperSession = {
       const startedAt = performance.now();
       const source = new OriginalEventSource(url, eventSourceInitDict);
       const targetUrl = String(url);
-      const transportMetadata = classifyDevelopmentTransport(targetUrl, [], "eventsource");
+      const transportMetadata = classifyDevelopmentTransport(targetUrl, [], "eventsource", window.location.href);
       source.addEventListener("open", () => {
         emitTransportEvent("eventsource", "open", targetUrl, "SSE", Math.round(performance.now() - startedAt), "info", transportMetadata);
       });

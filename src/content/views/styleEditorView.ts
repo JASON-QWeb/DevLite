@@ -60,7 +60,7 @@ export function renderStyleEditorView({ element, change, canEditText, requiremen
             <button type="button" data-style-action="replace-image">${t("replaceImage")}</button>
             <button type="button" data-style-action="replace-icon" class="${assetPanel.open ? "active" : ""}">${t("replaceIcon")}</button>
             <button type="button" data-style-action="delete-element" class="danger-button">${t("deleteElement")}</button>
-            <button type="button" data-style-action="describe-requirement">${t("copyElement")}</button>
+            <button type="button" data-style-action="describe-requirement">${t("describeRequirement")}</button>
             <button type="button" data-style-action="undo">${t("undo")}</button>
           </div>
           ${requirementOpen ? renderRequirementEditor(change, t) : ""}

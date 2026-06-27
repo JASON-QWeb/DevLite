@@ -214,6 +214,7 @@ function renderPerformanceIssue(issue: PerformanceIssue, open: boolean): string 
 }
 
 function stableHash(value: string): string {
+  // Used only for UI toggle state; a rare collision only reuses a details open key.
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);

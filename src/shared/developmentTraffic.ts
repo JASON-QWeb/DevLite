@@ -11,7 +11,7 @@ const DEV_PROTOCOL_PATTERNS = [
   /webpack/i,
   /livereload/i,
   /react-refresh/i,
-  /next/i
+  /^(?:next|next-hmr|nextjs(?:[-:]?hmr)?|nextjs)$/i
 ];
 
 const DEV_URL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
@@ -29,9 +29,10 @@ const LOCAL_DEV_PORTS = new Set(["3000", "3001", "4200", "5173", "5174", "8000",
 export function classifyDevelopmentTransport(
   url: string | undefined,
   protocols: readonly string[] = [],
-  source: string | undefined = undefined
+  source: string | undefined = undefined,
+  baseUrl: string | undefined = undefined
 ): Record<string, unknown> {
-  const devTransport = developmentTransportName({ url, protocols, source });
+  const devTransport = developmentTransportName({ url, protocols, source, baseUrl });
   return devTransport ? { devTransport } : {};
 }
 
@@ -48,7 +49,7 @@ export function isDevelopmentNetworkEvent(event: NetworkEventLike): boolean {
   );
 }
 
-function developmentTransportName(input: { url?: string; protocols?: readonly string[]; source?: string }): string | null {
+function developmentTransportName(input: { url?: string; protocols?: readonly string[]; source?: string; baseUrl?: string }): string | null {
   const protocols = input.protocols ?? [];
   const protocolMatch = protocols.find((protocol) => DEV_PROTOCOL_PATTERNS.some((pattern) => pattern.test(protocol)));
   if (protocolMatch) return normalizeDevTransport(protocolMatch);
@@ -57,7 +58,7 @@ function developmentTransportName(input: { url?: string; protocols?: readonly st
   const isLongConnection = source === "websocket" || source === "eventsource" || source === "ws" || source === "sse";
   if (!isLongConnection) return null;
 
-  const parsed = parseUrl(input.url);
+  const parsed = parseUrl(input.url, input.baseUrl);
   const target = parsed ? `${parsed.pathname}${parsed.search}` : input.url ?? "";
   const urlMatch = DEV_URL_PATTERNS.find((item) => item.pattern.test(target));
   if (urlMatch) return urlMatch.name;
@@ -79,13 +80,25 @@ function normalizeDevTransport(value: string): string {
   return "hmr";
 }
 
-function parseUrl(value: string | undefined): URL | null {
+function parseUrl(value: string | undefined, baseUrl: string | undefined = undefined): URL | null {
   if (!value) return null;
   try {
-    return new URL(value, location.href);
+    return new URL(value);
+  } catch {
+    // Continue with an explicit or environment base for relative URLs.
+  }
+  const base = baseUrl ?? currentLocationHref();
+  if (!base) return null;
+  try {
+    return new URL(value, base);
   } catch {
     return null;
   }
+}
+
+function currentLocationHref(): string | undefined {
+  const locationLike = (globalThis as { location?: { href?: unknown } }).location;
+  return typeof locationLike?.href === "string" ? locationLike.href : undefined;
 }
 
 function isLocalDevHost(hostname: string): boolean {

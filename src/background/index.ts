@@ -5,6 +5,14 @@ import { generateMarkdownReport } from "../shared/report";
 import { sanitizeEvent, sanitizeSession } from "../shared/redaction";
 import { normalizeUiTheme } from "../shared/themes";
 import { isStaleDiagnosticScopeEvent, type DiagnosticScope } from "../shared/diagnosticScope";
+import {
+  fetchIconifyAsset,
+  fetchIconifySearchIds,
+  fetchIconifySvg,
+  iconifyLabel,
+  isIconifyName,
+  searchIconifyIconAssets
+} from "../shared/iconify";
 import { sessionStore } from "./sessionStore";
 import type {
   DiagnosticEvent,
@@ -18,11 +26,10 @@ import type {
 } from "../shared/types";
 
 const responseBodyCaptureTabs = new Set<number>();
+const lastReconciledTabUrls = new Map<number, string>();
 const LEGACY_CONTENT_SCRIPT_ID = "devlite-content";
 const MAIN_WORLD_SCRIPT_ID = "devlite-main-world-injected";
 const OPEN_SOURCE_URL = "https://github.com/JASON-QWeb/DevLite";
-const ICONIFY_API_URL = "https://api.iconify.design";
-const ICONIFY_REQUEST_TIMEOUT = 8000;
 let settingsCache: DiagnosticSettings | null = null;
 const BACKGROUND_TEXT = {
   zh: {
@@ -55,14 +62,6 @@ const BACKGROUND_TEXT = {
 
 type BackgroundTextKey = keyof typeof BACKGROUND_TEXT.zh;
 
-type IconifyIconAsset = {
-  id: string;
-  prefix: string;
-  name: string;
-  label: string;
-  svg: string;
-};
-
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(SETTINGS_KEY, (result) => {
     if (!result[SETTINGS_KEY]) {
@@ -86,6 +85,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   responseBodyCaptureTabs.delete(tabId);
+  lastReconciledTabUrls.delete(tabId);
   void sessionStore.delete(tabId).catch((error) => console.warn("[DevLite] delete closed tab session failed", error));
 });
 
@@ -387,39 +387,11 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
 }
 
 async function searchIconifyIcons(message: any): Promise<any> {
-  const queries = normalizeStringList(message.queries ?? message.query, 6, 64);
-  const prefixes = normalizeStringList(message.prefixes, 10, 32).filter(isIconifyName);
-  const limit = clampNumber(message.limit, 1, 24, 18);
-  if (queries.length === 0) return { ok: true, icons: [] };
-
   try {
-    const iconIds: string[] = [];
-    for (const query of queries) {
-      const ids = await fetchIconifySearchIds(query);
-      iconIds.push(...ids);
-    }
-
-    const firstSeen = new Map<string, number>();
-    for (const id of iconIds) {
-      if (splitIconifyId(id) && !firstSeen.has(id)) {
-        firstSeen.set(id, firstSeen.size);
-      }
-    }
-
-    const rankedIds = Array.from(firstSeen.keys()).sort((a, b) => {
-      const aPrefix = splitIconifyId(a)?.prefix ?? "";
-      const bPrefix = splitIconifyId(b)?.prefix ?? "";
-      const aPrefixRank = preferredPrefixRank(prefixes, aPrefix);
-      const bPrefixRank = preferredPrefixRank(prefixes, bPrefix);
-      return aPrefixRank - bPrefixRank || (firstSeen.get(a) ?? 0) - (firstSeen.get(b) ?? 0);
+    const icons = await searchIconifyIconAssets(message, {
+      fetchSearchIds: fetchIconifySearchIds,
+      fetchAsset: fetchIconifyAsset
     });
-
-    const candidates = rankedIds.slice(0, Math.max(limit * 2, limit));
-    const icons: IconifyIconAsset[] = [];
-    for (const icon of await Promise.all(candidates.map(fetchIconifyAsset))) {
-      if (icon) icons.push(icon);
-      if (icons.length >= limit) break;
-    }
     return { ok: true, icons };
   } catch (error) {
     console.warn("[DevLite] iconify search failed", error);
@@ -441,103 +413,6 @@ async function fetchIconifyIcon(message: any): Promise<any> {
     console.warn("[DevLite] iconify svg failed", error);
     return { ok: false, error: await backgroundText("iconifySvgFailed") };
   }
-}
-
-async function fetchIconifySearchIds(query: string): Promise<string[]> {
-  const url = new URL(`${ICONIFY_API_URL}/search`);
-  url.searchParams.set("query", query);
-  const data = await fetchJsonWithTimeout(url.toString());
-  const icons = (data as { icons?: unknown[] }).icons;
-  return Array.isArray(icons) ? icons.filter((item): item is string => typeof item === "string" && splitIconifyId(item) !== null) : [];
-}
-
-async function fetchIconifyAsset(id: string): Promise<IconifyIconAsset | null> {
-  const parsed = splitIconifyId(id);
-  if (!parsed) return null;
-  try {
-    const svg = await fetchIconifySvg(parsed.prefix, parsed.name);
-    return {
-      id: `${parsed.prefix}:${parsed.name}`,
-      prefix: parsed.prefix,
-      name: parsed.name,
-      label: iconifyLabel(parsed.name),
-      svg
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function fetchIconifySvg(prefix: string, name: string): Promise<string> {
-  if (!isIconifyName(prefix) || !isIconifyName(name)) {
-    throw new Error(await backgroundText("invalidIconifyIcon"));
-  }
-  const url = `${ICONIFY_API_URL}/${encodeURIComponent(prefix)}/${encodeURIComponent(name)}.svg`;
-  const svg = await fetchTextWithTimeout(url, "image/svg+xml");
-  if (!/^<svg[\s>]/i.test(svg.trim())) {
-    throw new Error(await backgroundText("iconifySvgFailed"));
-  }
-  return svg;
-}
-
-async function fetchJsonWithTimeout(url: string): Promise<unknown> {
-  const text = await fetchTextWithTimeout(url, "application/json");
-  return JSON.parse(text);
-}
-
-async function fetchTextWithTimeout(url: string, accept: string): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ICONIFY_REQUEST_TIMEOUT);
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { accept }
-    });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return response.text();
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function normalizeStringList(value: unknown, maxItems: number, maxLength: number): string[] {
-  const source = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
-  const result: string[] = [];
-  const seen = new Set<string>();
-  for (const item of source) {
-    if (typeof item !== "string") continue;
-    const normalized = item.trim().replace(/\s+/g, " ").slice(0, maxLength);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    result.push(normalized);
-    if (result.length >= maxItems) break;
-  }
-  return result;
-}
-
-function splitIconifyId(id: string): { prefix: string; name: string } | null {
-  const separatorIndex = id.indexOf(":");
-  if (separatorIndex <= 0 || separatorIndex !== id.lastIndexOf(":")) return null;
-  const prefix = id.slice(0, separatorIndex);
-  const name = id.slice(separatorIndex + 1);
-  return isIconifyName(prefix) && isIconifyName(name) ? { prefix, name } : null;
-}
-
-function isIconifyName(value: string): boolean {
-  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(value);
-}
-
-function preferredPrefixRank(prefixes: string[], prefix: string): number {
-  const rank = prefixes.indexOf(prefix);
-  return rank >= 0 ? rank : prefixes.length + 1;
-}
-
-function iconifyLabel(name: string): string {
-  return name
-    .split("-")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 function createSession(tabId: number, page: PageContext): DiagnosticSession {
@@ -759,6 +634,9 @@ async function clearNetworkEvents(tabId: number): Promise<void> {
 
 async function reconcileTabNavigation(tabId: number, nextUrl?: string): Promise<void> {
   if (!nextUrl) return;
+  const previousUrl = lastReconciledTabUrls.get(tabId);
+  if (previousUrl === nextUrl) return;
+  lastReconciledTabUrls.set(tabId, nextUrl);
   const session = await sessionStore.get(tabId);
   if (!session) {
     responseBodyCaptureTabs.delete(tabId);

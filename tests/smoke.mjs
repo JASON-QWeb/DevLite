@@ -58,6 +58,9 @@ assert(!/^\s*import\b/m.test(contentJs), "content.js must not contain top-level 
 assert(!/^\s*export\b/m.test(contentJs), "content.js must not contain top-level export");
 assert(!/^\s*import\b/m.test(injectedJs), "injected.js must not contain top-level import");
 assert(!/^\s*export\b/m.test(injectedJs), "injected.js must not contain top-level export");
+
+// These bundle-level checks map to the request-description UI in src/content/views/styleEditorView.ts
+// and the archive/export metadata wired from src/content.ts and src/shared/exporters.ts.
 assert(contentJs.includes("describe-requirement"), "content bundle must expose the requirement description entry action");
 assert(contentJs.includes("requirement-inline"), "content bundle must render the inline request description editor");
 assert(contentJs.includes("data-requirement-input"), "content bundle must render the request description input");

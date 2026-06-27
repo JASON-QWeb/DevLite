@@ -9,7 +9,10 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build && node scripts/build-classic-scripts.mjs",
     "smoke": "npm run build && node tests/smoke.mjs",
-    "test": "npm run smoke",
+    "unit": "node tests/unit.mjs",
+    "qa": "npm run build && node tests/qa-extension.mjs",
+    "test": "npm run smoke && npm run unit",
+    "test:all": "npm run test && npm run qa",
     "preview": "vite preview --host 127.0.0.1",
     "zip": "npm run build && rm -f devlite-v$npm_package_version.zip && cd dist && zip -r ../devlite-v$npm_package_version.zip ."
   },
