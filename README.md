@@ -37,7 +37,7 @@ English | [中文](./README.zh.md)
 
 [![Get it on Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Get%20Extension-1A73E8?style=for-the-badge&logo=googlechrome&logoColor=white&labelColor=202124)](https://chromewebstore.google.com/detail/devlite/pppajolpipomdlekjlmboemhoadlkgfm)
 &nbsp;&nbsp;
-![Microsoft Edge Add-ons Coming Soon](https://img.shields.io/badge/Microsoft%20Edge%20Add--ons-Coming%20Soon-0A7B83?style=for-the-badge&logo=microsoftedge&logoColor=white&labelColor=202124)
+[![Get it on Microsoft Edge Add-ons](https://img.shields.io/badge/Microsoft%20Edge%20Add--ons-Get%20Extension-0A7B83?style=for-the-badge&logo=microsoftedge&logoColor=white&labelColor=202124)](https://microsoftedge.microsoft.com/addons/detail/devlite/mglelpeocmhnogdgfioljebnonbjdkhj)
 &nbsp;&nbsp;
 
 </div>
