@@ -1,7 +1,9 @@
+import { computedStyle, documentOf, type InspectableElement } from "./domContext";
 import { snapshotElementHtml } from "./domMutations";
 import { editableTextValue } from "./editableText";
 import type { ContentTextKey } from "./i18n";
 import type { StyleChange } from "./types";
+import type { ElementResolution } from "./elementAddress";
 
 export type VerificationResult = {
   status: "verified" | "waiting" | "failed";
@@ -11,35 +13,34 @@ export type VerificationResult = {
 export type VerificationContext = {
   pageLoadId: string;
   mutationVersion: number;
-  exportedElement: HTMLElement | null;
+  exportedElement: InspectableElement | null;
   normalizationRoot: (Node & ParentNode) | null;
   t: (key: ContentTextKey) => string;
+  resolution?: ElementResolution["status"];
+  rootChanged?: boolean;
 };
 
-type InlineSnapshot = Array<{ property: string; value: string; priority: string }>;
-type CssProbeRoot = Node & ParentNode;
-
-const cssNormalizationProbes = new WeakMap<CssProbeRoot, HTMLElement>();
-
-export function verifyStyleChange(change: StyleChange, element: HTMLElement | null, context: VerificationContext): VerificationResult {
+export function verifyStyleChange(change: StyleChange, element: InspectableElement | null, context: VerificationContext): VerificationResult {
   const samePageLoad = !!change.exportedPageLoadId && change.exportedPageLoadId === context.pageLoadId;
   const hasPageMutation =
-    typeof change.exportedMutationVersion === "number" ? context.mutationVersion > change.exportedMutationVersion : false;
+    typeof change.exportedMutationVersion === "number" ? context.mutationVersion > change.exportedMutationVersion || context.rootChanged === true : false;
   const deletedDom = change.domBefore !== undefined && change.domAfter === "";
+
+  if (context.resolution && !["resolved", "target-missing"].includes(context.resolution)) {
+    return { status: "waiting", reason: context.t(context.resolution === "ambiguous" ? "elementAddressAmbiguous" : "elementContextUnavailable") };
+  }
 
   if (!element) {
     if (deletedDom) {
-      if (samePageLoad && !hasPageMutation) {
-        return { status: "waiting", reason: context.t("waitingForPageUpdate") };
-      }
-      return { status: "verified", reason: samePageLoad ? context.t("verifyHotUpdateMatched") : context.t("verifyReloadMatched") };
+      // Absence also means routing, virtualization or a conditional render; it cannot prove a source deletion.
+      return { status: "waiting", reason: context.t("verifyDeletionNeedsConfirmation") };
     }
     return { status: "failed", reason: context.t("verifyMissingElement") };
   }
 
   const sameExportedElement = !!context.exportedElement && context.exportedElement === element;
 
-  if (samePageLoad && !hasPageMutation) {
+  if (samePageLoad && !hasPageMutation && Object.keys(change.after).length === 0) {
     return { status: "waiting", reason: context.t("waitingForPageUpdate") };
   }
 
@@ -69,85 +70,53 @@ export function verifyStyleChange(change: StyleChange, element: HTMLElement | nu
 
 function verifyStyleValues(
   change: StyleChange,
-  element: HTMLElement,
+  element: InspectableElement,
   ignoreMatchingInlineValues: boolean,
   context: VerificationContext
 ): string[] {
   const entries = Object.entries(change.after).filter(([, value]) => value);
   if (entries.length === 0) return [];
 
-  const removedInline = ignoreMatchingInlineValues ? removeMatchingInlineValues(element, entries, context.normalizationRoot) : [];
+  // Resolve relative units, variables and inherited fonts in the target's actual layout context.
+  // All probes are synchronous and the exact inline declaration is restored before paint.
+  const original = element.getAttribute("style");
+  const syntax = documentOf(element).createElement("span").style;
+  const invalid = entries.filter(([property, value]) => { syntax.cssText = ""; syntax.setProperty(property, value); return !syntax.getPropertyValue(property); });
+  if (invalid.length) return invalid.map(([property, value]) => `${property} ${context.t("verifyExpected")} ${value}`);
   try {
-    const computed = getComputedStyle(element);
-    return entries
-      .filter(([property, expected]) => !cssValueEquals(property, computed.getPropertyValue(property), expected, context.normalizationRoot))
+    element.style.setProperty("transition", "none", "important");
+    element.style.setProperty("animation", "none", "important");
+    if (ignoreMatchingInlineValues) {
+      for (const [property, expected] of entries) {
+        syntax.cssText = "";
+        syntax.setProperty(property, expected);
+        if (syntax.getPropertyValue(property) !== element.style.getPropertyValue(property)) continue;
+        const baseline = change.inlineBefore?.[property];
+        if (baseline?.value) element.style.setProperty(property, baseline.value, baseline.priority);
+        else element.style.removeProperty(property);
+      }
+    }
+    const actualStyle = computedStyle(element);
+    const actual = new Map(entries.map(([property]) => [property, actualStyle.getPropertyValue(property).trim()]));
+    for (const [property, expected] of entries) element.style.setProperty(property, expected, "important");
+    const expectedStyle = computedStyle(element);
+    return entries.filter(([property]) => actual.get(property) !== expectedStyle.getPropertyValue(property).trim())
       .map(([property, expected]) => `${property} ${context.t("verifyExpected")} ${expected}`);
   } finally {
-    restoreInlineValues(element, removedInline);
+    if (original === null) element.removeAttribute("style");
+    else element.setAttribute("style", original);
   }
 }
 
-function verifyTextValue(change: StyleChange, element: HTMLElement, context: VerificationContext): string[] {
+function verifyTextValue(change: StyleChange, element: InspectableElement, context: VerificationContext): string[] {
   if (change.textAfter === undefined || change.textAfter === (change.textBefore ?? "")) return [];
   return normalizeText(editableTextValue(element)) === normalizeText(change.textAfter) ? [] : [context.t("verifyTextMismatch")];
 }
 
-function verifyDomValue(change: StyleChange, element: HTMLElement, context: VerificationContext): string[] {
+function verifyDomValue(change: StyleChange, element: InspectableElement, context: VerificationContext): string[] {
   if (change.domAfter === undefined || change.domAfter === (change.domBefore ?? "")) return [];
   const current = snapshotElementHtml(element, true);
   return normalizeHtml(current) === normalizeHtml(change.domAfter) ? [] : [context.t("verifyDomMismatch")];
-}
-
-function removeMatchingInlineValues(
-  element: HTMLElement,
-  entries: Array<[string, string]>,
-  normalizationRoot: CssProbeRoot | null
-): InlineSnapshot {
-  const removed: InlineSnapshot = [];
-  for (const [property, expected] of entries) {
-    const inlineValue = element.style.getPropertyValue(property);
-    if (!inlineValue || !cssValueEquals(property, inlineValue, expected, normalizationRoot)) continue;
-    removed.push({
-      property,
-      value: inlineValue,
-      priority: element.style.getPropertyPriority(property)
-    });
-    element.style.removeProperty(property);
-  }
-  return removed;
-}
-
-function restoreInlineValues(element: HTMLElement, snapshot: InlineSnapshot): void {
-  for (const item of snapshot) {
-    element.style.setProperty(item.property, item.value, item.priority);
-  }
-}
-
-function cssValueEquals(property: string, actual: string, expected: string, normalizationRoot: CssProbeRoot | null): boolean {
-  return normalizeCssValue(property, actual, normalizationRoot) === normalizeCssValue(property, expected, normalizationRoot);
-}
-
-function normalizeCssValue(property: string, value: string, normalizationRoot: CssProbeRoot | null): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  const probe = cssNormalizationProbe(normalizationRoot);
-  probe.style.cssText =
-    "position:absolute;left:-10000px;top:-10000px;width:auto;height:auto;visibility:hidden;pointer-events:none;contain:style layout size;";
-  probe.style.setProperty(property, trimmed);
-  const normalized = getComputedStyle(probe).getPropertyValue(property).trim() || probe.style.getPropertyValue(property).trim();
-  return (normalized || trimmed).replace(/\s+/g, " ").toLowerCase();
-}
-
-function cssNormalizationProbe(root: CssProbeRoot | null): HTMLElement {
-  const targetRoot = root ?? document.documentElement;
-  const existing = cssNormalizationProbes.get(targetRoot);
-  if (existing?.isConnected) return existing;
-
-  const probe = existing ?? document.createElement("div");
-  probe.setAttribute("data-devlite-css-normalizer", "");
-  targetRoot.appendChild(probe);
-  cssNormalizationProbes.set(targetRoot, probe);
-  return probe;
 }
 
 function normalizeText(value: string): string {

@@ -6,6 +6,10 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { runContainerChecks, frameFixtureHtml } from "./qa-containers.mjs";
+import { runDomBoundaryChecks } from "./qa-dom-boundaries.mjs";
+import { frameworkPage, frameworkChild, runFrameworkChecks } from "./qa-frameworks.mjs";
+import { runFrameBoundaryChecks, nestedFrameHtml } from "./qa-frame-boundaries.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const distDir = join(root, "dist");
@@ -17,6 +21,7 @@ const extensionDir = join(extensionRoot, "extension");
 const chromeCacheDir = join(tmpdir(), "devlite-browsers/chrome");
 const execFileAsync = promisify(execFile);
 const results = [];
+const resultsDir = join(root, "output", "qa");
 
 let server;
 let chromeProcess;
@@ -46,9 +51,13 @@ class CdpSession {
     this.ws = ws;
     this.nextId = 1;
     this.pending = new Map();
+    this.events = [];
     ws.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
-      if (!message.id) return;
+      if (!message.id) {
+        if (message.method?.startsWith("Runtime.")) { this.events.push(message); if (this.events.length > 100) this.events.shift(); }
+        return;
+      }
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
@@ -254,11 +263,30 @@ try {
   assert(jsonExport?.ok && JSON.parse(jsonExport.text).page.url.startsWith(demoUrl), "json export should include page context");
   record("background report and export work", true);
 
-  await writeFile(join(tempRoot, "browser-results.json"), JSON.stringify({ demoUrl, results }, null, 2));
-  console.log(`DevLite QA checks passed. Results: ${join(tempRoot, "browser-results.json")}`);
+  await runContainerChecks({ page, evaluate, shadowClick, shadowSetValue, waitForEval, record });
+  await runDomBoundaryChecks({ page, evaluate, shadowClick, shadowSetValue, waitForEval, record, readSession: async () => (await readBackgroundCaptureState(cdpPort, extensionId)).session });
+  await runFrameworkChecks({ page, evaluate, shadowClick, shadowSetValue, waitForEval, record, demoUrl });
+  const extensionPage = await getExtensionStatePage(cdpPort, extensionId);
+  const tabId = (await readBackgroundCaptureState(cdpPort, extensionId)).tab.id;
+  const fromDocument = (message, documentId) => evaluate(extensionPage, `chrome.scripting.executeScript({target:{tabId:${tabId},${documentId ? 'documentIds:'+JSON.stringify([documentId]) : 'frameIds:[0]'}},func:(message)=>chrome.runtime.sendMessage(message),args:[${JSON.stringify(message)}]}).then(results=>results[0]?.result)`);
+  const contexts = () => evaluate(extensionPage, `chrome.scripting.executeScript({target:{tabId:${tabId},allFrames:true},func:()=>globalThis.__DEVLITE_FRAME_INFO__??null}).then(results=>results.filter(r=>r.result).map(r=>({...r.result,documentId:r.documentId,frameId:r.frameId})))`);
+  const restartWorker = async () => {
+    const worker = (await browser.send('Target.getTargets')).targetInfos.find(target=>target.type==='service_worker'&&target.url.startsWith('chrome-extension://'+extensionId));
+    assert(worker, 'extension worker is running before restart');
+    await browser.send('Target.closeTarget', { targetId: worker.targetId });
+  };
+  await runFrameBoundaryChecks({ page, evaluate, shadowClick, shadowSetValue, waitForEval, record, demoUrl, fromDocument, contexts, restartWorker, readSession: async () => (await readBackgroundCaptureState(cdpPort, extensionId)).session });
+
+  await mkdir(resultsDir, { recursive: true });
+  await writeFile(join(resultsDir, "browser-results.json"), JSON.stringify({ demoUrl, results }, null, 2));
+  await rm(join(resultsDir, "failure.png"), { force: true });
+  console.log(`DevLite QA checks passed. Results: ${join(resultsDir, "browser-results.json")}`);
 } catch (error) {
   record("qa run failed", false, error instanceof Error ? error.message : String(error));
-  await writeFile(join(tempRoot, "browser-results.json"), JSON.stringify({ results }, null, 2)).catch(() => null);
+  await mkdir(resultsDir, { recursive: true });
+  await writeFile(join(resultsDir, "browser-results.json"), JSON.stringify({ results, events: page?.events }, null, 2)).catch(() => null);
+  const screenshot = await page?.send("Page.captureScreenshot").catch(() => null);
+  if (screenshot?.data) await writeFile(join(resultsDir, "failure.png"), Buffer.from(screenshot.data, "base64"));
   throw error;
 } finally {
   await statePage?.close().catch(() => null);
@@ -337,6 +365,31 @@ async function startDemoServer(dir, port) {
   let sequence = 0;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
+    const libraries = {
+      '/framework-lib/wujie.js': 'node_modules/wujie/lib/index.js',
+      '/framework-lib/qiankun.js': 'node_modules/qiankun/dist/index.umd.min.js',
+      '/framework-lib/micro.js': 'node_modules/@micro-zoe/micro-app/lib/index.umd.js'
+    };
+    if (libraries[url.pathname]) {
+      response.writeHead(200, { 'content-type': 'application/javascript' });
+      response.end(readFileSync(join(root, libraries[url.pathname])));
+      return;
+    }
+    if (url.pathname === '/framework' || url.pathname === '/framework-child' || url.pathname === '/empty') {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'access-control-allow-origin': '*' });
+      response.end(url.pathname === '/framework' ? frameworkPage(url.searchParams.get('kind')) : url.pathname === '/framework-child' ? frameworkChild(url.searchParams.get('kind')) : '<!doctype html><html><body></body></html>');
+      return;
+    }
+    if (url.pathname === "/frame-fixture") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(frameFixtureHtml);
+      return;
+    }
+    if (url.pathname === '/nested-frame') {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(nestedFrameHtml(url));
+      return;
+    }
     if (url.pathname === "/" || url.pathname === "/index.html") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(readFileSync(join(dir, "index.html"), "utf8"));

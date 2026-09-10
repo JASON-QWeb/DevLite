@@ -1,6 +1,6 @@
 {
   "name": "devlite",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -17,11 +17,14 @@
     "zip": "npm run build && rm -f devlite-v$npm_package_version.zip && cd dist && zip -r ../devlite-v$npm_package_version.zip ."
   },
   "devDependencies": {
+    "@micro-zoe/micro-app": "1.0.0-rc.32",
     "@types/chrome": "^0.0.306",
     "@types/node": "^22.15.29",
     "esbuild": "^0.25.12",
+    "qiankun": "2.10.16",
     "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "wujie": "2.1.0"
   },
   "dependencies": {
     "cropperjs": "^2.1.1"

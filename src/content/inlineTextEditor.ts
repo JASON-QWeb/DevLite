@@ -1,4 +1,5 @@
 import { focusEditableElement } from "./editableText";
+import { documentOf, isHtmlElement, type InspectableElement } from "./domContext";
 import type { ContentTextKey } from "./i18n";
 
 type InlineTextEditState = {
@@ -9,10 +10,12 @@ type InlineTextEditState = {
   onBlur: () => void;
   onKeydown: (event: KeyboardEvent) => void;
   onPaste: (event: ClipboardEvent) => void;
+  onCompositionStart: () => void;
+  onCompositionEnd: () => void;
 };
 
 type InlineTextEditorOptions = {
-  canEdit: (element: HTMLElement) => boolean;
+  canEdit: (element: InspectableElement) => boolean;
   ensureBaseline: (element: HTMLElement) => void;
   isCurrentElement: (element: HTMLElement) => boolean;
   onChange: (element: HTMLElement) => void;
@@ -31,8 +34,8 @@ export class InlineTextEditor {
     return this.state !== null;
   }
 
-  start(element: HTMLElement | null): void {
-    if (!element || !this.options.canEdit(element)) {
+  start(element: InspectableElement | null): void {
+    if (!isHtmlElement(element) || !this.options.canEdit(element)) {
       this.options.toast(this.options.t("noEditableText"));
       return;
     }
@@ -45,6 +48,8 @@ export class InlineTextEditor {
     this.stop();
     this.options.ensureBaseline(element);
 
+    let composing = false;
+    let blurPending = false;
     const state: InlineTextEditState = {
       element,
       previousContentEditable: element.getAttribute("contenteditable"),
@@ -55,9 +60,11 @@ export class InlineTextEditor {
         this.options.onChange(element);
       },
       onBlur: () => {
-        this.stop();
+        if (composing) blurPending = true;
+        else this.stop();
       },
       onKeydown: (event: KeyboardEvent) => {
+        if (event.isComposing) return;
         if (event.key === "Escape") {
           event.preventDefault();
           this.stop();
@@ -68,7 +75,13 @@ export class InlineTextEditor {
         const text = event.clipboardData?.getData("text/plain");
         if (text === undefined) return;
         event.preventDefault();
-        document.execCommand("insertText", false, text);
+        documentOf(element).execCommand("insertText", false, text);
+      },
+      onCompositionStart: () => { composing = true; },
+      onCompositionEnd: () => {
+        composing = false;
+        this.options.recordAfter(element);
+        if (blurPending) this.stop();
       }
     };
 
@@ -79,6 +92,8 @@ export class InlineTextEditor {
     element.addEventListener("blur", state.onBlur);
     element.addEventListener("keydown", state.onKeydown);
     element.addEventListener("paste", state.onPaste);
+    element.addEventListener("compositionstart", state.onCompositionStart);
+    element.addEventListener("compositionend", state.onCompositionEnd);
     focusEditableElement(element);
     this.options.toast(this.options.t("inlineEditHint"));
   }
@@ -90,6 +105,8 @@ export class InlineTextEditor {
     state.element.removeEventListener("blur", state.onBlur);
     state.element.removeEventListener("keydown", state.onKeydown);
     state.element.removeEventListener("paste", state.onPaste);
+    state.element.removeEventListener("compositionstart", state.onCompositionStart);
+    state.element.removeEventListener("compositionend", state.onCompositionEnd);
     if (state.previousContentEditable === null) {
       state.element.removeAttribute("contenteditable");
     } else {

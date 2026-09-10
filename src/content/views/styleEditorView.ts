@@ -1,3 +1,4 @@
+import { canReplaceIcon, canReplaceImage, computedStyle, type InspectableElement } from "../domContext";
 import { escapeHtml, normalizeFontWeight, toHexColor } from "../utils";
 import type { ContentTextKey } from "../i18n";
 import {
@@ -8,7 +9,9 @@ import {
 import type { StyleChange } from "../types";
 
 type StyleEditorViewContext = {
-  element: HTMLElement;
+  element: InspectableElement | null;
+  values?: Record<string, string>;
+  capabilities?: { canReplaceImage: boolean; canReplaceIcon: boolean };
   change: StyleChange;
   canEditText: boolean;
   requirementOpen: boolean;
@@ -16,28 +19,29 @@ type StyleEditorViewContext = {
   t: (key: ContentTextKey) => string;
 };
 
-export function renderStyleEditorView({ element, change, canEditText, requirementOpen, assetPanel, t }: StyleEditorViewContext): string {
-  const computed = getComputedStyle(element);
+export function renderStyleEditorView({ element, values, capabilities, change, canEditText, requirementOpen, assetPanel, t }: StyleEditorViewContext): string {
+  const computed = element ? computedStyle(element) : null;
+  const value = (property: string) => values?.[property] ?? computed?.getPropertyValue(property) ?? "";
   const basicRows = [
-    inputRow("color", t("text"), toHexColor(computed.color), t, "color"),
-    inputRow("background-color", t("background"), toHexColor(computed.backgroundColor), t, "color"),
-    inputRow("font-size", t("fontSize"), computed.fontSize, t),
-    selectRow("font-weight", t("fontWeight"), normalizeFontWeight(computed.fontWeight), ["300", "400", "500", "600", "700", "800"], t)
+    inputRow("color", t("text"), toHexColor(value("color")), t, "color"),
+    inputRow("background-color", t("background"), toHexColor(value("background-color")), t, "color"),
+    inputRow("font-size", t("fontSize"), value("font-size"), t),
+    selectRow("font-weight", t("fontWeight"), normalizeFontWeight(value("font-weight")), ["300", "400", "500", "600", "700", "800"], t)
   ].join("");
   const detailRows = [
-    inputRow("line-height", t("lineHeight"), computed.lineHeight, t, "text", "styleHelpLineHeight"),
-    inputRow("letter-spacing", t("letterSpacing"), computed.letterSpacing, t, "text", "styleHelpLetterSpacing"),
-    inputRow("padding", t("padding"), computed.padding, t, "text", "styleHelpPadding"),
-    inputRow("margin", t("margin"), computed.margin, t, "text", "styleHelpMargin"),
-    inputRow("width", t("width"), computed.width, t, "text", "styleHelpWidth"),
-    inputRow("height", t("height"), computed.height, t, "text", "styleHelpHeight"),
-    inputRow("border-radius", t("radius"), computed.borderRadius, t, "text", "styleHelpRadius"),
-    inputRow("box-shadow", t("shadow"), computed.boxShadow, t, "text", "styleHelpShadow"),
-    selectRow("display", t("display"), computed.display, ["block", "inline", "inline-block", "flex", "inline-flex", "grid", "none"], t, "styleHelpDisplay"),
-    inputRow("gap", t("gap"), computed.gap, t, "text", "styleHelpGap"),
-    selectRow("justify-content", t("mainAxis"), computed.justifyContent, ["normal", "flex-start", "center", "space-between", "space-around", "flex-end"], t, "styleHelpMainAxis"),
-    selectRow("align-items", t("crossAxis"), computed.alignItems, ["normal", "stretch", "flex-start", "center", "flex-end", "baseline"], t, "styleHelpCrossAxis"),
-    inputRow("opacity", t("opacity"), computed.opacity, t, "text", "styleHelpOpacity")
+    inputRow("line-height", t("lineHeight"), value("line-height"), t, "text", "styleHelpLineHeight"),
+    inputRow("letter-spacing", t("letterSpacing"), value("letter-spacing"), t, "text", "styleHelpLetterSpacing"),
+    inputRow("padding", t("padding"), value("padding"), t, "text", "styleHelpPadding"),
+    inputRow("margin", t("margin"), value("margin"), t, "text", "styleHelpMargin"),
+    inputRow("width", t("width"), value("width"), t, "text", "styleHelpWidth"),
+    inputRow("height", t("height"), value("height"), t, "text", "styleHelpHeight"),
+    inputRow("border-radius", t("radius"), value("border-radius"), t, "text", "styleHelpRadius"),
+    inputRow("box-shadow", t("shadow"), value("box-shadow"), t, "text", "styleHelpShadow"),
+    selectRow("display", t("display"), value("display"), ["block", "inline", "inline-block", "flex", "inline-flex", "grid", "none"], t, "styleHelpDisplay"),
+    inputRow("gap", t("gap"), value("gap"), t, "text", "styleHelpGap"),
+    selectRow("justify-content", t("mainAxis"), value("justify-content"), ["normal", "flex-start", "center", "space-between", "space-around", "flex-end"], t, "styleHelpMainAxis"),
+    selectRow("align-items", t("crossAxis"), value("align-items"), ["normal", "stretch", "flex-start", "center", "flex-end", "baseline"], t, "styleHelpCrossAxis"),
+    inputRow("opacity", t("opacity"), value("opacity"), t, "text", "styleHelpOpacity")
   ].join("");
 
   return `
@@ -47,6 +51,7 @@ export function renderStyleEditorView({ element, change, canEditText, requiremen
             <strong>${escapeHtml(change.elementLabel)}</strong>
             <div class="style-editor-head-actions">
               <button type="button" data-style-action="select" class="primary">${t("selectAnother")}</button>
+              <button type="button" data-style-action="select-parent">${t("selectParent")}</button>
               <button type="button" data-style-action="back-panel" class="icon-button">${t("backToPanel")}</button>
             </div>
           </div>
@@ -57,8 +62,8 @@ export function renderStyleEditorView({ element, change, canEditText, requiremen
           </details>
           <div class="style-editor-actions">
             <button type="button" data-style-action="text" ${canEditText ? "" : "disabled"}>${t("editText")}</button>
-            <button type="button" data-style-action="replace-image">${t("replaceImage")}</button>
-            <button type="button" data-style-action="replace-icon" class="${assetPanel.open ? "active" : ""}">${t("replaceIcon")}</button>
+            <button type="button" data-style-action="replace-image" ${(capabilities?.canReplaceImage ?? (!!element && canReplaceImage(element))) ? "" : "disabled"}>${t("replaceImage")}</button>
+            <button type="button" data-style-action="replace-icon" ${(capabilities?.canReplaceIcon ?? (!!element && canReplaceIcon(element))) ? "" : "disabled"} class="${assetPanel.open ? "active" : ""}">${t("replaceIcon")}</button>
             <button type="button" data-style-action="delete-element" class="danger-button">${t("deleteElement")}</button>
             <button type="button" data-style-action="describe-requirement">${t("describeRequirement")}</button>
             <button type="button" data-style-action="undo">${t("undo")}</button>

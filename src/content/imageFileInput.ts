@@ -14,7 +14,8 @@ export type ImageFilePayload = {
 type ImageFileInputOptions = {
   input: HTMLInputElement | null;
   onError: () => void;
-  onLoad: (payload: ImageFilePayload) => void;
+  getRequestId?: () => string | null;
+  onLoad: (payload: ImageFilePayload, requestId?: string | null) => void;
 };
 
 export function bindImageFileInput(options: ImageFileInputOptions): void {
@@ -29,6 +30,7 @@ export function bindImageFileInput(options: ImageFileInputOptions): void {
       return;
     }
     const reader = new FileReader();
+    const requestId = options.getRequestId?.();
     reader.addEventListener("load", () => {
       const dataUrl = typeof reader.result === "string" ? reader.result : "";
       if (!dataUrl) {
@@ -43,7 +45,7 @@ export function bindImageFileInput(options: ImageFileInputOptions): void {
         type,
         size: file.size,
         isSvg: type === "image/svg+xml" || /\.svg$/i.test(file.name)
-      });
+      }, requestId);
     });
     reader.addEventListener("error", options.onError);
     reader.readAsDataURL(file);

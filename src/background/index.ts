@@ -1,3 +1,4 @@
+import { handleFrameMessage, clearFrameRegistry, setInspectionState } from "./frameRegistry";
 import { analyzeSession } from "../shared/analyzer";
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from "../shared/defaults";
 import { generateExport } from "../shared/exporters";
@@ -85,6 +86,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   responseBodyCaptureTabs.delete(tabId);
+  clearFrameRegistry(tabId);
   lastReconciledTabUrls.delete(tabId);
   void sessionStore.delete(tabId).catch((error) => console.warn("[DevLite] delete closed tab session failed", error));
 });
@@ -113,7 +115,10 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
   if (!message || typeof message !== "object" || typeof message.type !== "string") {
     return { ok: false, error: await backgroundText("invalidMessage") };
   }
+  const frameResponse = await handleFrameMessage(message, sender);
+  if (frameResponse !== undefined) return frameResponse;
   const type = message?.type;
+  if (sender.frameId) return { ok: false, error: "Top document only" };
 
   if (type === "get-settings") {
     return { ok: true, settings: await getSettings() };
@@ -162,6 +167,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     const tabId = sender.tab?.id;
     if (typeof tabId !== "number") return { ok: false, error: await backgroundText("missingTabId") };
     const tab = sender.tab;
+    await ensureFrameScripts(tabId);
     await ensureInjectedScript(tabId);
     const page = message.page ?? (tab ? createFallbackPageContext(tab) : undefined);
     if (!page) return { ok: false, error: await backgroundText("missingPageInfo") };
@@ -235,14 +241,14 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     const tabId = tab.id;
     await ensurePageScripts(tabId);
     const session = await sessionStore.update(tabId, (current) => current ?? createSession(tabId, createFallbackPageContext(tab)));
-    await chrome.tabs.sendMessage(tabId, { type: "devlite-start-inspector" });
+    await setInspectionState(tabId, true);
     return { ok: true, session: session ?? null };
   }
 
   if (type === "stop-inspector") {
     const tab = await getActiveTab();
     if (typeof tab.id !== "number") throw new Error(await backgroundText("activeTabUnavailable"));
-    await safeSendTabMessage(tab.id, { type: "devlite-stop-inspector" });
+    await setInspectionState(tab.id, false);
     return { ok: true };
   }
 
@@ -312,6 +318,7 @@ async function handleMessage(message: any, sender: chrome.runtime.MessageSender)
     await markStyleChangesExported(tabId, Array.isArray(message.ids) ? message.ids : [], {
       pageLoadId: message.pageLoadId,
       mutationVersion: message.mutationVersion,
+      versions: message.versions,
       reason: message.reason
     });
     return { ok: true };
@@ -538,7 +545,7 @@ async function deleteStyleChange(tabId: number, id: string): Promise<void> {
 async function markStyleChangesExported(
   tabId: number,
   ids: string[],
-  metadata: { pageLoadId?: string; mutationVersion?: number; reason?: string }
+  metadata: { pageLoadId?: string; mutationVersion?: number; versions?: Record<string, number>; reason?: string }
 ): Promise<void> {
   if (ids.length === 0) return;
   const idSet = new Set(ids);
@@ -553,7 +560,7 @@ async function markStyleChangesExported(
         ...change,
         exportedAt: change.exportedAt ?? now,
         exportedPageLoadId: metadata.pageLoadId,
-        exportedMutationVersion: metadata.mutationVersion,
+        exportedMutationVersion: metadata.versions?.[change.id] ?? metadata.mutationVersion,
         verificationStatus: "waiting",
         lastVerifiedAt: now,
         lastVerifyReason: metadata.reason || "Waiting for page refresh or hot update"
@@ -695,12 +702,22 @@ async function ensurePageScripts(tabId: number): Promise<void> {
       files: ["content.js"]
     });
   }
+  await ensureFrameScripts(tabId);
   await ensureInjectedScript(tabId);
+}
+
+async function ensureFrameScripts(tabId: number): Promise<void> {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["frame.js"] });
+  } catch {
+    // An inaccessible child must not prevent the top-level tools from starting.
+    await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, files: ["frame.js"] });
+  }
 }
 
 async function isContentScriptReady(tabId: number): Promise<boolean> {
   try {
-    const response = await chrome.tabs.sendMessage(tabId, { type: "devlite-ping" });
+    const response = await chrome.tabs.sendMessage(tabId, { type: "devlite-ping" }, { frameId: 0 });
     return response?.ok === true;
   } catch {
     return false;
@@ -722,7 +739,7 @@ async function openPagePanel(tab: chrome.tabs.Tab): Promise<boolean> {
   if (!(await sessionStore.has(tab.id))) {
     await sessionStore.set(tab.id, createSession(tab.id, createFallbackPageContext(tab)));
   }
-  await chrome.tabs.sendMessage(tab.id, { type: "devlite-open-panel" });
+  await chrome.tabs.sendMessage(tab.id, { type: "devlite-open-panel" }, { frameId: 0 });
   return true;
 }
 

@@ -108,12 +108,17 @@ export interface StyleChange {
     height: number;
   };
   before: Record<string, string>;
+  inlineBefore?: Record<string, { value: string; priority: string }>;
+  address?: ElementAddress;
+  parentAddress?: ElementAddress;
+  context?: ElementDocumentContext;
   after: Record<string, string>;
   textBefore?: string;
   textAfter?: string;
   htmlBefore?: string;
   htmlAfter?: string;
   domBefore?: string;
+  liveDomBaseline?: boolean;
   domAfter?: string;
   domAction?: string;
   domParentSelector?: string;
@@ -128,6 +133,28 @@ export interface StyleChange {
   lastVerifyReason?: string;
   updatedAt: number;
   note?: string;
+}
+
+export interface ElementFingerprint {
+  tag: string;
+  namespace: string;
+  attributes: Record<string, string>;
+  text: string;
+}
+
+export interface ElementAddress {
+  version: 1;
+  shadowPath: Array<{ selector: string; fingerprint: ElementFingerprint }>;
+  selector: string;
+  fingerprint: ElementFingerprint;
+}
+
+export interface ElementDocumentContext {
+  documentId: string;
+  frameId: number;
+  url: string;
+  // Each frame host is addressed within its parent's document, including shadow roots.
+  framePath: ElementAddress[];
 }
 
 export interface ArchivedStyleChange {
@@ -158,6 +185,9 @@ export interface ElementAncestor {
 }
 
 export interface MatchedCssRule {
+  match?: "candidate" | "context";
+  inheritedFrom?: string;
+  accessible?: boolean;
   selectorText: string;
   style: string;
   source: string;

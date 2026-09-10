@@ -1,3 +1,4 @@
+import type { InspectableElement } from "./domContext";
 import { copyText } from "./clipboard";
 import { editableTextValue } from "./editableText";
 import { buildAllErrorsText, buildCurlCommand, buildNetworkDetailText, buildNetworkEventText } from "./exportText";
@@ -21,7 +22,7 @@ type PanelActionContext = {
   getProblemEvents: () => LiveDiagnosticEvent[];
   getNetworkDetailTab: () => NetworkDetailTab;
   getSelectedNetworkEvent: () => LiveDiagnosticEvent | null;
-  getSelectedElement: () => HTMLElement | null;
+  getSelectedElement: () => InspectableElement | null;
   getSettings: () => Required<PanelSettings>;
   renderPanel: () => void;
   savePanelSettings: (next: PanelSettings, successMessage?: string) => Promise<void>;

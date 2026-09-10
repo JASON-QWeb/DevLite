@@ -34,6 +34,11 @@ const sharedOptions = {
 await Promise.all([
   build({
     ...sharedOptions,
+    entryPoints: ["src/frame.ts"],
+    outfile: "dist/frame.js"
+  }),
+  build({
+    ...sharedOptions,
     entryPoints: ["src/content.ts"],
     outfile: "dist/content.js"
   }),

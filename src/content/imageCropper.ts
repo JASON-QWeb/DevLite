@@ -22,7 +22,7 @@ export class ImageCropperController {
 
   constructor(private readonly options: ImageCropperOptions) {}
 
-  start(payload: ImageFilePayload, targetElement: HTMLElement): void {
+  start(payload: ImageFilePayload, targetElement: Element | null, aspectRatio?: number): void {
     this.close(false);
     const cropperId = randomId();
     this.activeCropperId = cropperId;
@@ -36,7 +36,7 @@ export class ImageCropperController {
         type: payload.type,
         size: payload.size
       },
-      targetAspectRatio: elementAspectRatio(targetElement),
+      targetAspectRatio: aspectRatio ?? (targetElement ? elementAspectRatio(targetElement) : null),
       texts: cropperTexts(this.options.t)
     });
   }
@@ -84,10 +84,10 @@ function cropperTexts(t: (key: ContentTextKey) => string): Record<string, string
   };
 }
 
-function elementAspectRatio(element: HTMLElement): number | null {
+function elementAspectRatio(element: Element): number | null {
   const rect = element.getBoundingClientRect();
   if (rect.width > 0 && rect.height > 0) return rect.width / rect.height;
-  const width = element.offsetWidth;
-  const height = element.offsetHeight;
+  const width = ("offsetWidth" in element ? Number(element.offsetWidth) : 0);
+  const height = ("offsetHeight" in element ? Number(element.offsetHeight) : 0);
   return width > 0 && height > 0 ? width / height : null;
 }
