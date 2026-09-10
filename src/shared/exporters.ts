@@ -56,6 +56,11 @@ export function generateRepairPromptForChanges(
           classList: change.locator?.classList ?? parseClassList(change.elementLabel),
           attributes: change.locator?.attributes ?? {},
           selector: change.selector,
+          address: change.address,
+          document: change.context ? {
+            url: change.context.url,
+            framePath: change.context.framePath
+          } : undefined,
           domPath: change.domPath,
           openingTag: change.locator?.openingTag ?? "",
           outerHTMLSnippet: change.locator?.outerHTMLSnippet ?? "",
@@ -65,6 +70,7 @@ export function generateRepairPromptForChanges(
           searchHints: buildSearchHints(change)
         },
         sourceHints: {
+          inlineBefore: change.inlineBefore,
           matchedCssRules: change.locator?.matchedCssRules ?? []
         },
         modifications: [

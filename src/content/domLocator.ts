@@ -1,60 +1,25 @@
-import { cssAttrEscape, truncateText } from "./utils";
+import { truncateText } from "./utils";
+import { composedParent, elementText, isElement, isInspectableElement, rootOf, shadowRootOf, type DomRoot, type InspectableElement } from "./domContext";
+import { localSelector } from "./elementAddress";
 import type { ElementAncestor, ElementLocator, MatchedCssRule } from "./types";
 
-export function resolveInspectableTarget(target: EventTarget | null): HTMLElement | null {
-  if (target instanceof HTMLElement) return target;
-  if (target instanceof SVGElement) {
-    const svg = target.closest("svg");
-    if (svg?.parentElement instanceof HTMLElement) return svg.parentElement;
-  }
-  return null;
+export function resolveInspectableTarget(target: EventTarget | null): InspectableElement | null {
+  return isInspectableElement(target) ? target : null;
 }
 
-export function buildSelector(element: HTMLElement): string {
-  if (element.id && /^[A-Za-z][\w-]*$/.test(element.id)) {
-    return `#${CSS.escape(element.id)}`;
-  }
+export const buildSelector = localSelector;
 
-  const dataSelector = ["data-testid", "data-test", "data-cy", "name", "aria-label"]
-    .map((attr) => {
-      const value = element.getAttribute(attr);
-      return value ? `[${attr}="${cssAttrEscape(value)}"]` : "";
-    })
-    .find(Boolean);
-  if (dataSelector) return `${element.tagName.toLowerCase()}${dataSelector}`;
-
+export function buildDomPath(element: InspectableElement): string {
   const parts: string[] = [];
-  let node: HTMLElement | null = element;
-  while (node && node.nodeType === Node.ELEMENT_NODE && node !== document.body && parts.length < 5) {
-    let part = node.tagName.toLowerCase();
-    const classNames = Array.from(node.classList)
-      .filter((name) => !/^(hover|focus|active|selected|open|ng-|v-|css-|__[a-z0-9])/i.test(name))
-      .slice(0, 2);
-    if (classNames.length > 0) {
-      part += `.${classNames.map((name) => CSS.escape(name)).join(".")}`;
-    } else {
-      const index = nthOfType(node);
-      if (index > 1) {
-        part += `:nth-of-type(${index})`;
-      }
-    }
-    parts.unshift(part);
-    node = node.parentElement;
-  }
-  return parts.join(" > ");
-}
-
-export function buildDomPath(element: HTMLElement): string {
-  const parts: string[] = [];
-  let node: HTMLElement | null = element;
+  let node: Element | null = element;
   while (node && node !== document.documentElement && parts.length < 8) {
     parts.unshift(`${node.tagName.toLowerCase()}${node.id ? `#${node.id}` : ""}`);
-    node = node.parentElement;
+    node = composedParent(node);
   }
   return parts.join(" > ");
 }
 
-export function buildElementLocator(element: HTMLElement, selector: string, domPath: string): ElementLocator {
+export function buildElementLocator(element: InspectableElement, selector: string, domPath: string): ElementLocator {
   return {
     tagName: element.tagName.toLowerCase(),
     id: element.id || "",
@@ -69,16 +34,16 @@ export function buildElementLocator(element: HTMLElement, selector: string, domP
   };
 }
 
-export function labelElement(element: HTMLElement): string {
+export function labelElement(element: InspectableElement): string {
   const className = Array.from(element.classList).slice(0, 2).join(".");
   return `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ""}${className ? `.${className}` : ""}`;
 }
 
-export function textSnippet(element: HTMLElement): string {
-  return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 140);
+export function textSnippet(element: InspectableElement): string {
+  return elementText(element).replace(/\s+/g, " ").trim().slice(0, 140);
 }
 
-function collectLocatorAttributes(element: HTMLElement): Record<string, string> {
+function collectLocatorAttributes(element: InspectableElement): Record<string, string> {
   const priority = new Set([
     "id",
     "class",
@@ -106,7 +71,7 @@ function collectLocatorAttributes(element: HTMLElement): Record<string, string> 
   return attributes;
 }
 
-function buildOpeningTag(element: HTMLElement): string {
+function buildOpeningTag(element: InspectableElement): string {
   const attrs = Array.from(element.attributes)
     .filter((attr) => attr.name !== "style")
     .slice(0, 16)
@@ -115,9 +80,9 @@ function buildOpeningTag(element: HTMLElement): string {
   return `<${element.tagName.toLowerCase()}${attrs ? ` ${attrs}` : ""}>`;
 }
 
-function buildParentChain(element: HTMLElement): ElementAncestor[] {
+function buildParentChain(element: InspectableElement): ElementAncestor[] {
   const chain: ElementAncestor[] = [];
-  let node = element.parentElement;
+  let node = composedParent(element);
   while (node && node !== document.documentElement && chain.length < 6) {
     chain.push({
       tagName: node.tagName.toLowerCase(),
@@ -125,49 +90,79 @@ function buildParentChain(element: HTMLElement): ElementAncestor[] {
       classList: Array.from(node.classList),
       selector: compactElementSelector(node)
     });
-    node = node.parentElement;
+    node = composedParent(node);
   }
   return chain;
 }
 
-function compactElementSelector(element: HTMLElement): string {
+function compactElementSelector(element: Element): string {
   const classList = Array.from(element.classList).slice(0, 4);
   return `${element.tagName.toLowerCase()}${element.id ? `#${CSS.escape(element.id)}` : ""}${classList.length ? `.${classList.map((name) => CSS.escape(name)).join(".")}` : ""}`;
 }
 
-function collectMatchedCssRules(element: HTMLElement): MatchedCssRule[] {
+function collectMatchedCssRules(element: InspectableElement): MatchedCssRule[] {
   const matches: MatchedCssRule[] = [];
+  const ancestors: InspectableElement[] = [];
+  for (let node = composedParent(element); node && ancestors.length < 6; node = composedParent(node)) if (isInspectableElement(node)) ancestors.push(node);
+  const inheritedProperty = /^(--|color$|font|line-height$|letter-spacing$|word-spacing$|text-align$|text-transform$|white-space$|visibility$|cursor$|direction$)/;
+  let scopes: Set<DomRoot>;
   let visitedRules = 0;
   const visitRules = (rules: CSSRuleList, source: string, condition?: string) => {
     for (const rule of Array.from(rules)) {
       if (matches.length >= 16) return;
       if (visitedRules >= 2500) return;
       visitedRules += 1;
-      if (rule instanceof CSSStyleRule) {
-        if (safeMatches(element, rule.selectorText)) {
+      if (rule.type === 1 && "selectorText" in rule) {
+        const styleRule = rule as CSSStyleRule;
+        const direct = scopes.has(rootOf(element)) && safeMatches(element, styleRule.selectorText);
+        const context = contextualMatches(element, styleRule.selectorText);
+        const inherited = ancestors.find((ancestor) => scopes.has(rootOf(ancestor)) && safeMatches(ancestor, styleRule.selectorText));
+        const inheritedStyle = inherited ? Array.from(styleRule.style).filter((name) => inheritedProperty.test(name)).map((name) => `${name}: ${styleRule.style.getPropertyValue(name)}${styleRule.style.getPropertyPriority(name) ? ' !important' : ''};`).join(" ") : "";
+        if (direct || context || inheritedStyle) {
           matches.push({
-            selectorText: rule.selectorText,
-            style: truncateText(rule.style.cssText, 520),
+            selectorText: styleRule.selectorText,
+            style: truncateText(direct || context ? styleRule.style.cssText : inheritedStyle, 520),
             source,
-            condition
+            condition,
+            match: direct ? "candidate" : "context",
+            inheritedFrom: !direct && !context && inherited ? compactElementSelector(inherited) : undefined
           });
         }
         continue;
       }
       if ("cssRules" in rule) {
         const nested = rule as CSSMediaRule | CSSSupportsRule;
-        const nextCondition = "conditionText" in nested ? nested.conditionText : condition;
-        visitRules(nested.cssRules, source, nextCondition || condition);
+        const header = rule.cssText.split("{")[0].trim();
+        const nextCondition = [condition, header].filter(Boolean).join(" / ");
+        try { visitRules(nested.cssRules, source, nextCondition); } catch { /* Inaccessible imported rules. */ }
       }
     }
   };
 
-  for (const sheet of Array.from(document.styleSheets)) {
+  const root = rootOf(element);
+  const sheets = new Map<CSSStyleSheet, Set<DomRoot>>();
+  const include = (scope: DomRoot) => {
+    for (const sheet of [...Array.from(scope.styleSheets), ...Array.from(scope.adoptedStyleSheets ?? [])]) {
+      const roots = sheets.get(sheet) ?? new Set<DomRoot>(); roots.add(scope); sheets.set(sheet, roots);
+    }
+  };
+  include(root);
+  // Include rules on a host and assigned slot as contextual candidates, without treating them as winning declarations.
+  const ownShadow = shadowRootOf(element);
+  if (ownShadow) include(ownShadow);
+  if (element.assignedSlot) {
+    const slotRoot = rootOf(element.assignedSlot);
+    include(slotRoot);
+  }
+  for (const ancestor of ancestors) include(rootOf(ancestor));
+  for (const [sheet, sheetScopes] of sheets) {
+    scopes = sheetScopes;
     if (matches.length >= 16) break;
     let rules: CSSRuleList;
     try {
       rules = sheet.cssRules;
     } catch {
+      matches.push({ selectorText: "", style: "", source: stylesheetSource(sheet), match: "context", accessible: false });
       continue;
     }
     visitRules(rules, stylesheetSource(sheet));
@@ -175,7 +170,7 @@ function collectMatchedCssRules(element: HTMLElement): MatchedCssRule[] {
   return matches;
 }
 
-function safeMatches(element: HTMLElement, selectorText: string): boolean {
+function safeMatches(element: InspectableElement, selectorText: string): boolean {
   try {
     return element.matches(selectorText);
   } catch {
@@ -185,7 +180,7 @@ function safeMatches(element: HTMLElement, selectorText: string): boolean {
 
 function stylesheetSource(sheet: CSSStyleSheet): string {
   if (sheet.href) return sheet.href;
-  const owner = sheet.ownerNode instanceof Element ? sheet.ownerNode : null;
+  const owner = isElement(sheet.ownerNode) ? sheet.ownerNode : null;
   if (!owner) return "inline stylesheet";
   const id = owner.id ? `#${owner.id}` : "";
   const dataAttrs = Array.from(owner.attributes)
@@ -196,12 +191,9 @@ function stylesheetSource(sheet: CSSStyleSheet): string {
   return `${owner.tagName.toLowerCase()}${id}${dataAttrs}`;
 }
 
-function nthOfType(element: HTMLElement): number {
-  let index = 1;
-  let sibling = element.previousElementSibling;
-  while (sibling) {
-    if (sibling.tagName === element.tagName) index += 1;
-    sibling = sibling.previousElementSibling;
-  }
-  return index;
+function contextualMatches(element: Element, selector: string): boolean {
+  if (selector.includes(":host") && shadowRootOf(element)) return true;
+  if (selector.includes("::slotted(") && element.assignedSlot) return true;
+  if (selector.includes("::part(") && element.hasAttribute("part")) return true;
+  return false;
 }

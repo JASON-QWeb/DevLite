@@ -12,6 +12,7 @@ export default defineConfig({
         options: resolve(__dirname, "options.html"),
         background: resolve(__dirname, "src/background/index.ts"),
         content: resolve(__dirname, "src/content.ts"),
+        frame: resolve(__dirname, "src/frame.ts"),
         injected: resolve(__dirname, "src/injected.ts")
       },
       output: {

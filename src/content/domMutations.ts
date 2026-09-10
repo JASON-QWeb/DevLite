@@ -1,3 +1,4 @@
+import type { InspectableElement } from "./domContext";
 const SAFE_SVG_ELEMENTS = new Set([
   "svg",
   "g",
@@ -67,18 +68,18 @@ const SAFE_SVG_ATTRS = new Set([
 ]);
 const SAFE_SVG_URL_ATTRS = new Set(["clip-path", "mask"]);
 
-export function imageReplacementTarget(element: HTMLElement): HTMLImageElement | HTMLSourceElement | SVGImageElement | null {
-  if (element instanceof HTMLImageElement || element instanceof HTMLSourceElement) return element;
-  return element.querySelector("img, source, image") as HTMLImageElement | HTMLSourceElement | SVGImageElement | null;
+export function imageReplacementTarget(element: InspectableElement): HTMLImageElement | HTMLSourceElement | SVGImageElement | null {
+  if (["img", "source", "image"].includes(element.localName)) return element as HTMLImageElement | HTMLSourceElement | SVGImageElement;
+  return (element.querySelector("img, image") ?? element.querySelector("source")) as HTMLImageElement | HTMLSourceElement | SVGImageElement | null;
 }
 
-export function parseSvgMarkup(value: string): SVGSVGElement | null {
+export function parseSvgMarkup(value: string, doc: Document = document): SVGSVGElement | null {
   if (!/^<svg[\s>]/i.test(value)) return null;
   const parsed = new DOMParser().parseFromString(value, "image/svg+xml");
   const svg = parsed.documentElement;
   if (parsed.querySelector("parsererror")) return null;
   if (svg.tagName.toLowerCase() !== "svg") return null;
-  const imported = document.importNode(svg, true) as unknown as SVGSVGElement;
+  const imported = doc.importNode(svg, true) as unknown as SVGSVGElement;
   sanitizeSvg(imported);
   normalizeSvgViewBox(imported);
   return imported;
@@ -88,7 +89,7 @@ export function looksLikeImageUrl(value: string): boolean {
   return /^(https?:|data:image\/|blob:|\/|\.\/|\.\.\/)/i.test(value) || /\.(svg|png|jpe?g|gif|webp|avif)(\?.*)?$/i.test(value);
 }
 
-export function snapshotElementHtml(element: HTMLElement, redactInlineImages: boolean): string {
+export function snapshotElementHtml(element: InspectableElement, redactInlineImages: boolean): string {
   const html = element.outerHTML;
   const normalized = redactInlineImages ? html.replace(/data:image\/[^"'\s)>]+/gi, "[inline image data]") : html;
   return normalized;

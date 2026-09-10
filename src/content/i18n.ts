@@ -2,6 +2,11 @@ export type ContentLocale = "zh" | "en";
 
 export const CONTENT_TEXT = {
   zh: {
+    elementAddressAmbiguous: "找到多个相似元素，请重新选择。",
+    elementContextUnavailable: "元素或子应用暂不可用，等待页面就绪后重新定位。",
+    verifyDeletionNeedsConfirmation: "元素当前不存在；请确认源码已删除后手动归档。",
+    selectParent: "选择父级",
+    frameContainerOnly: "子文档尚未连接，请检查加载状态与扩展站点权限；当前可编辑外层 iframe。",
     quickSelect: "快速选择元素",
     openPanel: "打开整体面板",
     launcherTitle: "拖动或打开 DevLite",
@@ -291,6 +296,11 @@ export const CONTENT_TEXT = {
     over50ms: "超过 50ms"
   },
   en: {
+    elementAddressAmbiguous: "Multiple elements match. Select the element again.",
+    elementContextUnavailable: "The element or application is unavailable. Waiting for the page to be ready.",
+    verifyDeletionNeedsConfirmation: "The element is absent. Confirm the source deletion, then archive manually.",
+    selectParent: "Select parent",
+    frameContainerOnly: "The child document is not connected. Check loading and extension site access; the outer iframe is editable.",
     quickSelect: "Quick select",
     openPanel: "Open panel",
     launcherTitle: "Drag or open DevLite",

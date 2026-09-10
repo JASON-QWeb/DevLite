@@ -12,6 +12,7 @@ try {
   const modules = await bundleSharedModules();
   testDevelopmentTraffic(modules);
   testPanelPosition(modules);
+  testImageSelectionOwnership(modules);
   await testIconifySearch(modules);
   console.log("DevLite unit checks passed");
 } finally {
@@ -24,12 +25,16 @@ async function bundleSharedModules() {
   const developmentTrafficPath = moduleSpecifier(entry, join(root, "src/shared/developmentTraffic.ts"));
   const iconifyPath = moduleSpecifier(entry, join(root, "src/shared/iconify.ts"));
   const panelPositionPath = moduleSpecifier(entry, join(root, "src/content/panelPosition.ts"));
+  const imageFilePath = moduleSpecifier(entry, join(root, "src/content/imageFileInput.ts"));
+  const cropperPath = moduleSpecifier(entry, join(root, "src/content/imageCropper.ts"));
   await writeFile(
     entry,
     `
       export { classifyDevelopmentTransport, isDevelopmentNetworkEvent } from ${JSON.stringify(developmentTrafficPath)};
       export { rankIconifyIds, searchIconifyIconAssets } from ${JSON.stringify(iconifyPath)};
       export { DEFAULT_PANEL_HEIGHT, DEFAULT_PANEL_WIDTH, clampPanelHeight, clampPanelWidth, resolvePanelSize } from ${JSON.stringify(panelPositionPath)};
+      export { bindImageFileInput } from ${JSON.stringify(imageFilePath)};
+      export { ImageCropperController } from ${JSON.stringify(cropperPath)};
     `
   );
   await build({
@@ -175,4 +180,43 @@ async function testIconifySearch(modules) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function testImageSelectionOwnership({ bindImageFileInput, ImageCropperController }) {
+  const readers = [];
+  const previousReader = globalThis.FileReader;
+  globalThis.FileReader = class extends EventTarget {
+    constructor() { super(); readers.push(this); }
+    readAsDataURL() {}
+    finish(value) { this.result = value; this.dispatchEvent(new Event('load')); }
+  };
+  try {
+    const input = new EventTarget();
+    input.files = [{ name: 'first.png', type: 'image/png', size: 20 }];
+    let selected = 'element-A';
+    const applied = [];
+    bindImageFileInput({ input, getRequestId: () => selected, onError: () => assert.fail('file error'), onLoad: (payload, id) => { if (id === selected) applied.push(payload.name); } });
+    input.dispatchEvent(new Event('change'));
+    selected = 'element-B';
+    input.files = [{ name: 'second.png', type: 'image/png', size: 20 }];
+    input.dispatchEvent(new Event('change'));
+    readers[1].finish('data:image/png;base64,second');
+    readers[0].finish('data:image/png;base64,first');
+    assert.deepEqual(applied, ['second.png'], 'a late file read must retain its original selection identity');
+
+    const requests = [], crops = [];
+    const cropper = new ImageCropperController({ t: key => key, sendRequest: message => requests.push(message), onApply: result => crops.push(result.src), onCancel: () => {}, onError: () => assert.fail('crop error') });
+    const payload = { src: 'first', label: 'first', name: 'first.png', type: 'image/png', size: 20, isSvg: false };
+    cropper.start(payload, null, 1.5);
+    const firstId = requests.at(-1).cropperId;
+    cropper.close(false);
+    cropper.start({ ...payload, src: 'second' }, null, 2);
+    const secondId = requests.at(-1).cropperId;
+    assert.equal(cropper.handlePageMessage({ type: 'image-cropper-result', cropperId: firstId, result: { src: 'old', metadata: {} } }), false);
+    assert.equal(cropper.handlePageMessage({ type: 'image-cropper-result', cropperId: secondId, result: { src: 'new', metadata: {} } }), true);
+    assert.deepEqual(crops, ['new'], 'closed cropper results cannot apply to the next operation');
+  } finally {
+    if (previousReader === undefined) delete globalThis.FileReader;
+    else globalThis.FileReader = previousReader;
+  }
 }

@@ -8,9 +8,9 @@ export class StyleEditorPositionController {
     this.position = null;
   }
 
-  update(editor: HTMLElement | null, element: HTMLElement | null): void {
-    if (!editor || editor.hidden || !element) return;
-    const rect = element.getBoundingClientRect();
+  update(editor: HTMLElement | null, element: Element | null, anchor?: DOMRect): void {
+    if (!editor || editor.hidden || (!element && !anchor)) return;
+    const rect = anchor ?? element!.getBoundingClientRect();
     const editorRect = editor.getBoundingClientRect();
     const width = editorRect.width || 300;
     const height = editorRect.height || 240;

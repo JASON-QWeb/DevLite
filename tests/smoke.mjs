@@ -9,6 +9,7 @@ const requiredFiles = [
   "manifest.json",
   "background.js",
   "content.js",
+  "frame.js",
   "injected.js",
   "options.html",
   "options.js",
@@ -36,6 +37,10 @@ assert(!manifest.action?.default_popup, "toolbar action should open the in-page 
 const contentScript = manifest.content_scripts?.find((script) => script.js?.includes("content.js"));
 assert(contentScript, "content.js must be declared as a static content script");
 assert(contentScript.run_at === "document_idle", "content.js should run at document_idle");
+const frameScript = manifest.content_scripts.find((script) => script.js?.includes("frame.js"));
+assert(frameScript?.all_frames && frameScript.match_about_blank && frameScript.match_origin_as_fallback, "frame executor must cover eligible related and nested frames");
+assert(frameScript.run_at === "document_start", "frame executor should register early");
+assert(Number(manifest.minimum_chrome_version) >= 119, "related-origin injection requires the documented Chrome baseline");
 for (const origin of ["http://*/*", "https://*/*"]) {
   assert(contentScript.matches?.includes(origin), `content.js must match ${origin}`);
   assert(manifest.host_permissions?.includes(origin), `host_permissions must include ${origin}`);
@@ -53,6 +58,8 @@ for (const permission of ["debugger", "webRequest", "tabs", "cookies"]) {
 
 const contentJs = await readFile(join(dist, "content.js"), "utf8");
 const injectedJs = await readFile(join(dist, "injected.js"), "utf8");
+const frameJs = await readFile(join(dist, "frame.js"), "utf8");
+assert(!/^\s*(import|export)\b/m.test(frameJs), "frame.js must be a standalone classic script");
 
 assert(!/^\s*import\b/m.test(contentJs), "content.js must not contain top-level import");
 assert(!/^\s*export\b/m.test(contentJs), "content.js must not contain top-level export");
@@ -73,6 +80,7 @@ assert(contentJs.includes("requirementDescription"), "content bundle must includ
 assert(contentJs.includes("requirementManualArchive"), "content bundle must keep requirement records under manual archive confirmation");
 
 execFileSync(process.execPath, ["--check", join(dist, "content.js")], { stdio: "inherit" });
+execFileSync(process.execPath, ["--check", join(dist, "frame.js")], { stdio: "inherit" });
 execFileSync(process.execPath, ["--check", join(dist, "injected.js")], { stdio: "inherit" });
 execFileSync(process.execPath, ["--check", join(dist, "background.js")], { stdio: "inherit" });
 

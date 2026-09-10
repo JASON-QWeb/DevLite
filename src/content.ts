@@ -1,3 +1,7 @@
+import type { ElementCommand, ElementSnapshot, FrameInfo } from "./shared/elementCommands";
+import { composedParent, isDevLiteNode, isInspectableElement, normalizeOverlayZoom, resolveEventElement, rootOf, type InspectableElement } from "./content/domContext";
+import { buildElementAddress, fingerprint, matchesFingerprint } from "./content/elementAddress";
+import { RootRegistry } from "./content/rootRegistry";
 import { copyText } from "./content/clipboard";
 import {
   applyStyleChange,
@@ -9,13 +13,15 @@ import {
   getStyleChangeRecords as getRecordedStyleChanges,
   getVerifyingStyleChangeRecords as getVerifyingRecordedStyleChanges,
   recordTextAfter as recordTextChangeAfter,
-  undoStyleChange
+  undoStyleChange,
+  restoreDeletedChange,
+  resolveChangeElement,
+  forgetDomSnapshot
 } from "./content/changeManager";
 import { contentText, type ContentTextKey } from "./content/i18n";
 import {
   buildSelector,
   labelElement,
-  resolveInspectableTarget,
   textSnippet
 } from "./content/domLocator";
 import { DiagnosticEventBatcher, DiagnosticEventStore } from "./content/diagnosticEvents";
@@ -133,17 +139,30 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   let diagnosticScopeResetTimer: number | null = null;
   let verificationTimer: number | null = null;
   let verificationPromise: Promise<void> | null = null;
-  let pageMutationObserver: MutationObserver | null = null;
+  const rootRegistry = new RootRegistry(document, (mutations) => {
+    pageMutationVersion += 1;
+    scheduleExportedStyleVerification();
+    syncElementOverlays();
+    if (captureActive && hasSignificantDiagnosticMutation(mutations)) scheduleDiagnosticScopeReset("page-update");
+  }, syncElementOverlays);
   let verificationRerunRequested = false;
   let verificationForceRenderRequested = false;
-  let suppressVerificationMutations = false;
-  const exportedElementRefs = new Map<string, HTMLElement>();
+  const exportedElementRefs = new Map<string, InspectableElement>();
+  const exportedRootRefs = new Map<string, ReturnType<typeof rootOf>>();
+  let verificationPoll: number | null = null;
 
   let captureActive = false;
   let inspectorActive = false;
-  let selectedElement: HTMLElement | null = null;
-  let hoveredElement: HTMLElement | null = null;
+  let selectedElement: InspectableElement | null = null;
+  let selectedFingerprint: ReturnType<typeof fingerprint> | null = null;
+  let hoveredElement: InspectableElement | null = null;
   let currentChange: StyleChange | null = null;
+  let remoteSelection: ElementSnapshot | null = null;
+  let frameInfo: FrameInfo | null = null;
+  let inspectionEpoch = "";
+  let remoteCommandQueue: Promise<unknown> = Promise.resolve();
+  let imageSelectionId: string | null = null;
+  const selectedResizeObserver = new ResizeObserver(() => syncElementOverlays());
   let sessionSettings: PanelSettings = {};
   let overlayHost: HTMLDivElement | null = null;
   let shadow: ShadowRoot | null = null;
@@ -281,9 +300,14 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   document.addEventListener(
     "click",
     (event) => {
-      if (event.target instanceof Node && overlayHost?.contains(event.target)) return;
+      if (event.composedPath().some(isDevLiteNode)) return;
+      if (event.detail > 1 && selectedElement?.contains(resolveEventElement(event))) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       if (captureActive) {
-        const target = resolveInspectableTarget(event.target);
+        const target = resolveEventElement(event);
         if (target) {
           sendDiagnosticEvent({
             type: "user-click",
@@ -299,8 +323,8 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
       if (inspectorActive) {
         event.preventDefault();
-        event.stopPropagation();
-        const target = resolveInspectableTarget(event.target);
+        event.stopImmediatePropagation();
+        const target = resolveEventElement(event);
         if (target && !overlayHost?.contains(target)) {
           selectElement(target);
         }
@@ -313,13 +337,13 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     "dblclick",
     (event) => {
       if (inlineTextEditor.isActive()) return;
-      if (event.target instanceof Node && overlayHost?.contains(event.target)) return;
-      const target = resolveInspectableTarget(event.target);
+      if (event.composedPath().some(isDevLiteNode)) return;
+      const target = resolveEventElement(event);
       if (!target || overlayHost?.contains(target)) return;
       const selected = getConnectedSelectedElement();
       if (!inspectorActive && (!selected || (target !== selected && !selected.contains(target)))) return;
       event.preventDefault();
-      event.stopPropagation();
+      event.stopImmediatePropagation();
       if (target !== selected || !currentChange) {
         selectElement(target);
       }
@@ -330,14 +354,27 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   document.addEventListener("keydown", handleGlobalKeydown, true);
 
+  for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "auxclick", "dragstart", "contextmenu"]) {
+    window.addEventListener(type, (event) => {
+      if (!inspectorActive || event.composedPath().some(isDevLiteNode)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+  }
+
+  let hoverFrame: number | null = null;
+
   document.addEventListener(
     "mousemove",
     (event) => {
-      if (!inspectorActive || (event.target instanceof Node && overlayHost?.contains(event.target))) return;
-      const target = resolveInspectableTarget(event.target);
+      if (!inspectorActive || event.composedPath().some(isDevLiteNode)) return;
+      const target = resolveEventElement(event);
       if (!target || overlayHost?.contains(target)) return;
       hoveredElement = target;
-      updateHighlighter(target);
+      if (hoverFrame === null) hoverFrame = window.requestAnimationFrame(() => {
+        hoverFrame = null;
+        if (inspectorActive && hoveredElement) updateHighlighter(hoveredElement);
+      });
     },
     true
   );
@@ -347,13 +384,40 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     panelPositionController.apply(panel);
     syncElementOverlays();
   });
+  window.visualViewport?.addEventListener("resize", syncElementOverlays);
+  window.visualViewport?.addEventListener("scroll", syncElementOverlays);
+  document.addEventListener("fullscreenchange", refreshOverlayLayer);
+  document.addEventListener("toggle", (event) => { if (!isDevLiteNode(event.target)) refreshOverlayLayer(); }, true);
   colorSchemeMedia = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
   colorSchemeMedia?.addEventListener("change", handleColorSchemeChange);
   window.addEventListener("pagehide", handlePageHide);
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) { rootRegistry.start(); rootRegistry.setActive(inspectorActive || getVerifyingStyleChangeRecords().length > 0); syncElementOverlays(); }
+  });
   document.addEventListener("scroll", syncElementOverlays, true);
   observePageMutations();
 
   async function handleRuntimeMessage(message: any): Promise<any> {
+    if (message?.type === "devlite-inspector-state") {
+      inspectionEpoch = message.epoch;
+      if (message.active) startInspector(false);
+      else if (message.ownerDocumentId !== frameInfo?.documentId) stopInspector(false);
+      return { ok: true };
+    }
+    if (message?.type === "devlite-remote-selected") {
+      if (message.epoch && inspectionEpoch && message.epoch !== inspectionEpoch) return { ok: false };
+      // A fullscreen child frame hides the only editor; return to the page before opening it.
+      if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined);
+      acceptRemoteSelection(message.snapshot);
+      return { ok: true };
+    }
+    if (message?.type === "devlite-remote-updated") {
+      acceptRemoteUpdate(message.snapshot);
+      schedulePanelRender();
+      return { ok: true };
+    }
+    if (message?.type === "devlite-remote-toast") { toast(message.text); return { ok: true }; }
+
     if (message?.type === "devlite-ping") {
       return { ok: true };
     }
@@ -407,6 +471,9 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   async function initializeContentState(): Promise<void> {
+    const frame = await sendRuntime({ type: "element-frame-hello" }).catch(() => null);
+    frameInfo = frame?.context ?? null;
+    if (frame?.state?.active) { inspectionEpoch = frame.state.epoch; startInspector(false); }
     await loadUiLocale();
     await restoreCaptureAfterReload();
   }
@@ -442,26 +509,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function observePageMutations(): void {
-    pageMutationObserver?.disconnect();
-    pageMutationObserver = new MutationObserver((mutations) => {
-      if (suppressVerificationMutations) return;
-      const hasPageMutation = mutations.some((mutation) => {
-        const target = mutation.target;
-        return target instanceof Node && !overlayHost?.contains(target);
-      });
-      if (!hasPageMutation) return;
-      pageMutationVersion += 1;
-      scheduleExportedStyleVerification();
-      if (captureActive && hasSignificantDiagnosticMutation(mutations)) {
-        scheduleDiagnosticScopeReset("page-update");
-      }
-    });
-    pageMutationObserver.observe(document.documentElement, {
-      attributes: true,
-      childList: true,
-      characterData: true,
-      subtree: true
-    });
+    rootRegistry.start();
   }
 
   function handleColorSchemeChange(): void {
@@ -471,7 +519,8 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     if (styleEditor && !styleEditor.hidden) renderStyleEditor();
   }
 
-  function handlePageHide(): void {
+  function handlePageHide(event: PageTransitionEvent): void {
+    if (event.persisted) { rootRegistry.stop(); return; }
     cleanupContentScript();
   }
 
@@ -481,8 +530,10 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     colorSchemeMedia?.removeEventListener("change", handleColorSchemeChange);
     colorSchemeMedia = null;
     window.removeEventListener("pagehide", handlePageHide);
-    pageMutationObserver?.disconnect();
-    pageMutationObserver = null;
+    rootRegistry.stop();
+    selectedResizeObserver.disconnect();
+    if (verificationPoll !== null) window.clearInterval(verificationPoll);
+    verificationPoll = null;
     clearDiagnosticScopeResetTimer();
     if (verificationTimer !== null) {
       window.clearTimeout(verificationTimer);
@@ -613,9 +664,12 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     return contentText(uiLocale, key);
   }
 
-  function startInspector(): void {
+  function startInspector(broadcast = true): void {
     stopInlineTextEdit();
+    remoteSelection = null;
+    if (broadcast) void sendRuntime({ type: "element-inspector-set", active: true }).then((result) => { inspectionEpoch = result.state?.epoch ?? ""; }).catch(handleAsyncError);
     inspectorActive = true;
+    rootRegistry.setActive(true);
     ensureOverlay();
     activePanelTab = "element";
     closeRequirementEditor();
@@ -625,8 +679,10 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     document.documentElement.style.cursor = "crosshair";
   }
 
-  function stopInspector(): void {
+  function stopInspector(broadcast = true): void {
+    if (broadcast) void sendRuntime({ type: "element-inspector-set", active: false }).catch(handleAsyncError);
     inspectorActive = false;
+    rootRegistry.setActive(getVerifyingStyleChangeRecords().length > 0);
     hoveredElement = null;
     document.documentElement.style.cursor = "";
     hideHighlighter();
@@ -636,6 +692,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function openPanel(tab: OverlayTab = "element"): void {
+    if (inspectorActive) stopInspector();
     ensureOverlay();
     activePanelTab = tab;
     panelOpen = true;
@@ -695,10 +752,11 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function ensureOverlay(): void {
-    if (overlayHost && shadow) return;
+    if (overlayHost && shadow) { if (!overlayHost.isConnected) refreshOverlayLayer(); return; }
     overlayHost = document.createElement("div");
     overlayHost.id = "devlite-overlay-root";
-    overlayHost.style.cssText = "position:fixed;inset:0;z-index:2147483647;pointer-events:none;";
+    overlayHost.popover = "manual";
+    overlayHost.style.cssText = "all:initial;position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;overflow:visible;z-index:2147483647;pointer-events:none;";
     shadow = overlayHost.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = overlayStyles();
@@ -731,15 +789,32 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     });
     bindImageFileInput({
       input: imageReplaceInput,
+      getRequestId: () => imageSelectionId,
       onError: () => toast(t("replaceImageFailed")),
       onLoad: handleSelectedImageFile
     });
     document.documentElement.appendChild(overlayHost);
+    overlayHost.showPopover();
     applyOverlayTheme();
     launcherDockController.applyPosition();
   }
 
   ensureOverlay();
+
+  function refreshOverlayLayer(): void {
+    if (!overlayHost) return;
+    let parent: Element = document.documentElement;
+    for (const root of rootRegistry.roots.keys()) {
+      const modal = root.querySelector("dialog:modal");
+      if (modal) parent = modal;
+    }
+    const fullscreen = document.fullscreenElement;
+    if (fullscreen && !["iframe", "video", "canvas", "img"].includes(fullscreen.localName)) parent = fullscreen;
+    if (overlayHost.parentElement !== parent) parent.appendChild(overlayHost);
+    if (overlayHost.matches(":popover-open")) overlayHost.hidePopover();
+    overlayHost.showPopover();
+    syncElementOverlays();
+  }
 
   function syncLauncherLabels(): void {
     launcherDockController?.syncLabels(t);
@@ -780,8 +855,9 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     panel.innerHTML = "";
   }
 
-  function updateHighlighter(element: HTMLElement): void {
+  function updateHighlighter(element: InspectableElement): void {
     ensureOverlay();
+    if (overlayHost) normalizeOverlayZoom(overlayHost);
     if (!highlighter) return;
     if (!element.isConnected) {
       hideHighlighter();
@@ -789,23 +865,50 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     }
     const rect = element.getBoundingClientRect();
     highlighter.style.display = "block";
-    highlighter.style.transform = `translate(${Math.max(0, rect.left)}px, ${Math.max(0, rect.top)}px)`;
+    highlighter.style.transform = `translate(${rect.left}px, ${rect.top}px)`;
     highlighter.style.width = `${Math.max(0, rect.width)}px`;
     highlighter.style.height = `${Math.max(0, rect.height)}px`;
-    highlighter.textContent = "";
+    highlighter.style.border = "none";
+    highlighter.style.background = "transparent";
+    highlighter.style.boxShadow = "none";
+    highlighter.replaceChildren(...Array.from(element.getClientRects()).slice(0, 80).map((fragment) => {
+      const outline = document.createElement("div");
+      outline.style.cssText = `position:absolute;box-sizing:border-box;border:2px solid var(--dl-primary);background:color-mix(in srgb,var(--dl-primary) 12%,transparent);left:${fragment.x - rect.x}px;top:${fragment.y - rect.y}px;width:${fragment.width}px;height:${fragment.height}px;`;
+      return outline;
+    }));
   }
 
-  function selectElement(element: HTMLElement): void {
+  function selectElement(element: InspectableElement): void {
     stopInlineTextEdit();
+    if (currentChange && !hasRecordedChange(currentChange)) forgetDomSnapshot(currentChange.id);
+    remoteSelection = null;
+    imageSelectionId = null;
+    imageCropperController?.close(false);
+    void sendRuntime({ type: "element-selection-done", epoch: inspectionEpoch }).catch(handleAsyncError);
     closeRequirementEditor();
     iconAssetPanelOpen = false;
     iconAssetRequestVersion += 1;
     styleEditorPositionController.reset();
     selectedElement = element;
+    selectedResizeObserver.disconnect();
+    selectedResizeObserver.observe(element);
+    selectedFingerprint = fingerprint(element);
+    rootRegistry.register(rootOf(element));
     updateHighlighter(element);
     currentChange = createStyleChange(element, EDITABLE_PROPS);
+    if (frameInfo) {
+      const { documentId, frameId, framePath } = frameInfo;
+      currentChange.context = { documentId, frameId, framePath, url: location.href };
+    }
     requirementEditorOpen = true;
     inspectorActive = false;
+    if (element.localName === "iframe") {
+      const id = currentChange.id;
+      void sendRuntime({ type: "element-frame-status", address: currentChange.address }).then((result) => {
+        if (currentChange?.id === id && !result?.connected) toast(t("frameContainerOnly"));
+      }).catch(handleAsyncError);
+    }
+    rootRegistry.setActive(getVerifyingStyleChangeRecords().length > 0);
     document.documentElement.style.cursor = "";
     activePanelTab = "element";
     renderStyleEditor();
@@ -815,6 +918,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function syncElementOverlays(): void {
+    if (overlayHost) normalizeOverlayZoom(overlayHost);
     if (inspectorActive && hoveredElement) {
       if (!hoveredElement.isConnected) {
         hoveredElement = null;
@@ -832,7 +936,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   function renderPanel(): void {
     ensureOverlay();
-    if (!panel) return;
+    if (!panel || inspectorActive) return;
     panelOpen = true;
     panel.hidden = false;
     panelPositionController.apply(panel);
@@ -1072,17 +1176,26 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   async function markStyleChangesExported(changes: StyleChange[]): Promise<void> {
     if (changes.length === 0) return;
+    for (const change of changes.filter((entry) => entry.context?.frameId)) {
+      const response = await runRemoteCommand({ action: "mark" }, change);
+      if (response?.snapshot) updateLocalStyleChanges([change.id], () => response.snapshot.change);
+    }
+    changes = changes.filter((entry) => !entry.context?.frameId);
+    if (changes.length === 0) { syncVerificationPolling(); return; }
     const ids = changes.map((change) => change.id);
     const now = Date.now();
+    const versions: Record<string, number> = {};
     for (const change of changes) {
       const element = resolveStyleChangeElement(change);
-      if (element) exportedElementRefs.set(change.id, element);
+      if (element) { exportedElementRefs.set(change.id, element); exportedRootRefs.set(change.id, rootOf(element)); }
+      const root = element ? rootOf(element) : resolveChangeElement(change).root;
+      versions[change.id] = root ? rootRegistry.version(root) : 0;
     }
     updateLocalStyleChanges(ids, (change) => ({
       ...change,
       exportedAt: change.exportedAt ?? now,
       exportedPageLoadId: pageLoadId,
-      exportedMutationVersion: pageMutationVersion,
+      exportedMutationVersion: versions[change.id],
       verificationStatus: "waiting",
       lastVerifiedAt: now,
       lastVerifyReason: t("waitingForPageUpdate")
@@ -1092,19 +1205,29 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       ids,
       pageLoadId,
       mutationVersion: pageMutationVersion,
+      versions,
       reason: t("waitingForPageUpdate")
     });
+    syncVerificationPolling();
   }
 
   async function undoStyleChangeById(id: string): Promise<void> {
     const change = getStyleChangeRecords().find((item) => item.id === id);
     if (!change) return;
+    if (change.context?.frameId) {
+      const result = await runRemoteCommand({ action: "undo" }, change);
+      if (result?.ok) { if (remoteSelection?.change.id === id) { remoteSelection = null; hideStyleEditor(); } removeLocalStyleChange(id); renderPanel(); }
+      return;
+    }
     const element = resolveStyleChangeElement(change);
     const wasSelected = currentChange?.id === change.id || (!!element && selectedElement === element);
 
     stopInlineTextEdit();
     if (element) {
-      undoStyleChange(change, element);
+      if (!rootRegistry.mutate(element, () => undoStyleChange(change, element))) {
+        toast(t("elementRestoreFailed"));
+        return;
+      }
     } else if (!restoreDeletedElement(change)) {
       toast(t("elementRestoreFailed"));
       return;
@@ -1112,7 +1235,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
     await sendRuntime({ type: "style-change-delete", id: change.id });
     removeLocalStyleChange(change.id);
-    if (wasSelected) {
+    if (wasSelected && currentChange?.id === change.id) {
       currentChange = null;
       selectedElement = null;
       hideHighlighter();
@@ -1143,14 +1266,19 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     toast(t("styleRecordRequeued"));
   }
 
-  function resolveStyleChangeElement(change: StyleChange): HTMLElement | null {
+  function resolveStyleChangeElement(change: StyleChange): InspectableElement | null {
+    if (change.context?.frameId) return null;
     if (currentChange?.id === change.id && selectedElement?.isConnected) return selectedElement;
-    try {
-      const element = document.querySelector(change.selector);
-      return element instanceof HTMLElement ? element : null;
-    } catch {
-      return null;
-    }
+    return resolveChangeElement(change).element;
+  }
+
+  function syncVerificationPolling(): void {
+    const needed = getVerifyingStyleChangeRecords().length > 0;
+    rootRegistry.setActive(inspectorActive || needed);
+    if (needed && verificationPoll === null) verificationPoll = window.setInterval(() => {
+      if (document.visibilityState === "visible") void verifyExportedStyleChanges(false).catch(handleAsyncError);
+    }, 2000);
+    if (!needed && verificationPoll !== null) { window.clearInterval(verificationPoll); verificationPoll = null; }
   }
 
   function scheduleExportedStyleVerification(): void {
@@ -1199,18 +1327,34 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
     let changed = false;
     for (const change of records) {
+      if (change.context?.frameId) {
+        const response = await runRemoteCommand({ action: "verify" }, change, true);
+        const result = response?.verification ?? { status: "waiting", reason: t("elementContextUnavailable") };
+        if (result.status === "verified" && !hasRequirementDescription(change)) {
+          await archiveStyleChangeById(change.id, "verified", result.reason, false);
+          changed = true;
+        } else {
+          const reason = result.status === "verified" ? t("requirementManualArchive") : result.reason;
+          const status = result.status === "failed" ? "failed" : "waiting";
+          if (change.verificationStatus !== status || change.lastVerifyReason !== reason) {
+            updateLocalStyleChanges([change.id], (entry) => ({ ...entry, verificationStatus: status, lastVerifyReason: reason }));
+            await sendRuntime({ type: "style-change-verification-update", id: change.id, status, reason });
+            changed = true;
+          }
+        }
+        continue;
+      }
       const element = resolveStyleChangeElement(change);
-      suppressVerificationMutations = true;
-      const result = verifyStyleChange(change, element, {
+      const resolution = resolveChangeElement(change);
+      const result = rootRegistry.mutate(element ?? document, () => verifyStyleChange(change, element, {
         pageLoadId,
-        mutationVersion: pageMutationVersion,
+        mutationVersion: resolution.root ? rootRegistry.version(resolution.root) : 0,
+        rootChanged: !!resolution.root && !!exportedRootRefs.get(change.id) && exportedRootRefs.get(change.id) !== resolution.root,
         exportedElement: exportedElementRefs.get(change.id) ?? null,
-        normalizationRoot: shadow,
+        normalizationRoot: element?.parentNode ?? resolution.root ?? null,
+        resolution: element ? "resolved" : resolution.status,
         t
-      });
-      window.setTimeout(() => {
-        suppressVerificationMutations = false;
-      }, 0);
+      }));
 
       if (result.status === "verified") {
         if (hasRequirementDescription(change)) {
@@ -1270,6 +1414,8 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   ): Promise<void> {
     const change = getStyleChangeRecords().find((item) => item.id === id);
     if (!change) return;
+    forgetDomSnapshot(change.id);
+    if (change.context?.frameId) await runRemoteCommand({ action: "forget" }, change, true);
     await sendRuntime({ type: "style-changes-archive", ids: [id], reason, verificationReason });
     archiveLocalStyleChange(change, reason, verificationReason);
     if (currentChange?.id === id) {
@@ -1327,21 +1473,67 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       };
     }
     exportedElementRefs.delete(id);
+    exportedRootRefs.delete(id);
     if (currentChange?.id === id) {
       currentChange = null;
     }
   }
 
+  function acceptRemoteSelection(snapshot: ElementSnapshot): void {
+    inlineTextEditor.stop();
+    imageCropperController?.close(false);
+    imageSelectionId = null;
+    selectedElement = null;
+    selectedFingerprint = null;
+    hoveredElement = null;
+    inspectorActive = false;
+    document.documentElement.style.cursor = "";
+    hideHighlighter();
+    hidePanel();
+    remoteSelection = snapshot;
+    currentChange = snapshot.change;
+    requirementEditorOpen = true;
+    iconAssetPanelOpen = false;
+    iconAssetRequestVersion += 1;
+    styleEditorPositionController.reset();
+    renderStyleEditor();
+  }
+
+  function acceptRemoteUpdate(snapshot: ElementSnapshot): void {
+    if (remoteSelection?.change.id !== snapshot.change.id || remoteSelection.change.context?.documentId !== snapshot.change.context?.documentId) return;
+    remoteSelection = snapshot;
+    currentChange = snapshot.change;
+  }
+
+  function runRemoteCommand(command: ElementCommand, change: StyleChange | null = currentChange, silent = false): Promise<any> {
+    if (!change?.context) return Promise.resolve(null);
+    const request = { type: "element-command", requestId: randomId(), change: structuredClone(change), command };
+    const pending = remoteCommandQueue.catch(() => undefined).then(async () => {
+      const response = await sendRuntime(request).catch(() => ({ ok: false, status: "document-unavailable" }));
+      if (!response?.ok) {
+        if (!silent) toast(response?.error || t("elementContextUnavailable"));
+        return response;
+      }
+      if (response.snapshot) acceptRemoteUpdate(response.snapshot);
+      return response;
+    });
+    remoteCommandQueue = pending;
+    return pending;
+  }
+
   function renderStyleEditor(): void {
     ensureOverlay();
+    if (overlayHost) normalizeOverlayZoom(overlayHost);
     const element = getConnectedSelectedElement();
-    if (!styleEditor || !element || !currentChange) return;
+    if (!styleEditor || (!element && !remoteSelection) || !currentChange) return;
     styleEditor.hidden = false;
     styleEditor.classList.toggle("asset-panel-open", iconAssetPanelOpen);
     styleEditor.innerHTML = renderStyleEditorView({
       element,
       change: currentChange,
-      canEditText: canEditTextContent(element),
+      values: remoteSelection?.computed,
+      capabilities: remoteSelection ?? undefined,
+      canEditText: remoteSelection?.canEditText ?? (!!element && canEditTextContent(element)),
       requirementOpen: requirementEditorOpen,
       assetPanel: {
         open: iconAssetPanelOpen,
@@ -1429,6 +1621,13 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       startInlineTextEdit();
       return;
     }
+    if (action === "select-parent") {
+      if (remoteSelection) { const id = currentChange?.id; const response = await runRemoteCommand({ action: "parent" }); if (response?.snapshot && currentChange?.id === id) acceptRemoteSelection(response.snapshot); return; }
+      const element = getConnectedSelectedElement();
+      const parent = element && composedParent(element);
+      if (isInspectableElement(parent) && !isDevLiteNode(parent)) selectElement(parent);
+      return;
+    }
     if (action === "select") {
       startInspector();
       return;
@@ -1440,7 +1639,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   function openRequirementEditor(): void {
     const element = getConnectedSelectedElement();
-    if (!element || !currentChange) return;
+    if ((!element && !remoteSelection) || !currentChange) return;
     iconAssetPanelOpen = false;
     iconAssetRequestVersion += 1;
     requirementEditorOpen = true;
@@ -1526,20 +1725,26 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function deleteSelectedElement(): void {
+    if (remoteSelection) {
+      const id = currentChange?.id;
+      void runRemoteCommand({ action: "delete" }).then((result) => { if (result?.ok && currentChange?.id === id) { hideStyleEditor(); toast(t("elementDeleted")); } });
+      return;
+    }
     const element = getConnectedSelectedElement();
     if (!element || !currentChange) return;
     stopInlineTextEdit();
 
-    const parent = element.parentElement;
+    const parent = element.parentNode;
     const childIndex = parent ? Array.from(parent.children).indexOf(element) : -1;
     ensureDomChangeBaseline(currentChange, element, t("deleteElement"));
-    currentChange.domParentSelector = parent ? buildSelector(parent) : undefined;
+    currentChange.domParentSelector = isInspectableElement(parent) ? buildSelector(parent) : undefined;
+    currentChange.parentAddress = isInspectableElement(parent) ? buildElementAddress(parent) : undefined;
     currentChange.domChildIndex = childIndex >= 0 ? childIndex : undefined;
     currentChange.domAfter = "";
     currentChange.textSnippet = textSnippet(element);
     currentChange.updatedAt = Date.now();
 
-    element.remove();
+    rootRegistry.mutate(parent ?? element, () => element.remove());
     selectedElement = null;
     hideHighlighter();
     hideStyleEditor();
@@ -1549,7 +1754,8 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function startImageReplacement(): void {
-    if (!getConnectedSelectedElement() || !currentChange || !imageReplaceInput) return;
+    if ((!getConnectedSelectedElement() && !remoteSelection) || !currentChange || !imageReplaceInput) return;
+    imageSelectionId = currentChange.id;
     iconAssetPanelOpen = false;
     iconAssetRequestVersion += 1;
     if (styleEditor && !styleEditor.hidden) renderStyleEditor();
@@ -1557,20 +1763,23 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     imageReplaceInput.click();
   }
 
-  function handleSelectedImageFile(payload: ImageFilePayload): void {
+  function handleSelectedImageFile(payload: ImageFilePayload, requestId?: string | null): void {
+    if (requestId !== imageSelectionId || imageSelectionId !== currentChange?.id) return;
     const element = getConnectedSelectedElement();
-    if (!element || !currentChange) return;
+    if ((!element && !remoteSelection) || !currentChange) return;
     if (payload.isSvg || !payload.type.startsWith("image/")) {
       replaceSelectedImage(payload.src, payload.label);
       return;
     }
-    imageCropperController?.start(payload, element);
+    imageCropperController?.start(payload, element, remoteSelection && remoteSelection.height > 0 ? remoteSelection.width / remoteSelection.height : undefined);
   }
 
   function replaceSelectedImage(src: string, label = "", imageEdit?: ImageEditMetadata): void {
+    if (imageSelectionId !== currentChange?.id) return;
+    if (remoteSelection) { void runRemoteCommand({ action: "image", src, label, metadata: imageEdit }); return; }
     const element = getConnectedSelectedElement();
     if (!element || !currentChange) return;
-    applyImageReplacement(currentChange, element, src, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"), imageEdit);
+    rootRegistry.mutate(element.closest("picture") ?? element, () => applyImageReplacement(currentChange!, element, src, label ? `${t("replaceImage")}: ${label}` : t("replaceImage"), imageEdit));
     syncCurrentChange();
     updateHighlighter(element);
     updateStyleEditorPosition();
@@ -1580,7 +1789,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   function openIconAssetPanel(): void {
     const element = getConnectedSelectedElement();
-    if (!element || !currentChange) return;
+    if ((!element && !remoteSelection) || !currentChange) return;
     requirementEditorOpen = false;
     iconAssetPanelOpen = true;
     iconAssetError = "";
@@ -1689,6 +1898,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   async function applyOnlineIconAsset(id: string | undefined): Promise<void> {
     if (!id) return;
+    const selectionId = currentChange?.id;
     const cached = iconAssetOnlineIcons.find((asset) => asset.id === id);
     if (cached?.svg) {
       applyIconAssetValue(cached.svg, cached.label);
@@ -1708,6 +1918,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       toast(t("iconAssetSvgFailed"));
       return;
     }
+    if (!selectionId || currentChange?.id !== selectionId) return;
     const svg = response?.ok && typeof response.icon?.svg === "string" ? sanitizeIconSvg(response.icon.svg) : null;
     if (!svg) {
       toast(response?.error || t("iconAssetSvgFailed"));
@@ -1735,6 +1946,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function applyIconAssetValue(value: string, label = ""): void {
+    if (remoteSelection) { void runRemoteCommand({ action: "icon", value, label }); return; }
     const element = getConnectedSelectedElement();
     if (!element || !currentChange) return;
     const next = value.trim();
@@ -1743,7 +1955,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
       return;
     }
 
-    applyIconReplacement(currentChange, element, next, label ? `${t("replaceIcon")}: ${label}` : t("replaceIcon"));
+    rootRegistry.mutate(element, () => applyIconReplacement(currentChange!, element, next, label ? `${t("replaceIcon")}: ${label}` : t("replaceIcon")));
     syncCurrentChange();
     updateHighlighter(element);
     updateStyleEditorPosition();
@@ -1752,7 +1964,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function updateStyleEditorPosition(): void {
-    styleEditorPositionController.update(styleEditor, getConnectedSelectedElement());
+    styleEditorPositionController.update(styleEditor, getConnectedSelectedElement(), remoteSelection ? new DOMRect(window.innerWidth - 340, 60, 0, 0) : undefined);
   }
 
   function startStyleEditorDrag(event: PointerEvent): void {
@@ -2079,9 +2291,10 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function applyStyle(prop: string, value: string): void {
+    if (remoteSelection) { void runRemoteCommand({ action: "style", property: prop, value }); return; }
     const element = getConnectedSelectedElement();
     if (!element || !currentChange) return;
-    applyStyleChange(currentChange, element, prop, value);
+    rootRegistry.mutate(element, () => applyStyleChange(currentChange!, element, prop, value));
     syncCurrentChange();
     updateHighlighter(element);
     updateStyleEditorPosition();
@@ -2091,6 +2304,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function applyTextContent(value: string): void {
+    if (remoteSelection) { void runRemoteCommand({ action: "text", value }); return; }
     const element = getConnectedSelectedElement();
     if (!element || !currentChange || !canEditTextContent(element)) return;
     ensureTextChangeBaseline(element);
@@ -2104,6 +2318,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function startInlineTextEdit(): void {
+    if (remoteSelection) { void runRemoteCommand({ action: "text-start" }); return; }
     const element = getConnectedSelectedElement();
     if (!element || !currentChange) {
       toast(t("noEditableText"));
@@ -2116,15 +2331,16 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
   }
 
   function stopInlineTextEdit(): void {
+    if (remoteSelection) void runRemoteCommand({ action: "text-stop" }, undefined, true);
     inlineTextEditor.stop();
   }
 
-  function ensureTextChangeBaseline(element: HTMLElement): void {
+  function ensureTextChangeBaseline(element: InspectableElement): void {
     if (!currentChange) return;
     ensureTextChangeRecordBaseline(currentChange, element);
   }
 
-  function recordTextAfter(element: HTMLElement): void {
+  function recordTextAfter(element: InspectableElement): void {
     if (!currentChange) return;
     recordTextChangeAfter(currentChange, element);
     syncCurrentChange();
@@ -2132,6 +2348,11 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   function syncCurrentChange(): void {
     if (!currentChange) return;
+    if (remoteSelection) {
+      styleChangeSyncPromise = runRemoteCommand({ action: "requirement", text: currentChange.requirement?.text ?? "" });
+      return;
+    }
+    if (selectedElement) selectedFingerprint = fingerprint(selectedElement);
     if (currentChange.exportedAt) {
       currentChange = {
         ...currentChange,
@@ -2158,16 +2379,31 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
 
   async function undoCurrentChange(): Promise<void> {
     if (!currentChange) return;
+    if (remoteSelection) {
+      const id = currentChange.id;
+      const result = await runRemoteCommand({ action: "undo" });
+      if (result?.ok) {
+        const stillSelected = remoteSelection?.change.id === id;
+        removeLocalStyleChange(id);
+        if (stillSelected) { remoteSelection = null; hideStyleEditor(); if (!inspectorActive) openPanel("element"); }
+      }
+      return;
+    }
     const change = currentChange;
     const element = getConnectedSelectedElement();
     if (element) {
-      undoStyleChange(change, element);
+      if (!rootRegistry.mutate(element, () => undoStyleChange(change, element))) {
+        toast(t("elementRestoreFailed"));
+        return;
+      }
     } else if (!restoreDeletedElement(change)) {
       toast(t("elementRestoreFailed"));
       return;
     }
     await sendRuntime({ type: "style-change-delete", id: change.id });
+    const stillSelected = currentChange?.id === change.id;
     removeLocalStyleChange(change.id);
+    if (!stillSelected) return;
     currentChange = null;
     selectedElement = null;
     hideHighlighter();
@@ -2175,8 +2411,10 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     renderPanel();
   }
 
-  function restoreDeletedElement(change: StyleChange): HTMLElement | null {
+  function restoreDeletedElement(change: StyleChange): InspectableElement | null {
     if (change.domBefore === undefined || change.domAfter !== "") return null;
+    const live = restoreDeletedChange(change);
+    if (live || change.liveDomBaseline) return live;
     const parent = resolveDeletedElementParent(change);
     if (!parent) return null;
     const template = document.createElement("template");
@@ -2298,6 +2536,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     uiLocale = normalizeLocale(sessionSettings.locale);
     applyOverlayTheme();
     sessionSnapshot = response.session ?? null;
+    syncVerificationPolling();
     pruneStaleDiagnosticEventsForCurrentScope();
     mergeSessionEvents(sessionSnapshot?.events ?? []);
     if (shouldSyncSettings) syncInjectedSettings();
@@ -2498,7 +2737,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     return formatLocalizedTime(timestamp, uiLocale);
   }
 
-  function canEditTextContent(element: HTMLElement): boolean {
+  function canEditTextContent(element: InspectableElement): boolean {
     return canEditTextContentBase(element, currentChange?.textAfter !== undefined);
   }
 
@@ -2593,9 +2832,10 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     );
   }
 
-  function getConnectedSelectedElement(): HTMLElement | null {
+  function getConnectedSelectedElement(): InspectableElement | null {
     if (!selectedElement) return null;
-    if (selectedElement.isConnected) return selectedElement;
+    if (selectedElement.isConnected && (!selectedFingerprint || matchesFingerprint(selectedElement, selectedFingerprint, currentChange?.textAfter))) return selectedElement;
+    selectedResizeObserver.disconnect();
     selectedElement = null;
     currentChange = null;
     hideHighlighter();
@@ -2604,7 +2844,7 @@ const DIAGNOSTIC_SCOPE_RESET_DELAY = 1000;
     return null;
   }
 
-  function replaceEditableText(element: HTMLElement, value: string): void {
+  function replaceEditableText(element: InspectableElement, value: string): void {
     if (element.childElementCount === 0) {
       element.textContent = value;
       return;
